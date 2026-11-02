@@ -2534,7 +2534,7 @@ export function CardFace({
   );
 
   // D88 §7.3：双面常挂 + 非当前面 inert（可达性/编辑安全硬性）——useLayoutEffect 在绘制前对调，
-  // 保证「编辑器只在背面可聚焦」的契约在两种动效路径（3D 翻卡 / reduce 瞬时）下都成立；
+  // 保证「编辑器只在背面可聚焦」的契约在两种动效路径（D259 换面瞬时 / reduce 瞬时）下都成立；
   // reduce 降级的视觉切换（非当前面 display:none）由 theme.css reduce 块承担，inert 与动效无关。
   const frontFaceRef = useRef<HTMLDivElement>(null);
   const backFaceRef = useRef<HTMLDivElement>(null);

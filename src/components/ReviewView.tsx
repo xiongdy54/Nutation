@@ -1222,7 +1222,8 @@ export default function ReviewView({
         {/* 翻面只走底栏按钮（2026-10-01）：卡面不再吃点击（onReveal 不传＝点卡面不翻面）。
             key＝卡 id：换卡即重挂载 ⇒ 入场动效（--dur-stage 240ms，见 theme.css）在一次呈现里恰好触发一次；
             翻面态 showBack 由父持有，不受 remount 影响。
-            D88 §7.3：CardFace 双面常挂（.review-flip 3D 翻卡），翻面在此只翻 flipped 类与 inert 对调。 */}
+            D88 §7.3 / D259：CardFace 双面常挂（.review-flip 揭示＝换面瞬时 + 答案区 120ms 升起），
+            翻面在此只翻 flipped 类与 inert 对调。 */}
         <CardFace key={current!.id} card={current!} showBack={showBack} onEdit={handleEdit} />
         {/* v48.85（D129 B2，§5.1）：微反馈条——CardFace 之后的条件渲染，绝对定位浮层不占布局流；
             key 含 n：同键事件再次触发时强制重挂（旧条直卸重起新条，§5.1「替换」行） */}

@@ -162,7 +162,6 @@
   --dur-press: 60ms;   /* active 按压（skill 原则 9：50-100ms） */
   --dur-panel: 240ms;  /* 栏/停靠面板开合（摘录轨 + 底栏让位同步） */
   --dur-stage: 240ms;  /* 卡片入场（原 120ms 升档，取瑞士风 120-240 区间上限） */
-  --dur-flip: 500ms;   /* 复习翻卡 */
   /* v48.70（D114 §11.2）：设置页 tooltip 进出场（浮层进 150ms / 出 100ms，swiss 浮层档） */
   --dur-tip-in: 150ms;
   --dur-tip-out: 100ms;
@@ -3943,23 +3942,23 @@ html[data-wb-open="1"][data-wb-place="bottom"] .app-main { margin-bottom: var(--
 /* 入场动效（克制、语义耦合、可降级）：弹层 150ms；减少动效时零动画。
    D88 §6.4 换卡入场单向采纳：stage-card-in 升级为 translateX(24px→0)（方向＝队列前进方向），
    --dur-stage(240ms) --ease-out-soft（原 120ms translateY 4px）；不做两段式 out→in。
-   D88 P4（§7.3）：复习页翻面揭示改由 3D 翻卡接管——.review-wrap .review-back 的 120ms 升起退场；
-   卡面入场挂在 .review-flip 上（两面整体进场合一面动效，单面动画会与 backface 旋转叠加穿帮），
-   :not(.flipped) 排除「恢复现场/撤销评分」直接以背面挂载的首帧（此时动画会先播正面再瞬时翻面）。 */
+   D259：复习页揭示回到「答案区升起」（D88 §7.3 的 3D 翻卡退役）——换面瞬时、卡面再无 transform 过渡，
+   故卡面入场不再排除 .flipped（原先排除是为了避免「翻面与入场抢 transform」，现在揭示不碰 .review-flip
+   的 transform，快按空格时入场动画不会被打断成一次横移回弹；撤销评分以背面挂载时同样只入一次场）。 */
 @media (prefers-reduced-motion: no-preference) {
-  .review-wrap .review-flip:not(.flipped) { animation: stage-card-in var(--dur-stage) var(--ease-out-soft) both; }
+  .review-wrap .review-flip { animation: stage-card-in var(--dur-stage) var(--ease-out-soft) both; }
   /* 第 1 轮审查 LOW-2（§5.2 闸门）：摘录页 stage-card-in 消费者并入 :root:not([data-vt])——
      页面过渡遮罩期（≈300ms）规则不在场、揭幕后从头完整播放，与 R2-5 首卡抑制（本文件 §18.2 块）
      互补，消除「遮罩期内播完、揭幕只剩静态」的双动效空隙；页内换卡无 data-vt ⇒ 照常立即播
-     （闸门只挡页面过渡期间）。review-flip 翻卡不在此列（:not(.flipped) 语义独立，维持现状）。 */
+     （闸门只挡页面过渡期间）。review-flip 不挂闸门（维持现状）。 */
   :root:not([data-vt]) .extract-page .extract-face,
   :root:not([data-vt]) .review-wrap .extract-face { animation: stage-card-in var(--dur-stage) var(--ease-out-soft) both; }
   /* D240（MOTION-DESIGN-SPEC §18.2 末条，摘录页 R2-A 同款）：复习页首卡抑制——页面进入后的首张卡只随
      §5.1 方向性页面过渡入场（自右侧页签返回时自左往右），不再自播 24px 自右往左的 stage-card-in。
      标记 data-first-card 由 ReviewView 挂在 .review-wrap（首卡元素存续期恒挂、换卡当帧摘除 ⇒ 页内换卡照常播）。
-     闪卡条不挂闸门（被压的 review-flip 规则本身不挂闸门，过渡遮罩期即播），(0,4,0) 压 (0,3,0)；
+     闪卡条不挂闸门（被压的 review-flip 规则本身不挂闸门，过渡遮罩期即播），(0,3,0) 压 (0,2,0)；
      混合复习摘录条挂闸门，(0,5,0) 压 (0,4,0)；两条均序在被压规则之后（双保险）。 */
-  .review-wrap[data-first-card] .review-flip:not(.flipped),
+  .review-wrap[data-first-card] .review-flip,
   :root:not([data-vt]) .review-wrap[data-first-card] .extract-face { animation: none; }
   .bar-pop { animation: stage-pop-in 150ms var(--ease) both; }
 }
@@ -4165,23 +4164,29 @@ html[data-wb-open="1"][data-wb-place="bottom"] .app-main { margin-bottom: var(--
 .deferred-front { color: var(--ink); }
 /* 删除按钮：与同排工具一致，仅悬停时以 error 色提示破坏性 */
 .review-delete:hover { color: var(--error); border-color: var(--error); }
-/* ---------- 复习翻卡（D88 §7.3）：CardFace 双面常挂 + grid 等高栈（免测量实现） ----------
+/* ---------- 复习卡揭示（D259；D88 §7.3 的 3D 翻卡退役）：CardFace 双面常挂 + grid 等高栈 ----------
    两面同格（grid-area 1/1）⇒ 容器高 = max(正, 背)，矮的一面拉伸补齐、内容顶对齐；
    无 JS 测量、无固定高度，图片卡/长卡自适应。非当前面由组件挂 inert + aria-hidden
-   （EditableText 只在背面可编辑的契约不变——非当前面的编辑器不可聚焦）。 */
+   （EditableText 只在背面可编辑的契约不变——非当前面的编辑器不可聚焦）。
+   揭示＝换面瞬时完成 + 答案区自下 4px 升起淡入 120ms（D259 用户裁定：不要 3D 翻转，幅度太大、响应太慢），
+   故本块无 perspective / 无 rotateY / 无 backface-visibility / 无 --dur-flip。 */
 .review-flip { display: grid; }
 .review-flip > * { grid-area: 1 / 1; min-width: 0; }
 @media (prefers-reduced-motion: no-preference) {
-  .review-flip { transform-style: preserve-3d; transition: transform var(--dur-flip) var(--ease-out-soft); }
-  .review-flip > * { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
-  .review-flip .review-back { transform: rotateY(180deg); }
-  .review-flip.flipped { transform: rotateY(180deg); }
-  .review-session { perspective: 1600px; }
+  /* 非当前面用 visibility 而非 display：两面同格时 display:none 会让容器高塌到另一面，
+     短卡/长卡之间跳一次布局。 */
+  .review-flip:not(.flipped) > .review-back { visibility: hidden; }
+  .review-flip.flipped > .review-face:not(.review-back) { visibility: hidden; }
+  /* 动画只挂答案区：题面在正反两面逐字同高同基线，隐藏正面不会让题面跳动；
+     若挂整面，题面会先淡出再淡入闪一次。 */
+  .review-flip.flipped .review-back-a { animation: reveal-rise var(--dur) var(--ease) both; }
 }
+/* 4px / 120ms 均为 D88 之前的原值（--dur / --ease）；不并入 stage-card-in——后者是「换卡入场」
+   语义（24px 横移），复用会让揭示与换卡绑死在一个 token 上。 */
+@keyframes reveal-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
-  /* 降级＝不做 transform（§13-E-12：transition 为 none、翻面即时对调 inert）。
-     设计稿 §7.3 的「视觉=瞬时切换，同现状」要求非当前面不可见——两面同格叠放时后绘者（背面）
-     恒在上，故 reduce 下把非当前面 display:none（inert 对调仍由组件承担，与动效无关）。 */
+  /* 降级＝零动效，揭示即时对调可见面（inert 对调仍由组件承担，与动效无关）。
+     reduce 下无 transform，两面同格叠放时后绘者（背面）恒在上，故把非当前面 display:none。 */
   .review-flip:not(.flipped) > .review-back { display: none; }
   .review-flip.flipped > :not(.review-back) { display: none; }
 }
@@ -4219,9 +4224,9 @@ html[data-wb-open="1"][data-wb-place="bottom"] .app-main { margin-bottom: var(--
   color: var(--text-primary);
 }
 /* D88 §7.3 双面化：.review-back 升级为背面**卡面**（.review-flip 的第二面，类名钩子保留——
-   m1/m4 断言在用）。原「问题/答案区内部分隔」的 border-top/padding-top 从面级退下，改由
-   面内答案区（.review-back-a）承载；基线 .review-back 规则继续服务卡片浏览页队列行
-   （.queue-row-text review-back），不受翻卡作用域影响。 */
+   m1/m4 断言在用；D259 起换面瞬时，无 3D）。原「问题/答案区内部分隔」的 border-top/padding-top 从面级退下，
+   改由面内答案区（.review-back-a）承载；基线 .review-back 规则继续服务卡片浏览页队列行
+   （.queue-row-text review-back），不受揭示作用域影响。 */
 .review-flip .review-back { border-top: none; padding-top: 0; }
 .review-back-a { border-top: 1px solid var(--grey-2); padding-top: var(--sp-6); }
 /* v29（D26）看图问答卡：正面图下方的题面文字（图文混排卡面） */

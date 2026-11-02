@@ -165,7 +165,7 @@ skill 原文的 lift/scale 手法（`translateY(-4px) scale(1.02)` + 阴影扩�
 - 顶栏 `.topbar` 与右下角 `BackgroundActivity` 指示器**不参与**过渡：给 `.topbar` / `.bg-activity` 设 `view-transition-name: none` 等价处理（默认 root 快照含全屏，需把顶栏排除：`.topbar { view-transition-name: topbar; }` 并给其 old/new 设 `animation: none`），保证导航稳定（page-transitions · Staging：公共元素保持不动）。
 - 阅读器进出：书架↔阅读器同样走 crossfade。**禁止**给封面做 shared-element 放大（与「克制」基调冲突，且 foliate/PDF 内核挂载耗时不可控，动画会等内核）。
 
-**现有不一致动效处理**：`stage-card-in`（复习/摘录卡入场 240ms 右滑）、`ctas-rise`（空态装饰）是**视图内**动效，与页面切换不冲突，保留并归入 §1 token 体系；不新增第二套页面级过渡。**R2 例外：`stage-card-in` 在「页面进入后的首张卡」上抑制（§18.2 R2-A），避免与页面过渡叠双动效。** 复习页（闪卡 `.review-flip` 与混合复习的摘录卡面）同款抑制见 §18.2 末条（D240 / v49.69）。
+**现有不一致动效处理**：`stage-card-in`（复习/摘录卡入场 240ms 右滑）、`ctas-rise`（空态装饰）是**视图内**动效，与页面切换不冲突，保留并归入 §1 token 体系；不新增第二套页面级过渡。**R2 例外：`stage-card-in` 在「页面进入后的首张卡」上抑制（§18.2 R2-A），避免与页面过渡叠双动效。** 复习页（闪卡 `.review-flip` 与混合复习的摘录卡面）同款抑制见 §18.2 末条（D240 / v49.69）。**D259 起闪卡揭示不再是 3D 翻转（改为答案区升起），该抑制只作用于两者的「换卡入场」。**
 
 ### 5.1 方向性页面切换（R2 修订，2026-10-09，用户实测反馈新增交互）
 
@@ -456,7 +456,7 @@ saas-productivity 核心原则 = **高效、专业、不挡路**：动效 150-30
 | 9 | [charts/swiss.tsx](file:///c:/Users/xiongdy/Documents/OpenCode/Incremental%20reading%20Dev/src/components/charts/swiss.tsx) 全部渲染器 + [theme.css:L4886](file:///c:/Users/xiongdy/Documents/OpenCode/Incremental%20reading%20Dev/src/theme.css#L4886) `dash-widget{transition:none}` | 图表零动效 | 用户不满意点 | §6 图表动效层（**R2：§6 全节重写为 v2**） |
 | 10 | [src/capture.tsx](file:///c:/Users/xiongdy/Documents/OpenCode/Incremental%20reading%20Dev/src/capture.tsx) | 快捷日记窗口内容无入场 | 弹出面板族缺规范 | §8.5 |
 | 11 | theme.css 各处 reduce/no-preference 块 | 大体健全，但 `pop-in`（L784）、`mark-sweep`（L2044）等依赖逐块手写 | 无统一审计口径 | §3.2 写为可 grep 纪律，附录 A 验收命令 |
-| 12 | `stage-card-in`（240ms translateX 24px）、`review-flip`（500ms 3D）、`ctas-rise`（400ms）、`occl-pop`/`occl-badge-pop`（spring）、`pop-in`（spring 220ms）、`side-dock-in`、`mark-sweep`（640ms clip-path）、`dock-breathe`、`skeleton-pulse` | 存量合理动效 | 与新规不冲突 | **保留**，归入 token 体系注释登记；spring 三处（pop-in/occl-pop/qi-num）为冻结豁免。**R2 附注：`stage-card-in` 在页面进入后的首张卡上抑制（§18.2 R2-A），换卡路径不变。** D240 附注：复习页首卡同款抑制（§18.2 末条）。 |
+| 12 | `stage-card-in`（240ms translateX 24px）、`review-flip` 揭示（120ms 答案升起 4px，D259）、`ctas-rise`（400ms）、`occl-pop`/`occl-badge-pop`（spring）、`pop-in`（spring 220ms）、`side-dock-in`、`mark-sweep`（640ms clip-path）、`dock-breathe`、`skeleton-pulse` | 存量合理动效 | 与新规不冲突 | **保留**，归入 token 体系注释登记；spring 三处（pop-in/occl-pop/qi-num）为冻结豁免。**R2 附注：`stage-card-in` 在页面进入后的首张卡上抑制（§18.2 R2-A），换卡路径不变。** D240 附注：复习页首卡同款抑制（§18.2 末条）。**D259 附注：`review-flip` 的 3D 揭示退役后，卡面入场 `stage-card-in` 去掉 `:not(.flipped)`（揭示不再与之抢 `transform`），首卡抑制选择器同步去掉该伪类。** |
 | 13 | **R2 新增**：[theme.css:L6503](file:///c:/Users/xiongdy/Documents/OpenCode/Incremental%20reading%20Dev/src/theme.css#L6503) `.extract-main > .extract-face { margin: var(--sp-4) 0 }` | 特异性覆盖清零 `margin-inline:auto`，卡面靠左 | 用户实测 bug（§0-R2-3） | §18.3：改 `margin: var(--sp-4) auto` |
 | 14 | **R2 新增**：[App.tsx:L359-L368](file:///c:/Users/xiongdy/Documents/OpenCode/Incremental%20reading%20Dev/src/App.tsx#L359-L368) `app-loading` 直换 `app-shell`；[Bookshelf.tsx:L108/L157-L181](file:///c:/Users/xiongdy/Documents/OpenCode/Incremental%20reading%20Dev/src/components/Bookshelf.tsx#L108) 数据异步回填 | 首屏无入场；封面瞬时涌入 | 用户实测「生硬」 | §5.3 首屏入场＋§10-R2 书架入场 |
 
@@ -607,7 +607,7 @@ saas-productivity 核心原则 = **高效、专业、不挡路**：动效 150-30
 - **R2-C 页内开合不动**：toggle 批注轨的 240ms 三量同步过渡（[theme.css:L6399-L6405](file:///c:/Users/xiongdy/Documents/OpenCode/Incremental%20reading%20Dev/src/theme.css#L6399-L6405)）已合规，不回退。
 - **R2-D 空态不播**：`!current` 空态无 cols/bar，`content-enter` 自然不在场；`ctas-rise` 空态装饰保留（§5 既有裁决）。
 - **状态矩阵（本页）**：Loading＝加载壳（现状文案态，§11 第四档）＋R2-B 就绪 fade；Empty＝空态（不播）；Error＝`notice-bar` 族（不变）；Success（换卡推进）＝`stage-card-in`（不变）；Hover/Focus/Disabled＝§4/既有（不变）。
-- **复习页首卡抑制（D240 / v49.69；原「范围外登记（R2 终审）」线索转正）**：R2 终审曾登记「复习页（review）首卡与 review-flip 的同类双动效叠加——现状维持，若未来用户报告复习页入场观感问题，按 R2-A 同款处理」；2026-10-26 用户报告「只有复习界面当中的卡片内容始终是从右往左进入的」，即此线索。诊断：① 闪卡卡面 `.review-wrap .review-flip:not(.flipped)` 的 `stage-card-in` **不挂** §5.2 闸门——数据在过渡遮罩期内到达，卡面在新页实时快照里自右滑入 24px（页面方向位移 `--shift-md` 8px 的 3 倍），bwd 进入（推荐 / 卡片 / 数据 → 复习）时头带自左往右落位、卡面却自右往左，两者反向；② 混合复习的摘录卡面 `.review-wrap .extract-face` 挂闸门——遮罩期不播、揭幕后从头补播一次自右往左（同 R2 修前摘录页的 §18.1-E3）。处理＝R2-A 同款：ReviewView 记首卡（live/key 机制，与 R2-5 同口径；闪卡记 `c:<id>`、混合复习摘录记 `x:<id>`；加载完成后的首个渲染即记录，空态进入则本次不再标记），首卡元素存续期在 `.review-wrap` 挂 `data-first-card="1"`，换卡 / 换条当帧随新卡一同摘除；CSS：`.review-wrap[data-first-card] .review-flip:not(.flipped)`（与被压规则一样不挂闸门，否则遮罩期照播）与 `:root:not([data-vt]) .review-wrap[data-first-card] .extract-face` 置 `animation: none`（特异性各高一档且序在其后）。页面进入后的首张卡入场只由 §5.1 方向性页面过渡承担（方向随页序）；页内换卡（评分推进 / 摘录下一条 / 撤销）`stage-card-in` 照常；reduce 档不变（本就无 stage-card-in）。验收：`tests/d240-review-entry.gui.mjs`。
+- **复习页首卡抑制（D240 / v49.69；原「范围外登记（R2 终审）」线索转正）**：R2 终审曾登记「复习页（review）首卡与 review-flip 的同类双动效叠加——现状维持，若未来用户报告复习页入场观感问题，按 R2-A 同款处理」；2026-10-26 用户报告「只有复习界面当中的卡片内容始终是从右往左进入的」，即此线索。诊断：① 闪卡卡面 `.review-wrap .review-flip:not(.flipped)` 的 `stage-card-in` **不挂** §5.2 闸门——数据在过渡遮罩期内到达，卡面在新页实时快照里自右滑入 24px（页面方向位移 `--shift-md` 8px 的 3 倍），bwd 进入（推荐 / 卡片 / 数据 → 复习）时头带自左往右落位、卡面却自右往左，两者反向；② 混合复习的摘录卡面 `.review-wrap .extract-face` 挂闸门——遮罩期不播、揭幕后从头补播一次自右往左（同 R2 修前摘录页的 §18.1-E3）。处理＝R2-A 同款：ReviewView 记首卡（live/key 机制，与 R2-5 同口径；闪卡记 `c:<id>`、混合复习摘录记 `x:<id>`；加载完成后的首个渲染即记录，空态进入则本次不再标记），首卡元素存续期在 `.review-wrap` 挂 `data-first-card="1"`，换卡 / 换条当帧随新卡一同摘除；CSS：`.review-wrap[data-first-card] .review-flip:not(.flipped)`（与被压规则一样不挂闸门，否则遮罩期照播）与 `:root:not([data-vt]) .review-wrap[data-first-card] .extract-face` 置 `animation: none`（特异性各高一档且序在其后）。页面进入后的首张卡入场只由 §5.1 方向性页面过渡承担（方向随页序）；页内换卡（评分推进 / 摘录下一条 / 撤销）`stage-card-in` 照常；reduce 档不变（本就无 stage-card-in）。验收：`tests/d240-review-entry.gui.mjs`。**D259 修订**：闪卡揭示不再使用 3D 翻卡（改为换面瞬时 + 答案区 120ms 升起），卡面入场 `stage-card-in` 去掉 `:not(.flipped)`，本条抑制选择器同步改为 `.review-wrap[data-first-card] .review-flip`（无伪类）；抑制对象仍是「换卡入场」，与揭示动效无关。
 
 ### 18.3 文本框对齐修复与对齐基准
 
@@ -620,7 +620,7 @@ saas-productivity 核心原则 = **高效、专业、不挡路**：动效 150-30
 ## 附录 A. 实现约束（css-native / performance-optimization / implementation-debugging）
 
 - **零依赖**：禁止 framer-motion / gsap / lottie 等一切动画库；实现路径 = CSS transition/animation + 原生 View Transitions API。
-- **复合属性纪律**：只动 `transform/opacity`（例外：§7 的 grid-template-rows 折叠；既有 review-flip 的 3D transform——3D transform 仍是 transform；§6 图表更新过渡的 SVG 几何属性 x/y/width/height transition——不参与文档布局，第 3 轮审查登记为可接受转译）。
+- **复合属性纪律**：只动 `transform/opacity`（例外：§7 的 grid-template-rows 折叠；§6 图表更新过渡的 SVG 几何属性 x/y/width/height transition——不参与文档布局，第 3 轮审查登记为可接受转译）。
 - **will-change**：只在「确定即将动画」的元素上临时使用（如拖拽中的列表项），动画结束移除；禁止常驻 `will-change` 铺满列表。
 - **同屏并发动效 ≤ 3**（stagger 序列计 1）；超出即砍次要动效。
 - **调试口径**：动效异常先查——(a) 媒体查询作用域是否吞了规则；(b) 是否引用了未定义 token（IACVT，瑞士风「引用有效性」同纪律）；(c) 是否动画了布局属性；(d) React 条件卸载是否吃掉了出场（→ 用 useDismiss 模式）。**R2 增补：(e) 入场动画「播了但看不到」先查是否落在 View Transition 遮罩期（→ 挂 §5.2 闸门）；(f) 「该播没播」先查挂点覆盖（元素是否真带着入场 class——§6.1-E2 类漏挂）；(g) 「两态不一致」先查是否初始样式不触发 transition 造成的结构硬切（§18.1-E1 类）。**
