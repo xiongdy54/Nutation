@@ -1,5 +1,6 @@
 // 快速记录窗口入口（v36，M8-A，§5.4 / §6.5.2）
 // 独立窗口（560×380 无框置顶）：主题跟随主应用 → 渲染编辑器 → 通知主进程「就绪」后才 show（防白闪）。
+import "./lib/roWatch"; // D260：RO 自激循环看守（必须早于任何组件创建 ResizeObserver）
 import "./lib/cspReport";
 import React from "react";
 import { createRoot } from "react-dom/client";

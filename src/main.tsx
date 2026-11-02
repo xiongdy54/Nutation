@@ -1,3 +1,4 @@
+import "./lib/roWatch"; // D260：RO 自激循环看守（必须早于任何组件创建 ResizeObserver）
 import "./lib/cspReport";
 import React from "react";
 import { createRoot } from "react-dom/client";
