@@ -6,6 +6,7 @@ const { BrowserWindow, screen, app, nativeTheme } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { loadAppPage } = require("./devServer"); // D239：载入顺序 + dev server 地址唯一来源
+const appLog = require("./appLog"); // D260：载入失败/渲染进程消失落到主日志（否则只剩一片白窗，无迹可查）
 
 let win = null;
 let ctx = null;
@@ -15,6 +16,7 @@ let positioned = false;
 let pendingShow = false;
 let pendingShowTimer = null;
 let loaded = false;
+let loadRetried = false; // D260：主框架载入失败只自动重试一次，之后收起挂起请求、不再弹白窗
 
 /** 挂起中的呼出请求作废（hide 后写优先 / 窗口销毁时清理） */
 function cancelPendingShow() {
@@ -51,6 +53,7 @@ function themeBackground() {
 function createWindow() {
   if (win && !win.isDestroyed()) return win;
   loaded = false;
+  loadRetried = false;
   win = new BrowserWindow({
     width: 480,
     height: 780,
@@ -105,9 +108,42 @@ function createWindow() {
   w.webContents.on("did-finish-load", () => {
     consumePendingShow();
   });
-  // D239：载入顺序与主窗口同规（D192 修订：`npm run dev` 优先 dev server，原先这里漏了——开发时制卡台
-  // 一直跑旧 dist）；地址不再写死，统一在 devServer.js。
-  loadAppPage(w, { app, fs, distFile: path.join(__dirname, "../dist/workbench.html"), page: "workbench.html" });
+  // D260：载入失败要可见、可恢复——失败一次自动重试；再失败就收起挂起请求，只留日志与白窗兜底，
+  // 不再让「2s 安全阀」把一片空白显示出来（本次事故即：主进程被日志风暴占死 → 导航没跑起来 → 白窗常驻）。
+  const onFailLoad = (_e, code, desc, url, isMainFrame) => {
+    if (!isMainFrame) return;
+    if (code === -3) return; // ERR_ABORTED：导航被新导航取代（正常路径）
+    appLog.log("WARN", "workbench", `载入失败 code=${code} ${desc} @ ${String(url).slice(0, 160)}`);
+    if (loadRetried) {
+      cancelPendingShow();
+      if (win && !win.isDestroyed() && win.isVisible()) win.hide();
+      return;
+    }
+    loadRetried = true;
+    setTimeout(() => {
+      if (win && !win.isDestroyed()) load();
+    }, 800);
+  };
+  w.webContents.on("did-fail-load", onFailLoad);
+  // D260：渲染进程没了也别留一具白窗——销毁，下次呼出重建（closed 会复位 win/loaded）。
+  w.webContents.on("render-process-gone", (_e, details) => {
+    appLog.log("ERROR", "workbench", `渲染进程退出：${details?.reason || "unknown"}`);
+    cancelPendingShow();
+    if (win && !win.isDestroyed()) win.destroy();
+  });
+  // D260：无边框窗口没有系统标题栏关闭钮，渲染层白屏时用户无路可退——
+  // 主进程侧只在「文档尚未就绪」时接 Esc 兜底（就绪后 Esc 归渲染层关菜单，不抢占）。
+  w.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown" || input.key !== "Escape" || loaded) return;
+    event.preventDefault();
+    hide();
+  });
+  const load = () => {
+    // D239：载入顺序与主窗口同规（D192 修订：`npm run dev` 优先 dev server，原先这里漏了——开发时制卡台
+    // 一直跑旧 dist）；地址不再写死，统一在 devServer.js。
+    loadAppPage(w, { app, fs, distFile: path.join(__dirname, "../dist/workbench.html"), page: "workbench.html" });
+  };
+  load();
   return w;
 }
 

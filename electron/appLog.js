@@ -6,6 +6,9 @@
 //
 // 格式：行式人类可读——`本地时区时间戳(+偏移) [级别] [模块] 消息`，堆栈另起 4 空格缩进块；
 // 轮转：单文件超 maxBytes（默认 2MB）按大小轮转，保留当前 + keepFiles 份历史（默认 4）。
+// D260：轮转失败（Windows 文件被占用等）不再静默放过——超过硬上限即截断兜底，避免日志无界增长
+// （实测一个自激错误循环 4 小时写出 31MB 且轮转停摆）；渲染层错误转发加「按消息折叠 + 每分钟保底闸」，
+// 同一条错误一个窗口只落一行，防止错误循环把主进程写成磁盘风暴。
 //
 // §7.2 豁免（已登记，D119）：日志是诊断文件、非用户数据、非调度事实源；appendFileSync
 // 直写不走 persist() tmp+rename 原子替换——追加语义与整文件替换冲突，单行丢失不影响
@@ -22,6 +25,11 @@ const MAX_MESSAGE_CHARS = 2000; // 渲染层转发载荷的消息截断
 const MAX_STACK_CHARS = 4000; // 堆栈截断
 const MAX_SOURCE_CHARS = 200; // 渲染层 source（URL）截断
 const LOG_FILE_NAME = "main.log";
+// D260：渲染层错误折叠/限流与轮转兜底的阈值
+const DEFAULT_REPEAT_WINDOW_MS = 30_000; // 同一条错误的折叠窗口（窗口内只落一行）
+const REPEAT_KEY_MAX = 40; // 折叠表上限（防不同消息把 Map 撑爆）
+const RATE_LIMIT_PER_MIN = 120; // 渲染层错误每分钟总条数保底闸
+const HARD_CAP_FACTOR = 4; // 轮转失败时的硬上限倍数（超过即截断兜底）
 
 // state 常量在模块级（而非闭包）——未 init 时各写入口 no-op，绝不抛错
 const state = {
@@ -29,7 +37,11 @@ const state = {
   dir: "",
   file: "",
   maxBytes: DEFAULT_MAX_BYTES,
-  keepFiles: DEFAULT_KEEP_FILES
+  keepFiles: DEFAULT_KEEP_FILES,
+  repeatWindowMs: DEFAULT_REPEAT_WINDOW_MS,
+  now: Date.now,
+  repeats: new Map(),
+  rate: { windowStart: 0, count: 0 }
 };
 
 /** 本地时区时间戳 + 偏移：`2026-10-08 15:32:01.123+08:00`（用户与开发者直读） */
@@ -69,7 +81,9 @@ function metaSuffix(meta) {
 /**
  * 初始化：建目录并写启动横幅。可重复调用（后一次生效——测试隔离用）。
  * @param {{dir:string, version:string, platform:string, electronVersion?:string,
- *          nodeVersion?:string, packaged?:boolean, maxBytes?:number, keepFiles?:number}} opts
+ *          nodeVersion?:string, packaged?:boolean, maxBytes?:number, keepFiles?:number,
+ *          repeatWindowMs?:number, now?:() => number}} opts
+ *        repeatWindowMs / now 仅供测试注入（时钟可拔插），生产走默认值。
  */
 function init(opts) {
   const o = opts || {};
@@ -77,6 +91,11 @@ function init(opts) {
   state.file = state.dir ? path.join(state.dir, LOG_FILE_NAME) : "";
   state.maxBytes = Number.isFinite(o.maxBytes) && o.maxBytes > 0 ? o.maxBytes : DEFAULT_MAX_BYTES;
   state.keepFiles = Number.isFinite(o.keepFiles) && o.keepFiles >= 0 ? Math.floor(o.keepFiles) : DEFAULT_KEEP_FILES;
+  state.repeatWindowMs =
+    Number.isFinite(o.repeatWindowMs) && o.repeatWindowMs >= 0 ? o.repeatWindowMs : DEFAULT_REPEAT_WINDOW_MS;
+  state.now = typeof o.now === "function" ? o.now : Date.now;
+  state.repeats.clear();
+  state.rate = { windowStart: state.now(), count: 0 };
   state.inited = !!state.file;
   if (!state.inited) return;
   writeBlock(
@@ -89,7 +108,7 @@ function init(opts) {
   );
 }
 
-/** 超阈值时轮转：.4 删、.3→.4 … main.log→.1；失败静默（继续写当前文件） */
+/** 超阈值时轮转：.4 删、.3→.4 … main.log→.1；失败走硬上限兜底（D260）。 */
 function rotateIfNeeded() {
   try {
     let size;
@@ -112,7 +131,19 @@ function rotateIfNeeded() {
     }
     fs.renameSync(state.file, `${state.file}.1`);
   } catch {
-    /* 轮转失败静默：追加写继续，体积控制是优化非正确性前提 */
+    // D260：轮转失败（Windows 上文件被占用 / 安全软件锁住）原先静默放过，实测会让日志无界增长
+    // （31MB 且轮转停摆）。超过硬上限即截断兜底——宁可丢历史，也不让日志把磁盘和主进程拖死。
+    try {
+      if (fs.statSync(state.file).size >= state.maxBytes * HARD_CAP_FACTOR) {
+        fs.writeFileSync(
+          state.file,
+          `${timestamp()} [WARN] [applog] 轮转失败（文件被占用？）已达硬上限，已截断\n`,
+          "utf-8"
+        );
+      }
+    } catch {
+      /* 截断也失败（盘满/权限）则放弃，绝不抛出 */
+    }
   }
 }
 
@@ -169,7 +200,42 @@ function logRendererError(payload) {
     where = ` @ ${clip(p.source, MAX_SOURCE_CHARS)}:${p.line ?? "?"}:${p.col ?? "?"}`;
   }
   const message = clip(p.message ?? "(no message)", MAX_MESSAGE_CHARS);
-  log("ERROR", "renderer", `${kind}${where}: ${message}`, typeof p.stack === "string" ? p.stack : undefined);
+  const now = state.now();
+
+  // D260 保底闸：渲染层错误每分钟最多 RATE_LIMIT_PER_MIN 条——错误自激循环时（实测 8~50 条/秒）
+  // 仍要保证主进程事件循环有余量处理托盘/快捷键，而不是被同步追加写拖死。
+  if (now - state.rate.windowStart >= 60_000) {
+    state.rate = { windowStart: now, count: 0 };
+  }
+  if (state.rate.count >= RATE_LIMIT_PER_MIN) return;
+  state.rate.count += 1;
+
+  // D260 折叠：同一条错误（kind + 位置 + 消息）在窗口内只落一行，其余只计数；
+  // 窗口翻页时把折叠数并进这一行——诊断信息不丢，日志不再被同一条消息刷爆。
+  const key = `${kind}|${where}|${message}`;
+  const rec = state.repeats.get(key);
+  let folded = "";
+  if (rec) {
+    if (now - rec.windowStart < state.repeatWindowMs) {
+      rec.count += 1;
+      state.repeats.delete(key);
+      state.repeats.set(key, rec); // LRU：刚出现的排到队尾，淘汰最久未现的
+      return;
+    }
+    if (rec.count > 1) folded = `（上一窗口另有 ${rec.count - 1} 次相同错误已折叠）`;
+    state.repeats.delete(key);
+  }
+  state.repeats.set(key, { windowStart: now, count: 1 });
+  if (state.repeats.size > REPEAT_KEY_MAX) {
+    const oldest = state.repeats.keys().next().value;
+    state.repeats.delete(oldest);
+  }
+  log(
+    "ERROR",
+    "renderer",
+    `${kind}${where}: ${message}${folded}`,
+    typeof p.stack === "string" ? p.stack : undefined
+  );
 }
 
 /** 日志目录（供 logs:openFolder；测试断言用） */
