@@ -46,19 +46,13 @@ export function MdField({
 /** 制卡台输入字段外壳（D123 修订）：默认一行、随内容伸缩（高度过渡由 CSS 的 --dur-panel/--ease 承担）；
     右下角可选「带入…」悬停钮（设计稿绿色小字）：点击把外部文本写入该字段；无外部文本但有 generate
     （v48.101/D146「带入 AI 回答」生成链）时点击触发生成（busy 期间显示「生成中…」并忽略再点）。
-    D144 #4（§3.3）：可选幽灵草稿层（宿主构建的节点）——absolute 铺满 field 输入面；
-    v48.101（D146 修订）：幽灵层 pointer-events:none 纯指示，接受唯一路径＝Alt+Enter
-    （坞内固定键，目标输入面聚焦时走 onGhostAccept），点击不再接受。 */
+    v49.95（D261）：幽灵草稿层与 Alt+Enter 接受退役——输入面不再叠加任何来源文字提示。 */
 export function GrowField({
   children,
-  pick,
-  ghost,
-  onGhostAccept
+  pick
 }: {
   children: ReactNode;
   pick?: { label: string; empty: string; get: () => string | null | undefined; apply: (t: string) => void; generate?: () => void; busy?: boolean };
-  ghost?: ReactNode;
-  onGhostAccept?: () => void;
 }) {
   const T = useT();
   const [clipRef, innerRef] = useGrowBox<HTMLDivElement, HTMLDivElement>(168);
@@ -66,23 +60,9 @@ export function GrowField({
   const timer = useRef<number | null>(null);
   useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
   return (
-    <div
-      className="wb-field"
-      onKeyDown={
-        ghost && onGhostAccept
-          ? (e: React.KeyboardEvent) => {
-              // 与 Ctrl+Enter（制卡）/Ctrl+Shift+C（挖空）无冲突（altKey 互斥）；IME 组合态不接管
-              if (e.altKey && e.key === "Enter" && !isImeComposing(e)) {
-                e.preventDefault();
-                onGhostAccept();
-              }
-            }
-          : undefined
-      }
-    >
+    <div className="wb-field">
       <div className="wb-field-clip" ref={clipRef}>
         <div className="wb-field-inner" ref={innerRef}>{children}</div>
-        {ghost}
       </div>
       {pick && (
         <button
@@ -143,8 +123,8 @@ function unwrapCloze(text: string, pos: number): { text: string; caret: number }
 }
 
 /** 填空字段：纯文本 textarea（能可靠读写选区），一行起步随内容伸缩；工具行＝挖空 / 同题挖空 / 取消挖空 + 实时「N 张卡 · M 个空」
-    D144 #4：幽灵层/接受回调透传给首字段 GrowField（填空题的第一文本框＝挖空文本）。 */
-export function ClozeField({ value, onChange, onPick, ghost, onGhostAccept }: { value: string; onChange: (v: string) => void; onPick?: { label: string; get: () => string | null | undefined }; ghost?: ReactNode; onGhostAccept?: () => void }) {
+    v49.95（D261）：幽灵层/Alt+Enter 接受随 D144 #4 幽灵机制一并退役。 */
+export function ClozeField({ value, onChange, onPick }: { value: string; onChange: (v: string) => void; onPick?: { label: string; get: () => string | null | undefined } }) {
   const T = useT();
   const ref = useRef<HTMLTextAreaElement | null>(null);
   const pendingCaret = useRef<[number, number] | null>(null);
@@ -188,7 +168,7 @@ export function ClozeField({ value, onChange, onPick, ghost, onGhostAccept }: { 
   const keep = (e: React.MouseEvent) => e.preventDefault();
   return (
     <>
-      <GrowField ghost={ghost} onGhostAccept={onGhostAccept} pick={onPick ? { label: onPick.label, empty: T("没有选区"), get: onPick.get, apply: (t) => onChange(t) } : undefined}>
+      <GrowField pick={onPick ? { label: onPick.label, empty: T("没有选区"), get: onPick.get, apply: (t) => onChange(t) } : undefined}>
         <textarea
           ref={ref}
           className="wb-cloze-input"

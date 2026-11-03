@@ -1294,8 +1294,6 @@ export const ja: Record<string, string | { one: string; other: string }> = {
   "有未保存的遮罩，关闭将丢弃": "未保存のマスクがあります。閉じると破棄されます",
   "继续编辑": "編集を続ける",
   "丢弃并关闭": "破棄して閉じる",
-  "关闭（Esc）": "閉じる（Esc）",
-  "关闭编辑器": "エディタを閉じる",
 
   // —— 手動カード作成（ManualCardEditor.tsx）——
   "生成中…": "生成中…",
@@ -1687,7 +1685,6 @@ export const ja: Record<string, string | { one: string; other: string }> = {
   "处理后认为再无值得制卡的内容：不再推送，仍保留在卡片浏览器": "処理後、カード化する価値のある内容はもうないと判断：以後プッシュされませんが、カードブラウザには残ります",
 
   // —— 批 2：选区面板（SelectionPanels.tsx）——
-  "Alt+Enter 填入": "Alt+Enter で挿入",
   "粘贴或输入要处理的文字": "処理するテキストを貼り付けまたは入力",
   "待处理文字": "処理対象テキスト",
 

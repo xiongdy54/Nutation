@@ -440,6 +440,13 @@ function dockRestore(win) {
 ipcMain.handle("win:dockExtend", (e, deltaPx) => dockExtend(BrowserWindow.fromWebContents(e.sender), Number(deltaPx)));
 ipcMain.handle("win:dockRestore", (e) => dockRestore(BrowserWindow.fromWebContents(e.sender)));
 ipcMain.handle("win:workbench", (_e, action) => workbenchWindow.control(String(action || "toggle")));
+// v49.95（D261）：图片挖空编辑器宽幅——独立制卡台展开 / 收回（仅本窗口渲染进程可请求）
+// 动画结束（窗口到位）才 resolve：渲染层据此决定何时淡入 / 解除内容钉位（D261）
+ipcMain.handle("win:workbenchResize", async (e, mode, animate) => {
+  const ok = workbenchWindow.resize(String(mode || "restore"), animate !== false, e.sender);
+  await workbenchWindow.whenResizeIdle();
+  return ok;
+});
 // 独立窗口建卡后：转告主窗口各页刷新（两个渲染进程的 eventBus 互不相通）
 ipcMain.on("win:cardsChanged", (e) => {
   if (mainWindow && !mainWindow.isDestroyed() && e.sender !== mainWindow.webContents) {

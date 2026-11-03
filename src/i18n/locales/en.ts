@@ -1294,8 +1294,6 @@ export const en: Record<string, string | { one: string; other: string }> = {
   "有未保存的遮罩，关闭将丢弃": "You have unsaved masks — closing will discard them",
   "继续编辑": "Keep editing",
   "丢弃并关闭": "Discard and close",
-  "关闭（Esc）": "Close (Esc)",
-  "关闭编辑器": "Close editor",
 
   // —— 手动制卡（ManualCardEditor.tsx）——
   "生成中…": "Generating…",
@@ -1690,7 +1688,6 @@ export const en: Record<string, string | { one: string; other: string }> = {
   "处理后认为再无值得制卡的内容：不再推送，仍保留在卡片浏览器": "Nothing left worth carding after this: no longer pushed, still kept in the card browser",
 
   // —— 批 2：选区面板（SelectionPanels.tsx）——
-  "Alt+Enter 填入": "Alt+Enter to fill",
   "粘贴或输入要处理的文字": "Paste or type the text to process",
   "待处理文字": "Text to process",
 

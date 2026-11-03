@@ -332,6 +332,7 @@ try {
       railW: rail ? Math.round(rail.width) : 0,
       toolbarShared: Boolean(toolbar?.classList.contains('image-overlay-toolbar')),
       closeInToolbar: Boolean(toolbar?.querySelector('[data-testid="occl-close"]')),
+      contentClose: [...(toolbar?.querySelectorAll("button") || [])].filter((b) => (b.getAttribute("aria-label") || "").includes("关闭")).length,
       token: getComputedStyle(document.body).getPropertyValue('--overlay-close-cursor').trim(),
       layerCursor: getComputedStyle(document.querySelector('.occlusion-editor-layer')).cursor,
       stageCursor: getComputedStyle(document.querySelector('.occlusion-editor-stage')).cursor,
@@ -341,7 +342,7 @@ try {
   })())`);
   const layoutObj = JSON.parse(layout || "{}");
   check("A2 图片按主区真实可用宽放大且右栏保留", layoutObj.boxW >= layoutObj.mainW * 0.94 && layoutObj.railW === 300, layout);
-  check("A3 挖空工具栏接共享表现 + 图片外关闭光标", layoutObj.toolbarShared === true && layoutObj.closeInToolbar === true && layoutObj.token.includes("url(") && layoutObj.stageCursor.includes("url(") && !layoutObj.imageCursor.includes("url("), layout);
+  check("A3 挖空工具栏接共享表现 + 图片外关闭光标（工具条内已无关闭钮）", layoutObj.toolbarShared === true && layoutObj.closeInToolbar === false && layoutObj.contentClose === 0 && layoutObj.token.includes("url(") && layoutObj.stageCursor.includes("url(") && !layoutObj.imageCursor.includes("url("), layout);
   check("A4 挖空聚焦层为不透明纸面", /^rgb\(/.test(String(layoutObj.layerBg || "")), layout);
 
   // B. 三形状连续框选：矩形 / 椭圆（圆心拖） / 多边形（点回起点闭合）
@@ -612,8 +613,13 @@ try {
   await cdp.shot(path.join(ROOT, "tests", "tmp-occl-f-done.png"));
 
   // I. R8 回归：复习面不出现卡体内「显示答案」死按钮（翻面只走底栏一枚）
-  await cdp.eval(`document.querySelector('[data-testid="occl-close"]').click()`);
+  // D262：工具条不再有独立关闭钮——关闭只走「图片外空白点击」（光标即关闭钮）与 Esc
+  await cdp.eval(pointerPair(".occlusion-editor-stage", ".occlusion-editor-stage"));
+  await wait(300);
+  await cdp.eval(`(() => { const b = [...document.querySelectorAll('.occlusion-editor-confirm.show button')].find((x) => (x.textContent || "").includes("丢弃")); if (b) b.click(); })()`);
   await wait(400);
+  const closedByCursor = await cdp.eval(`!document.querySelector(".occlusion-editor-layer")`);
+  check("I0 无工具条关闭钮时，图片外点击可关（光标即关闭钮）", closedByCursor === true, `closed=${closedByCursor}`);
   await cdp.eval(clickByText("复习", ".nav-item"));
   await wait(2200);
   const revealScan = await cdp.eval(`JSON.stringify({

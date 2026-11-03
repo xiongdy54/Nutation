@@ -5,11 +5,11 @@
 // 纯移动，逻辑零改动）——CardDock 手动态直接渲染它。默认导出 `ManualCardEditor` 保留为
 // 「modal 包装 + ManualCardForm」：**图片挖空**（imageOcclusion，来自图片聚焦工具条）继续走
 // modal（大图预览需要幅面），其余三模式走 dock——m6 系列图片挖空断言零迁移。
-// v48.100（D144 #4）：跨页签幽灵草稿同步的手动侧落点——第一文本框（四题型同为 front state：
-// 问答/翻转/图片挖空＝正面，填空＝挖空文本）值镜像上报（onFrontChange，宿主只读不回写——无损红线）；
-// ManualFormHandle.setFrontValue 写入源全文并聚焦、光标落文末；幽灵层经 ghost/onGhostAccept
-// 渲染进第一字段（GrowField，Alt+Enter 坞内固定键）。表单其余内部状态、载荷、题型页签零改动。
-import { forwardRef, useImperativeHandle, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+// v48.100（D144 #4）：第一文本框（四题型同为 front state：问答/翻转/图片挖空＝正面，填空＝挖空文本）
+// 值镜像上报（onFrontChange，宿主只读不回写——无损红线）；ManualFormHandle.setFrontValue 写入外部
+// 文本并聚焦、光标落文末（D144 #5 解释选单「复制」落点）。v49.95（D261）：幽灵层与 Alt+Enter 退役。
+// 表单其余内部状态、载荷、题型页签零改动。
+import { forwardRef, useImperativeHandle, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { isImeComposing } from "../lib/ime";
 import { cardsApi, needsDateStamp, parseCloze, similaritySearch } from "../lib/cards";
@@ -61,9 +61,10 @@ interface PrecheckHit {
   differs: boolean;
 }
 
-/** D144 #4：ManualCardForm 的宿主句柄——幽灵接受（Alt+Enter）时把源全文写入
-    第一文本框（qa/reverse/图片挖空＝正面 front，填空＝挖空文本，四态同为此值）并聚焦、光标落文末；
-    v48.101（D146）：setBackValue＝「带入 AI 回答」生成链的流式落点（全量覆盖背面，逐 delta 调用）。 */
+/** ManualCardForm 的宿主句柄——setFrontValue 把外部文本写入第一文本框
+    （qa/reverse/图片挖空＝正面 front，填空＝挖空文本，四态同为此值）并聚焦、光标落文末
+    （D144 #5 解释选单「复制」落点）；v48.101（D146）：setBackValue＝「带入 AI 回答」
+    生成链的流式落点（全量覆盖背面，逐 delta 调用）。 */
 export interface ManualFormHandle {
   setFrontValue: (text: string) => void;
   setBackValue: (text: string) => void;
@@ -71,8 +72,8 @@ export interface ManualFormHandle {
 
 /** 手动制卡表单体（D88 §8.2 抽取，纯移动）：modal 包装之外的全部内容——
     字段、落库链（onSave → 宿主 handleManualCard）、canSave 校验一字不改。
-    v48.100（D144 #4）：增 ghost / onGhostAccept（幽灵槽，仅宿主派生条件满足时传节点）/
-    onFrontChange（首框值镜像上报）三可选 props；ref 句柄见 ManualFormHandle。 */
+    v48.100（D144 #4）：onFrontChange（首框值镜像上报，供解释选单「复制」追加）；
+    v49.95（D261）：ghost / onGhostAccept 随幽灵机制退役。ref 句柄见 ManualFormHandle。 */
 export const ManualCardForm = forwardRef<ManualFormHandle, {
   /** D123 修订 3：题型由宿主控制（题型页签在制卡台标题行里）；不传＝内部自管 */
   mode?: "qa" | "reverse" | "cloze" | "imageOcclusion";
@@ -95,11 +96,7 @@ export const ManualCardForm = forwardRef<ManualFormHandle, {
   onSave: (payload: ManualCardPayload) => Promise<string | null | void>;
   /** D121 §4.1：「保存并辨析」——保存成功后以新卡为 A、相似卡为 B 打开辨析弹窗（宿主渲染，表单卸载后仍存活）；不传则不显示该按钮 */
   onDisambiguate?: (newCardId: string, otherCardId: string) => void;
-  /** D144 #4：幽灵草稿层节点（宿主按 §4.2 派生条件构建；渲染进第一文本框的 field 容器） */
-  ghost?: ReactNode;
-  /** D144 #4：幽灵 Alt+Enter 接受回调（v48.101/D146：点击接受已退役，此为唯一接受路径） */
-  onGhostAccept?: () => void;
-  /** D144 #4：第一文本框值镜像上报（宿主只读用于幽灵显示条件；宿主不回写——无损红线） */
+  /** D144 #4：第一文本框值镜像上报（宿主只读；宿主不回写——无损红线） */
   onFrontChange?: (v: string) => void;
   /** v48.101（D146）：「带入 AI 回答」生成链——无既有回答且正面非空时触发生成（宿主流式写回背面） */
   onGenerateAnswer?: (question: string) => void;
@@ -118,8 +115,6 @@ export const ManualCardForm = forwardRef<ManualFormHandle, {
   mode: modeProp,
   onModeChange,
   variant = "modal",
-  ghost,
-  onGhostAccept,
   onFrontChange,
   onGenerateAnswer,
   answerGenerating
@@ -155,8 +150,8 @@ export const ManualCardForm = forwardRef<ManualFormHandle, {
   // D123：dock 变体的高级字段默认收起（DOM 保持挂载，仅 hidden——载荷与落库链不变）
   const [moreOpen, setMoreOpen] = useState(false);
 
-  // ===== D144 #4（§4.2）：首框值镜像上报 + 幽灵接受 caret 收尾 =====
-  // 四题型第一文本框同为 front state；宿主按镜像判幽灵显示条件（单向：宿主不回写——无损红线）。
+  // ===== D144 #4（§4.2）：首框值镜像上报 + 外部写回 caret 收尾 =====
+  // 四题型第一文本框同为 front state；宿主只读镜像（不回写——无损红线）；setFrontValue 写入后 caret 落文末。
   const onFrontChangeRef = useRef(onFrontChange);
   onFrontChangeRef.current = onFrontChange;
   useEffect(() => {
@@ -412,16 +407,16 @@ export const ManualCardForm = forwardRef<ManualFormHandle, {
         >
           {mode === "reverse" ? (
             <>
-              <GrowField ghost={ghost} onGhostAccept={onGhostAccept} pick={front.trim() ? undefined : pickSel}><MdField minRows={1} value={front} onChange={setFront} placeholder={T("问题（制卡后另生成一张：以它为答案）")} label={T("问题")} /></GrowField>
+              <GrowField pick={front.trim() ? undefined : pickSel}><MdField minRows={1} value={front} onChange={setFront} placeholder={T("问题（制卡后另生成一张：以它为答案）")} label={T("问题")} /></GrowField>
               <GrowField pick={back.trim() ? undefined : pickAns}><MdField minRows={1} value={back} onChange={setBack} placeholder={T("答案（制卡后另生成一张：以它为问题）")} label={T("答案")} /></GrowField>
             </>
           ) : mode === "qa" ? (
             <>
-              <GrowField ghost={ghost} onGhostAccept={onGhostAccept} pick={front.trim() ? undefined : pickSel}><MdField minRows={1} value={front} onChange={setFront} placeholder={T("正面（问题）")} label={T("题面")} /></GrowField>
+              <GrowField pick={front.trim() ? undefined : pickSel}><MdField minRows={1} value={front} onChange={setFront} placeholder={T("正面（问题）")} label={T("题面")} /></GrowField>
               <GrowField pick={back.trim() ? undefined : pickAns}><MdField minRows={1} value={back} onChange={setBack} placeholder={T("背面（答案）")} label={T("答案")} /></GrowField>
             </>
           ) : mode === "cloze" ? (
-            <ClozeField value={front} onChange={setFront} ghost={ghost} onGhostAccept={onGhostAccept} onPick={onPickSelection && !front.trim() ? { label: T("带入选区"), get: onPickSelection } : undefined} />
+            <ClozeField value={front} onChange={setFront} onPick={onPickSelection && !front.trim() ? { label: T("带入选区"), get: onPickSelection } : undefined} />
           ) : imageRegion ? (
             <>
               <div className="occlusion-stage occlusion-preview manual-region-preview">

@@ -89,6 +89,52 @@ app.whenReady().then(async () => {
     check("E hide 后安全阀不弹窗", !w.isVisible(), String(w.isVisible()));
     hang2.close();
 
+    console.log("== F 图片挖空：窗口展开固定宽幅 / 退出收回（D261） ==");
+    // 动画关闭（animate=false）以便同步断言；生产走逐帧插值
+    const before = w.getBounds();
+    const wa = screen.getDisplayMatching(before).workArea;
+    const expectW = Math.min(1200, wa.width - 48);
+    if (expectW > before.width) {
+      const okWide = workbenchWindow.resize("wide", false);
+      const wide = w.getBounds();
+      check(
+        "F1 展开到固定宽幅且右缘锚定",
+        okWide && Math.abs(wide.width - expectW) <= 1 && Math.abs(wide.x + wide.width - (before.x + before.width)) <= 1,
+        `ret=${okWide} before=${JSON.stringify(before)} wide=${JSON.stringify(wide)} expectW=${expectW}`
+      );
+      const okRestore = workbenchWindow.resize("restore", false);
+      const restored = w.getBounds();
+      check(
+        "F2 退出图片挖空后收回进入前宽度（右缘不动）",
+        okRestore && Math.abs(restored.width - before.width) <= 1 && Math.abs(restored.x + restored.width - (wide.x + wide.width)) <= 1,
+        `ret=${okRestore} restored=${JSON.stringify(restored)}`
+      );
+      check("F3 重复 restore 幂等（无展开状态时返回 false）", workbenchWindow.resize("restore", false) === false);
+      // F4：生产路径 animate=true——逐帧插值必须在 600ms 内落到目标宽度并可收回；IPC 经 whenResizeIdle 在落位时放行
+      const okAnimWide = workbenchWindow.resize("wide", true);
+      const tIdle = Date.now();
+      await workbenchWindow.whenResizeIdle();
+      const idleMs = Date.now() - tIdle;
+      check("F4a whenResizeIdle 在动画落位时放行（≈600ms，不早放不晚放）", idleMs >= 450 && idleMs <= 900, `idleMs=${idleMs}`);
+      await sleep(100);
+      const animWide = w.getBounds();
+      check(
+        "F4 动画路径展开落位（600ms 内到宽幅）",
+        okAnimWide && Math.abs(animWide.width - expectW) <= 1,
+        `ret=${okAnimWide} animWide=${JSON.stringify(animWide)} expectW=${expectW}`
+      );
+      const okAnimRestore = workbenchWindow.resize("restore", true);
+      await sleep(900);
+      const animRestored = w.getBounds();
+      check(
+        "F5 动画路径收回落位（600ms 内回原宽度）",
+        okAnimRestore && Math.abs(animRestored.width - before.width) <= 1,
+        `ret=${okAnimRestore} animRestored=${JSON.stringify(animRestored)} beforeW=${before.width}`
+      );
+    } else {
+      console.log("  - 跳过 F（当前工作区放不下宽幅）");
+    }
+
     console.log(`结果：${pass} 通过，${fail} 失败`);
   } finally {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* Windows 句柄延迟释放，留给系统临时目录 */ }

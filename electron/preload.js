@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld("windowAPI", {
   },
   // D123：独立制卡台窗口（toggle/show/hide/pin）与跨窗口建卡刷新
   workbench: (action) => ipcRenderer.invoke("win:workbench", action),
+  // v49.95（D261）：图片挖空编辑器进入 / 退出时展开 / 收回独立制卡台宽度
+  workbenchResize: (mode, animate) => ipcRenderer.invoke("win:workbenchResize", mode, animate !== false),
   notifyCardsChanged: () => ipcRenderer.send("win:cardsChanged"),
   onCardsChanged: (cb) => {
     const handler = () => cb();

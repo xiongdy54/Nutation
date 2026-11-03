@@ -1608,6 +1608,12 @@
     "kind": "invoke"
   },
   {
+    "bridge": "windowAPI",
+    "method": "workbenchResize",
+    "channel": "win:workbenchResize",
+    "kind": "invoke"
+  },
+  {
     "bridge": "workflowAPI",
     "method": "advance",
     "channel": "extracts:advance",

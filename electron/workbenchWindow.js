@@ -17,6 +17,16 @@ let pendingShow = false;
 let pendingShowTimer = null;
 let loaded = false;
 let loadRetried = false; // D260：主框架载入失败只自动重试一次，之后收起挂起请求、不再弹白窗
+// v49.95（D261）：图片挖空编辑器需要宽幅——进入时把独立制卡台展开为固定宽窗，退出后收回原宽度。
+// Windows 的 setBounds 没有原生动画（Electron 的 animate 仅 macOS），用主进程定时器逐帧插值；
+// 右缘锚定，窗口靠屏幕右缘（默认呼出位置）时向左展开，不跑出工作区。
+const WIDE_WIDTH = 1200; // 右栏 300 + 工具条完整展开（约 700）+ 两侧留白
+const RESIZE_MS = 600; // 窗口位移大（480→1200，720px），时长要够长：峰值速度与时长成反比，太短就是「一冲而过」
+const RESIZE_MAX_HZ = 75; // 出帧频率上限：setBounds 同步重排要 2–9ms，高刷屏全速出帧会把主线程占满
+const RESIZE_MARGIN = 24;
+let wideState = null; // { win, restoreWidth }
+let resizeAnim = null; // { timer, win }
+let resizeWaiters = []; // 等动画落位的 IPC 调用（渲染层据此在窗口到位后再淡入编辑器）
 
 /** 挂起中的呼出请求作废（hide 后写优先 / 窗口销毁时清理） */
 function cancelPendingShow() {
@@ -81,6 +91,9 @@ function createWindow() {
   });
   w.on("closed", () => {
     if (win === w) win = null;
+    if (wideState && wideState.win === w) wideState = null;
+    stopResizeAnim();
+    flushResizeWaiters();
     loaded = false;
     cancelPendingShow();
   });
@@ -175,6 +188,154 @@ function offScreen(w) {
   }
 }
 
+/** 停止进行中的窗口尺寸动画（新动画 / 窗口销毁时调用，幂等；不放行等待者，由终态统一放行） */
+function stopResizeAnim() {
+  if (resizeAnim) {
+    if (resizeAnim.immediate) clearImmediate(resizeAnim.immediate);
+    else if (resizeAnim.timer != null) clearTimeout(resizeAnim.timer);
+  }
+  resizeAnim = null;
+}
+
+/** 动画落位 / 被销毁 / 无动画直落时放行所有等待者 */
+function flushResizeWaiters() {
+  const ws = resizeWaiters;
+  resizeWaiters = [];
+  for (const r of ws) r();
+}
+
+/** 返回一个在当前窗口尺寸动画结束时 resolve 的 Promise（无动画进行时立即 resolve） */
+function whenResizeIdle() {
+  if (!resizeAnim) return Promise.resolve();
+  return new Promise((r) => resizeWaiters.push(r));
+}
+
+/** easeInOutSine：起止速度均为 0，峰值速度仅为匀速的 π/2 倍（cubic 为 3 倍）——
+    窗口位移 720px 时，cubic 峰值每帧跳 60px 以上、肉眼是「一顿一顿」；sine 曲线把峰值压平。 */
+function easeInOutSine(k) {
+  return -(Math.cos(Math.PI * k) - 1) / 2;
+}
+
+/** 逐帧插值到目标 bounds；animate=false 直接落位（减动效 / 测试）。
+    ① 帧网格：Windows 上 setTimeout(16) 实测约 31ms 一帧（≈32fps），故按显示器刷新率算帧周期，
+       每帧落在 t0 + n×period 的固定网格上，帧耗时（setBounds 同步重排 2–9ms）不会累积成节奏漂移；
+    ② 位置由 performance.now() 的真实时间决定，掉帧时下一帧自动追上，总时长恒定。 */
+function animateBounds(w, target, animate) {
+  stopResizeAnim();
+  if (!animate) {
+    w.setBounds(target);
+    flushResizeWaiters();
+    return;
+  }
+  const from = w.getBounds();
+  let hz = 60;
+  try {
+    hz = screen.getDisplayMatching(from).displayFrequency || 60;
+  } catch { /* 取不到刷新率按 60Hz */ }
+  const period = 1000 / Math.max(30, Math.min(RESIZE_MAX_HZ, hz));
+  const t0 = performance.now();
+  const finish = () => {
+    resizeAnim = null;
+    flushResizeWaiters();
+  };
+  const tick = () => {
+    if (!win || win.isDestroyed() || win !== w) {
+      stopResizeAnim();
+      flushResizeWaiters();
+      return;
+    }
+    const now = performance.now();
+    const k = Math.min(1, (now - t0) / RESIZE_MS);
+    const e = easeInOutSine(k);
+    w.setBounds({
+      x: Math.round(from.x + (target.x - from.x) * e),
+      y: Math.round(from.y + (target.y - from.y) * e),
+      width: Math.round(from.width + (target.width - from.width) * e),
+      height: Math.round(from.height + (target.height - from.height) * e)
+    });
+    if (k >= 1) {
+      finish();
+      return;
+    }
+    const after = performance.now();
+    const nextAt = t0 + (Math.floor((after - t0) / period) + 1) * period;
+    // 帧点调度：Windows 的 setTimeout 粒度 15.6ms，而 setBounds 本身占 5–11ms，剩余等待常只有几毫秒——
+    // 定时器会把它拉长成整整一帧（实测帧距 28ms/9ms 交替，等于每隔一帧漏一帧）。动画仅持续 RESIZE_MS，
+    // 期间全程用 setImmediate 轮询到帧点：每轮都让出事件循环，IPC 与其它定时器照常处理。
+    const arm = () => {
+      if (performance.now() >= nextAt - 0.3) {
+        tick();
+        return;
+      }
+      resizeAnim = { timer: null, win: w, immediate: setImmediate(arm) };
+    };
+    arm();
+  };
+  resizeAnim = { timer: null, win: w }; // 占位：让 whenResizeIdle 在首帧同步期间也认为「进行中」
+  tick();
+}
+
+/** 目标工作区内的横向夹紧范围（右缘锚定后不跑出屏幕） */
+function horizontalRange(b, width) {
+  const area = screen.getDisplayMatching(b).workArea;
+  const minX = area.x + RESIZE_MARGIN;
+  const maxX = area.x + area.width - width - RESIZE_MARGIN;
+  return { minX, maxX: Math.max(minX, maxX) };
+}
+
+function wideTarget(w) {
+  try {
+    const b = w.getBounds();
+    const area = screen.getDisplayMatching(b).workArea;
+    const width = Math.min(WIDE_WIDTH, area.width - RESIZE_MARGIN * 2);
+    if (!(width > b.width)) return null;
+    const minX = area.x + RESIZE_MARGIN;
+    const maxX = Math.max(minX, area.x + area.width - width - RESIZE_MARGIN);
+    const x = Math.max(minX, Math.min(b.x + b.width - width, maxX));
+    return { x: Math.round(x), y: b.y, width: Math.round(width), height: b.height };
+  } catch {
+    return null;
+  }
+}
+
+function restoreTarget(w, restoreWidth) {
+  const b = w.getBounds();
+  const [minW] = w.getMinimumSize();
+  const width = Math.max(minW || 0, restoreWidth);
+  let x = b.x + b.width - width;
+  try {
+    const { minX, maxX } = horizontalRange(b, width);
+    x = Math.max(minX, Math.min(x, maxX));
+  } catch {
+    /* 取不到工作区时保持右缘锚定 */
+  }
+  return { x: Math.round(x), y: b.y, width: Math.round(width), height: b.height };
+}
+
+/** IPC 入口（v49.95 / D261）：mode="wide" 展开固定宽窗 / "restore" 收回进入前宽度。
+    仅接受本窗口渲染进程的请求；重复 wide/restore 幂等（不重复记原宽度、不重播动画）。 */
+function resize(mode, animate, sender) {
+  const w = win;
+  if (!w || w.isDestroyed()) return false;
+  if (sender && w.webContents !== sender) return false;
+  if (mode === "wide") {
+    if (wideState && wideState.win === w) return true;
+    const target = wideTarget(w);
+    if (!target) return false;
+    wideState = { win: w, restoreWidth: w.getBounds().width };
+    animateBounds(w, target, animate);
+    return true;
+  }
+  if (mode === "restore") {
+    if (!wideState || wideState.win !== w) return false;
+    const { restoreWidth } = wideState;
+    wideState = null;
+    animateBounds(w, restoreTarget(w, restoreWidth), animate);
+    return true;
+  }
+  return false;
+}
+
 function reveal() {
   const w = win;
   if (!w || w.isDestroyed()) return;
@@ -252,4 +413,4 @@ function init(options) {
 }
 
 // themeBackground 导出仅供测试（tests/window-skin.test.cjs 的 electron 桩单测；C-29 isAutoLaunchOn 同先例）
-module.exports = { init, control, show, hide, toggle, prepareQuit, themeBackground };
+module.exports = { init, control, show, hide, toggle, prepareQuit, themeBackground, resize, whenResizeIdle };

@@ -197,11 +197,9 @@ try {
   const freeBack = await cdp.eval(`document.querySelector('[data-testid="wb-free-source"] textarea')?.value || ''`);
   check("AI 侧自由材料跨页签保留", freeBack === "D144 自由材料", freeBack);
 
-  // ---------- S3 跨页签幽灵双向（§4.2 + v48.101/D146 修订：Alt+Enter 唯一接受路径 + 拒绝闩；无损红线＝接受只写目标框） ----------
-  console.log("== S3 跨页签幽灵双向 ==");
+  // ---------- S3 跨页签幽灵草稿退役（v49.95 / D261：输入面不再有来源文字提示与 Alt+Enter 填入） ----------
+  console.log("== S3 跨页签幽灵草稿退役 ==");
   await cdp.eval(setTA('[data-testid="wb-free-source"] textarea', ""));
-  // D146 拒绝闩：S2 曾在 AI 侧输入过「D144 自由材料」——当时的源（手动首框「D144 草稿基线」）已出列；
-  // 源内容变化后幽灵按新源重新提供（快照比对语义），故此处改写手动首框为新源文。
   // 须先切回手动页签再写 PM：AI 页签下手动表单体 display:none，ProseMirror 无法聚焦
   await cdp.eval(`document.querySelector('[data-testid="wb-tab-manual"]').click()`);
   await wait(300);
@@ -212,18 +210,9 @@ try {
   await wait(300);
   const ghostA = parseState(await cdp.eval(`JSON.stringify({
     ghost: !!document.querySelector('[data-testid="wb-free-source"] .wb-ghost'),
-    text: document.querySelector('[data-testid="wb-free-source"] .wb-ghost-text')?.textContent || '',
-    pe: getComputedStyle(document.querySelector('[data-testid="wb-free-source"] .wb-ghost') || document.body).pointerEvents
+    chip: !!document.querySelector('[data-testid="wb-free-source"] .wb-ghost-chip')
   })`));
-  check("手动侧有字 + AI 侧空 → 自由材料框出现幽灵（源＝手动首框全文，pointer-events:none）", ghostA.ghost && trimEnd(ghostA.text) === "D144 幽灵源文" && ghostA.pe === "none", JSON.stringify(ghostA));
-  // D146：点击幽灵不再接受（层无 onClick；点击穿透由输入面原生承担）
-  await cdp.eval(`document.querySelector('[data-testid="wb-free-source"] .wb-ghost')?.click()`);
-  await wait(300);
-  const s3click = parseState(await cdp.eval(`JSON.stringify({
-    free: document.querySelector('[data-testid="wb-free-source"] textarea')?.value || '',
-    ghostStill: !!document.querySelector('[data-testid="wb-free-source"] .wb-ghost')
-  })`));
-  check("点击幽灵不接受（D146：接受唯一路径＝Alt+Enter）", s3click.free === "" && s3click.ghostStill, JSON.stringify(s3click));
+  check("手动首框有字 + AI 侧空 → 自由材料框无幽灵层、无「Alt+Enter 填入」提示", !ghostA.ghost && !ghostA.chip, JSON.stringify(ghostA));
   await cdp.eval(`(() => {
     const ta = document.querySelector('[data-testid="wb-free-source"] textarea');
     if (!ta) return "no-el";
@@ -231,38 +220,37 @@ try {
     ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', altKey: true, bubbles: true, cancelable: true }));
     return "sent";
   })()`);
-  await wait(400);
+  await wait(300);
   const s3b = parseState(await cdp.eval(`JSON.stringify({
-    free: document.querySelector('[data-testid="wb-free-source"] textarea')?.value || '',
-    ghostGone: !document.querySelector('[data-testid="wb-free-source"] .wb-ghost')
+    free: document.querySelector('[data-testid="wb-free-source"] textarea')?.value || ''
   })`));
-  check("Alt+Enter 接受：全文写入自由材料框且幽灵消失", trimEnd(s3b.free) === "D144 幽灵源文" && s3b.ghostGone, JSON.stringify(s3b));
-  const frontKept = await cdp.eval(`document.querySelector(${JSON.stringify(FRONT_PM)})?.textContent || ''`);
-  check("无损红线：源框（手动首框）不被回写改动", frontKept === "D144 幽灵源文", frontKept);
+  check("Alt+Enter 不再填入自由材料框（接受路径随幽灵机制退役）", s3b.free === "", JSON.stringify(s3b));
+  // 反向：AI 侧有真实内容 + 手动首框空 → 手动首框也不出现提示
+  await cdp.eval(setTA('[data-testid="wb-free-source"] textarea', "D144 自由源文"));
+  await wait(200);
   await cdp.eval(`document.querySelector('[data-testid="wb-tab-manual"]').click()`);
   await wait(300);
   await cdp.eval(clearPM(FRONT_PM));
   await wait(400);
   const ghostB = parseState(await cdp.eval(`JSON.stringify({
     ghost: !!document.querySelector('[data-testid="wb-manual-body"] .wb-field .wb-ghost'),
-    text: document.querySelector('[data-testid="wb-manual-body"] .wb-field .wb-ghost-text')?.textContent || ''
+    chip: !!document.querySelector('[data-testid="wb-manual-body"] .wb-field .wb-ghost-chip')
   })`));
-  check("AI 侧有字 + 手动首框空 → 手动首框出现幽灵（反向同步）", ghostB.ghost && trimEnd(ghostB.text) === "D144 幽灵源文", JSON.stringify(ghostB));
-  // D146：手动侧接受同样只走 Alt+Enter（坞内固定键 handler 挂在 .wb-field 容器）
+  check("AI 侧有字 + 手动首框空 → 手动首框无幽灵层、无「Alt+Enter 填入」提示", !ghostB.ghost && !ghostB.chip, JSON.stringify(ghostB));
   await cdp.eval(`(() => {
     const f = document.querySelector('[data-testid="wb-manual-body"] .wb-field');
     if (!f) return "no-el";
     f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', altKey: true, bubbles: true, cancelable: true }));
     return "sent";
   })()`);
-  await wait(400);
+  await wait(300);
   const s3d = parseState(await cdp.eval(`JSON.stringify({
-    front: document.querySelector(${JSON.stringify(FRONT_PM)})?.textContent || '',
-    ghostGone: !document.querySelector('[data-testid="wb-manual-body"] .wb-field .wb-ghost'),
-    free: document.querySelector('[data-testid="wb-free-source"] textarea')?.value || ''
+    front: document.querySelector(${JSON.stringify(FRONT_PM)})?.textContent || ''
   })`));
-  check("Alt+Enter 接受（手动侧）：全文写入手动首框且幽灵消失", trimEnd(s3d.front) === "D144 幽灵源文" && s3d.ghostGone, JSON.stringify(s3d));
-  check("无损红线：源框（自由材料）不被清写", trimEnd(s3d.free) === "D144 幽灵源文", s3d.free);
+  check("Alt+Enter（手动侧）不再写入首框", s3d.front === "", JSON.stringify(s3d));
+  // S3 结束后恢复手动首框草稿，供 S5「复制」断言「既有输入保留 + 永不覆盖」的追加语义
+  await cdp.eval(setPM(FRONT_PM, "D144 幽灵源文"));
+  await wait(400);
 
   // ---------- S4 解释板块发送与自动展开（§4.3：按钮行双职 + composer 受控；AI 未配置降级链） ----------
   console.log("== S4 解释板块发送与自动展开 ==");

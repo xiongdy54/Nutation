@@ -850,13 +850,6 @@ export default function OcclusionEditor({ image, onAISuggest, origin, onClose, o
               </button>
             </>
           )}
-          <span className="occl-toolbar-div" />
-          <button type="button" className="image-focus-close occl-close-inline" title={T("关闭（Esc）")} aria-label={T("关闭编辑器")} data-testid="occl-close" onClick={requestClose}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-              <path d="M18 6 6 18" />
-              <path d="m6 6 12 12" />
-            </svg>
-          </button>
         </div>
 
         <div

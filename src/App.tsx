@@ -66,6 +66,8 @@ declare global {
       onDockMode?(cb: (mode: "extended" | "inner") => void): () => void;
       /** D123：独立制卡台窗口（toggle/show/hide/pin） */
       workbench?(action: "toggle" | "show" | "hide" | "pin"): Promise<{ visible: boolean; pinned: boolean }>;
+      /** v49.95（D261）：图片挖空编辑器进入（wide）/ 退出（restore）时展开 / 收回窗口宽度 */
+      workbenchResize?(mode: "wide" | "restore", animate?: boolean): Promise<boolean>;
       /** D123：独立窗口建卡后通知主窗口刷新；主窗口订阅 */
       notifyCardsChanged?(): void;
       onCardsChanged?(cb: () => void): () => void;

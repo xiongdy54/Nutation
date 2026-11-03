@@ -10,10 +10,10 @@
 // selectExplainMode）；composer 值受控 + ref 句柄（#5「引用」头部插入落点）；自动展开通道在
 // useSelectionActions（runExplain/runAsk/内容派生），把手开收不打断在途流式；解释空态 FreeSource
 // 实例按 §10 退役（解释入口唯一归口＝底部输入条）。
-// v48.100（D144 #4）：跨页签幽灵草稿同步（§4.2）——AI 侧源＝FreeSource 材料框文本（受控上提，
-// §6）；手动侧源＝ManualCardForm 首框值镜像（onFrontChange，宿主只读）+ ManualFormHandle 写入；
-// 幽灵派生/接受/消失全在本组件。v48.101（D146 修订）：接受唯一路径＝Alt+Enter（坞内固定键，
-// 点击接受退役）；拒绝闩＝用户在目标框主动输入后该源内容不再提供；无损红线＝接受只写目标框。
+// v48.100（D144 #4）：AI 侧 FreeSource 材料框文本受控上提（§6）；手动侧首框值镜像（onFrontChange，
+// 宿主只读）+ ManualFormHandle 写入。v48.101（D146）：幽灵接受唯一路径＝Alt+Enter。
+// v49.95（D261）：跨页签幽灵草稿层与 Alt+Enter 接受整体退役——输入面不再叠加来源文字提示，
+// 跨页签内容各自保留（文本受控状态不变，解释选单「复制」仍经镜像追加）。
 import ManualCardEditor, { ManualCardForm, type ManualFormHandle } from "./ManualCardEditor";
 import CardDock, { type CardsTab } from "./CardDock";
 import AIPanel, { ChatComposer, ExplainModeBar, ExplainThread, type ChatComposerHandle, type ExplainComposerMode } from "./AIPanel";
@@ -40,49 +40,18 @@ import {
   type WorkbenchDockPlacement
 } from "../lib/workbenchLayout";
 
-/** D144 §3.3/§8：幽灵草稿层——覆盖目标输入面的定位层（宿主 CSS：field 容器 relative 内 absolute 铺满）。
- *  文本＝源全文（样式仅 3 行截断，接受时写全文——§4.2）；尾部 chip「Alt+Enter 填入」；
- *  data-accept-key＝§10 DOM 契约。
- *  v48.101（D146 修订）：整层 pointer-events:none 纯指示——点击不再接受（避免「一点就自动填入」），
- *  接受唯一路径＝Alt+Enter（目标输入面聚焦时）；点击穿透到输入面（聚焦/光标定位照常）。
- *  幽灵在场时目标输入面占位文字由宿主 CSS 隐藏（两层文字同位叠加会发虚——用户实测）。
- *  出现＝挂载后 rAF 翻 .is-in 触发 opacity 0→1 淡入（--dur-enter/--ease-enter，no-preference
- *  作用域）；消失瞬时＝条件脱落直接卸载（§8，无出场动画）。 */
-function GhostLayer({ text }: { text: string }) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const T = useT();
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const raf = window.requestAnimationFrame(() => el.classList.add("is-in"));
-    return () => window.cancelAnimationFrame(raf);
-  }, []);
-  return (
-    <div ref={ref} className="wb-ghost" data-accept-key="Alt+Enter" aria-hidden="true">
-      <span className="wb-ghost-text">{text}</span>
-      <span className="wb-ghost-chip mono">{T("Alt+Enter 填入")}</span>
-    </div>
-  );
-}
-
 /** 无选区/无面板时的自由材料输入：粘贴或输入一段文字 → AI 解释 / AI 制卡（自由模式与独立窗口的主入口）。
- *  v48.100（D144 #4）：文本受控上提到 SelectionPanels（§6，幽灵同步的 AI 侧源）；幽灵层挂输入面
- *  （仅手动侧为源时在场），接受＝宿主写目标框（无损红线），本组件只负责 caret 收尾（光标落文末）。 */
+ *  v48.100（D144 #4）：文本受控上提到 SelectionPanels（§6）；
+ *  v49.95（D261）：幽灵草稿层与 Alt+Enter 接受退役（输入面不再叠加来源文字提示）。 */
 function FreeSource({
   text,
   onTextChange,
-  ghostText,
-  onGhostAccept,
   onExplain,
   onCards,
   prefer
 }: {
   text: string;
   onTextChange: (v: string) => void;
-  /** D144 §4.2：幽灵文本（源＝手动首框）；不传＝无幽灵 */
-  ghostText?: string;
-  /** 幽灵接受回调（宿主把源全文写入手动首框） */
-  onGhostAccept?: () => void;
   onExplain: (t: string) => void;
   onCards: (t: string) => void;
   prefer: "explain" | "cards";
@@ -90,34 +59,12 @@ function FreeSource({
   const t = text.trim();
   const ref = useRef<HTMLTextAreaElement | null>(null);
   const T = useT();
-  const caretEndPending = useRef(false);
   useLayoutEffect(() => {
     if (ref.current) growTextarea(ref.current, 168);
-    if (caretEndPending.current && ref.current) {
-      caretEndPending.current = false;
-      ref.current.focus({ preventScroll: true });
-      ref.current.setSelectionRange(ref.current.value.length, ref.current.value.length);
-    }
   }, [text]);
-  const acceptGhost = () => {
-    if (!onGhostAccept) return;
-    caretEndPending.current = true;
-    onGhostAccept();
-  };
   return (
     <div className="wb-free" data-testid="wb-free-source">
-      {/* relative 包裹层：幽灵层与 textarea 同几何（§3.3）；Alt+Enter＝坞内固定键（D123 §1-11
-          Ctrl+K 同例，不经 CommandRegistry），目标输入面聚焦时接受；与 Ctrl+Enter（发送）/
-          Shift+Enter（换行）/IME 组合态无冲突 */}
-      <div
-        className="wb-free-input"
-        onKeyDown={(e) => {
-          if (ghostText && e.altKey && e.key === "Enter" && !isImeComposing(e)) {
-            e.preventDefault();
-            acceptGhost();
-          }
-        }}
-      >
+      <div className="wb-free-input">
         <textarea
           ref={ref}
           value={text}
@@ -126,7 +73,6 @@ function FreeSource({
           rows={1}
           onChange={(e) => onTextChange(e.target.value)}
         />
-        {ghostText && onGhostAccept && <GhostLayer text={ghostText} />}
       </div>
       {/* 有内容才出现，高度随之展开（collapse-clip）；空态一行即止 */}
       <div className={`collapse-clip wb-free-clip${t ? " is-open" : ""}`}>
@@ -398,47 +344,85 @@ export default function SelectionPanels({
   const cardsOf = (text: string) => void sel.runAICards(text, undefined, sel.aiMode);
   const explainOf = (text: string) => void sel.runExplain(text, null);
 
-  // ===== D144 #4（§4.2）：跨页签幽灵草稿同步 =====
-  // 源（§6 受控上提/镜像）：AI 侧＝FreeSource 材料框文本；手动侧＝当前题型第一文本框
-  // （ManualCardForm front 镜像；问答/翻转/图片挖空＝正面，填空＝挖空文本）。双向互为源/目标。
-  // v48.101（D146）：①接受路径唯一化＝Alt+Enter（点击接受退役，幽灵层 pointer-events:none）；
-  // ②拒绝闩——用户在目标框主动输入过内容（非空）即对当前源内容出列不再出现（快照比对：源内容
-  // 变化后重新提供；Alt+Enter 接受不算主动输入，接受后清空再现属正常）。两向各记一份快照：
-  // manual 侧闩快照＝freeText（源），aicards 侧闩快照＝manualFront（源）。
+  // ===== 跨页签草稿状态（D144 #4；v49.95 / D261 幽灵层退役） =====
+  // AI 侧 FreeSource 文本仍受控上提；手动侧保持第一文本框镜像（解释选单「复制」据此追加）。
   const [freeText, setFreeText] = useState("");
   const [manualFront, setManualFront] = useState("");
-  const [ghostDeclined, setGhostDeclined] = useState<{ manual: string | null; aicards: string | null }>({ manual: null, aicards: null });
   const manualFormRef = useRef<ManualFormHandle | null>(null);
-  const onFreeTextChange = (v: string) => {
-    setFreeText(v);
-    if (v.trim()) setGhostDeclined((d) => (d.aicards === manualFront ? d : { ...d, aicards: manualFront }));
-  };
-  const onManualFrontChange = (v: string) => {
-    setManualFront(v);
-    if (v.trim()) setGhostDeclined((d) => (d.manual === freeText ? d : { ...d, manual: freeText }));
-  };
-  // 显示条件（§4.2 五要素 + D146 拒绝闩）：目标页签＝当前页签 ∧ 目标首框空 ∧ 源非空 ∧ 未被该源拒绝 ∧
-  // （目标在 AI 侧时）制卡草稿面板不在场（FreeSource 可见＝幽灵挂点在 DOM）；（手动侧）图片挖空模式
-  // 坞内无第一文本框，无挂点不出幽灵。cardsTab 单值 ⇒ 至多一处幽灵（§4.2）。消失三路（目标真实输入 /
-  // 源被清空 / 切离页签）与接受后消失均由条件自然脱落＝卸载即瞬时（§8）；内容随源实时更新（派生自 state）。
-  const aicardsFreeVisible = !(aiPanel && (aiPanel.kind === "cards" || aiPanel.kind === "occlusion"));
-  const ghostTarget: "manual" | "aicards" | null =
-    cardsTab === "manual"
-      ? manualMode !== "imageOcclusion" && !manualFront.trim() && !!freeText.trim() && ghostDeclined.manual !== freeText
-        ? "manual"
-        : null
-      : aicardsFreeVisible && !freeText.trim() && !!manualFront.trim() && ghostDeclined.aicards !== manualFront
-        ? "aicards"
-        : null;
-  const ghostText = ghostTarget === "manual" ? freeText : ghostTarget === "aicards" ? manualFront : "";
-  // 接受（§4.2）：把源全文写入目标首框（非 3 行截断；绝不回写源框——无损红线，§14 风险 3）；
-  // 幽灵随目标非空自然消失；光标落文末由两侧宿主承接（FreeSource caret 收尾 / ManualFormHandle
-  // .setFrontValue）。触发＝Alt+Enter（目标输入面聚焦时，GrowField/.wb-free-input 的 keydown；
-  // 坞内固定键不经 CommandRegistry，D123 §1-11 Ctrl+K 同例）。v48.101（D146）：点击不再触发。
-  const acceptGhost = () => {
-    if (ghostTarget === "manual") manualFormRef.current?.setFrontValue(ghostText);
-    else if (ghostTarget === "aicards") setFreeText(ghostText);
-  };
+  // v49.95（D261）：独立制卡台进入图片挖空编辑器 → 主进程把窗口展开为固定宽幅（右栏 300px +
+  // 画布才有可用幅面）；编辑器关闭 / 保存后收回进入前宽度。主进程逐帧插值（Windows 无原生窗口
+  // 动画），系统减动效或应用「动效关闭」时瞬时切换。仅独立窗口（placementOverride==="window"）
+  // 生效；主窗口内的同一编辑器不改窗口尺寸。
+  // 内容丝滑（用户实测「窗口内的内容」也卡）：窗口每帧变宽时若内容跟着逐帧重排（坞体文字回流、
+  // 编辑器 fitImage 逐帧重算图片），每帧布局成本远超窗口本身——所以：
+  //   ① 窗口变宽 / 收窄期间坞体钉在「进入前窗口宽度」、右缘对齐（html.wbw-pin，窗口向左生长时视觉上
+  //      纹丝不动，零重排）；
+  //   ② 进入：窗口落位后才挂载编辑器（挂载即淡入，fitImage 只算一次），淡入完成再解钉——
+  //      解钉时坞体整体重排发生在不透明的编辑器层下面，看不见；
+  //   ③ 退出：编辑器先淡出（html.wbw-occl-out），再钉位收窗——不硬切。
+  const occlEditorOpen = !!sel.occlEditor;
+  const [occlPhase, setOcclPhase] = useState<"off" | "on" | "leaving">("off");
+  const occlLast = useRef(sel.occlEditor);
+  if (sel.occlEditor) occlLast.current = sel.occlEditor;
+  const wideRef = useRef(false);
+  const narrowWRef = useRef(0);
+  useEffect(() => {
+    if (placementOverride !== "window") return;
+    const resizeWindow = window.windowAPI?.workbenchResize?.bind(window.windowAPI);
+    if (!resizeWindow) {
+      setOcclPhase(occlEditorOpen ? "on" : "off");
+      return;
+    }
+    const root = document.documentElement;
+    const pin = () => {
+      root.style.setProperty("--wbw-pin-w", `${narrowWRef.current}px`);
+      root.classList.add("wbw-pin");
+    };
+    const unpin = () => root.classList.remove("wbw-pin");
+    const reduce =
+      (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false) ||
+      document.body.classList.contains("motion-off");
+    let cancelled = false;
+    const timers: number[] = [];
+    if (occlEditorOpen) {
+      root.classList.remove("wbw-occl-out");
+      if (!wideRef.current) narrowWRef.current = window.innerWidth;
+      wideRef.current = true;
+      pin();
+      void resizeWindow("wide", !reduce).finally(() => {
+        if (cancelled) return;
+        setOcclPhase("on");
+        timers.push(window.setTimeout(unpin, reduce ? 0 : 260)); // 等编辑器层淡入完成再解钉
+      });
+    } else if (wideRef.current) {
+      const collapse = () => {
+        if (cancelled) return;
+        root.classList.remove("wbw-occl-out");
+        setOcclPhase("off");
+        wideRef.current = false;
+        pin();
+        void resizeWindow("restore", !reduce).finally(() => {
+          if (!cancelled) unpin();
+        });
+      };
+      if (reduce) {
+        collapse();
+      } else {
+        root.classList.add("wbw-occl-out");
+        setOcclPhase("leaving");
+        timers.push(window.setTimeout(collapse, 170));
+      }
+    } else {
+      setOcclPhase("off");
+    }
+    return () => {
+      cancelled = true;
+      timers.forEach((t) => window.clearTimeout(t));
+    };
+  }, [placementOverride, occlEditorOpen]);
+  const occlShown = placementOverride !== "window"
+    ? sel.occlEditor
+    : occlPhase === "off" ? null : occlLast.current;
   // v48.101（D146）：「带入 AI 回答」生成链——无既有回答且正面非空时，按制卡规则直答并流式写入
   // 背面字段（sel.generateManualAnswer 并发门与失败 toast 在 hook；落点＝ManualFormHandle.setBackValue）
   const generateAnswerIntoBack = (question: string) => {
@@ -553,10 +537,10 @@ export default function SelectionPanels({
       )}
 
       {/* D123 修订 3：制卡台「图片挖空 → 截图」产生的编辑器（阅读器自己的点击图片入口仍由 Reader 渲染） */}
-      {sel.occlEditor?.workbench && (
+      {occlShown?.workbench && (
         <OcclusionEditor
-          image={sel.occlEditor.image}
-          origin={sel.occlEditor.origin}
+          image={occlShown.image}
+          origin={occlShown.origin}
           onAISuggest={sel.runOcclusionSuggest}
           onClose={sel.closeOcclusionEditor}
           onSubmit={sel.submitOcclusionEditor}
@@ -600,9 +584,7 @@ export default function SelectionPanels({
                 onPickAnswer={latestAnswer}
                 onGenerateAnswer={generateAnswerIntoBack}
                 answerGenerating={sel.manualAnswerBusy}
-                onFrontChange={onManualFrontChange}
-                ghost={ghostTarget === "manual" ? <GhostLayer text={ghostText} /> : null}
-                onGhostAccept={acceptGhost}
+                onFrontChange={setManualFront}
               />
             }
             aicards={
@@ -617,9 +599,7 @@ export default function SelectionPanels({
                     <FreeSource
                       prefer="cards"
                       text={freeText}
-                      onTextChange={onFreeTextChange}
-                      ghostText={ghostTarget === "aicards" ? ghostText : undefined}
-                      onGhostAccept={acceptGhost}
+                      onTextChange={setFreeText}
                       onExplain={explainOf}
                       onCards={cardsOf}
                     />

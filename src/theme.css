@@ -4547,28 +4547,6 @@ html[data-wb-open="1"][data-wb-place="bottom"] .app-main { margin-bottom: var(--
   cursor: pointer;
 }
 .image-focus-close:hover { background: color-mix(in srgb, var(--overlay-text) 14%, transparent); }
-.occlusion-editor-layer .image-focus-close {
-  background: var(--surface-overlay);
-  border-color: var(--border-strong);
-  border-radius: var(--radius-popover);
-  color: var(--text-primary);
-}
-.occlusion-editor-layer .image-focus-close:hover { background: var(--grey-1); }
-.occlusion-editor-toolbar .occl-close-inline {
-  position: static;
-  width: 28px;
-  height: 28px;
-  margin-left: var(--sp-1);
-  flex: none;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--text-secondary);
-}
-.occlusion-editor-toolbar .occl-close-inline:hover {
-  background: var(--grey-1);
-  color: var(--text-primary);
-}
 .occlusion-editor-stage .image-focus-caption { color: var(--text-helper); cursor: default; }
 /* 顶部居中悬浮工具条（用户钦定位置）：选区工具 + 类型提示 + 提交动作 */
 .image-focus-toolbar {
@@ -8950,6 +8928,16 @@ button.crumb-root:hover { color: var(--text-primary); text-decoration: underline
 /* ---------- 独立制卡台窗口（D123）：无框窗口自带 40px 标题条（可拖拽），其下制卡台占满 ---------- */
 .workbench-body { margin: 0; overflow: hidden; }
 .wbw { display: flex; flex-direction: column; height: 100vh; background: var(--paper); color: var(--text-primary); }
+/* D261：窗口宽度动画期间内容钉在进入前宽度、右缘对齐——窗口逐帧变宽而内容零重排（主进程 setBounds 每帧
+   只需让 DWM 合成，不再触发整页回流）；落位后解钉。overflow 隐藏避免钉宽 > 窗宽（收窄首帧）出横向滚动条。 */
+html.wbw-pin { overflow: hidden; }
+html.wbw-pin .wbw { width: var(--wbw-pin-w); margin-left: auto; }
+/* 退出图片挖空：编辑器层先淡出（再收窗），不硬切；淡出期间不接收指针 */
+@keyframes wbw-occl-out { from { opacity: 1; } to { opacity: 0; } }
+html.wbw-occl-out .occlusion-editor-layer {
+  animation: wbw-occl-out var(--dur-hover) var(--ease-out-soft) forwards;
+  pointer-events: none;
+}
 .wbw-bar {
   display: flex;
   align-items: center;
@@ -9313,15 +9301,6 @@ button.crumb-root:hover { color: var(--text-primary); text-decoration: underline
   .wb-manual-clip:not(.is-open) > .collapse-inner { transition: visibility 0s var(--dur-panel); }
 }
 .side-dock[data-placement="bottom"] .wb-manual.is-collapsed .wb-manual-clip { display: none; }
-
-/* 图片挖空编辑器：右栏 paper 底上的关闭钮 */
-.occlusion-editor-layer .image-focus-close {
-  color: var(--text-primary);
-  background: var(--paper);
-  border-color: var(--border-strong);
-  z-index: 2;
-}
-.occlusion-editor-layer .image-focus-close:hover { background: var(--grey-1); border-color: var(--text-primary); }
 
 /* 填空 */
 .wb-cloze-input {
@@ -9912,58 +9891,7 @@ button.crumb-root:hover { color: var(--text-primary); text-decoration: underline
   color: var(--accent);
   font-weight: 600;
 }
-/* D144 #4（§3.3/§4.2/§7/§8）：跨页签幽灵草稿层——field 容器 relative 内 absolute 铺满，
-   padding 与输入面一致（.wb-field 输入面＝wb-field-inner 4px 0；.wb-free textarea＝4px 0 5px）；
-   §7 状态矩阵：无线无底纯文字层（hover 不变底、零抬升）；
-   v48.101（D146 修订）：整层 pointer-events:none 纯指示——点击穿透到输入面，接受唯一路径＝
-   Alt+Enter（点击接受退役：用户实测「一点就自动填入」违背预期）；随点击退役，:hover chip 变色规则一并删除。
-   文本 13px（--fs-secondary）--text-placeholder、最多 3 行超出 …；尾部 chip「Alt+Enter 填入」
-   （mono + 1px --border-subtle 下缘线；规格 11px 无 token 档，取最近 --fs-meta 12px）。
-   出现＝挂载后 rAF 翻 .is-in 触发 opacity 0→1（token 时长，transition 在下方 no-preference
-   作用域）；消失瞬时＝条件脱落直接卸载（§8，无出场动画）。 */
-.wb-ghost {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: flex-end;
-  gap: var(--sp-2);
-  padding: 4px 0;
-  pointer-events: none;
-  overflow: hidden;
-  font-size: var(--fs-secondary);
-  color: var(--text-placeholder);
-  text-align: left;
-  opacity: 0;
-}
-.wb-free-input .wb-ghost { padding: 4px 0 5px; }
-.wb-ghost.is-in { opacity: 1; }
-.wb-ghost-text {
-  flex: 1;
-  min-width: 0;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 20px; /* 与 .wb-free textarea 行高一致（幽灵文字对齐真实输入位） */
-}
-.wb-ghost-chip {
-  flex: none;
-  font-size: var(--fs-meta);
-  line-height: 20px;
-  color: var(--text-placeholder);
-  border-bottom: var(--bw-hairline) solid var(--border-subtle);
-  white-space: nowrap;
-}
-/* v48.101（D146）：幽灵在场时隐藏输入面占位说明——幽灵文字与占位文字同位叠加发虚（用户实测；
-   「粘贴或输入要处理的文字」/「正面（问题）」等均为占位，幽灵即代表框将为该内容，占位失去信息量）。
-   幽灵退场（接受/输入/清空）后占位自然恢复。 */
-.wb-free-input:has(.wb-ghost) textarea::placeholder,
-.wb-field:has(.wb-ghost) textarea::placeholder { color: transparent; }
-.wb-field:has(.wb-ghost) .markdown-editor .ProseMirror[data-placeholder] p:first-child:last-child:has(> br:only-child)::before { content: none; }
-/* 幽灵挂点：free 侧新增 relative 包裹层（textarea 与幽灵同几何）；手动侧 .wb-field 本就 relative */
-.wb-free-input { position: relative; }
+/* v49.95（D261）：D144 #4 跨页签幽灵草稿层退役——.wb-ghost / 占位隐藏 / relative 挂点规则一并删除。 */
 @media (prefers-reduced-motion: no-preference) {
   .wb-explain-toggle {
     transition: background-color var(--dur-hover) var(--ease-out-soft),
@@ -9974,8 +9902,6 @@ button.crumb-root:hover { color: var(--text-primary); text-decoration: underline
      v48.104：hover 改字色（分段控件无底色 hover），选中块背景色同速过渡 */
   .wb-mode-btn { transition: color var(--dur-view) var(--ease-out-soft), background-color var(--dur-view) var(--ease-out-soft); }
   .wb-mode-btn:hover { transition: color var(--dur-hover) var(--ease-enter), background-color var(--dur-hover) var(--ease-enter); }
-  /* D144 #4 §8：幽灵草稿淡入（挂载后 rAF 翻 .is-in 触发；reduce 块不挂 transition＝瞬时显形） */
-  .wb-ghost.is-in { transition: opacity var(--dur-enter) var(--ease-enter); }
   /* 折叠 opacity 层（MOTION §7 / 方案 §8）：展开＝内容延迟 50ms 淡入（Follow Through；
      50ms＝--dur-enter/3，token 派生不裸写）；收起＝内容 opacity 先走（--dur-exit 不延迟）、
      容器 grid（--dur-panel）后收；visibility 翻转时点与 .wb-manual-clip 同构（开即时显/收延迟藏）。 */
