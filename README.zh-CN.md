@@ -182,14 +182,3 @@ npm run dist       # 打包生产安装包
 - 特别致谢 **[Jarrett Ye (L-M-Sherlock)](https://github.com/L-M-Sherlock)** 与 **[Open Spaced Repetition](https://github.com/open-spaced-repetition)** —— 感谢作者与团队开发并开源了卓越的 FSRS 算法调度器（ts-fsrs）与优化器（fsrs-rs）。
 
 - 感谢 [foliate-js](https://github.com/johnfactotum/foliate-js)、[SuperMemo](https://www.supermemo.com/)，以及 Electron、React、better-sqlite3、KaTeX 等优秀开源基石。
-
----
-
-<details>
-<summary>演示书库与视频说明</summary>
-
-演示视频与截图使用的演示书库来自公有领域经典文本：中文界面使用约翰·斯图尔特·密尔《论自由》第二章，日文界面使用约翰·斯图尔特·密尔《自由论》第二章，英文界面使用查尔斯·达尔文《物种起源》第三章。文字本身未改写。图片挖空演示使用的麻婆豆腐菜谱图解为精制演示素材。
-
-演示视频中的随文结构交接、全景导图导航、跨应用截图与图片遮挡制卡及复习闭环（经典麻婆豆腐菜谱配方）、FSRS 3D 翻面评分闭环（严格遵守最小信息原则 R2）、ASD-STE100 简明解释流式输出均在 Nutation 真实软件界面上录制（60fps 高清），流式链路与输出格式严格对齐产品真实流程。
-
-</details>
