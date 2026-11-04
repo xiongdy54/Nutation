@@ -68,7 +68,46 @@ Cognitive science proves that without a high-level cognitive schema, working mem
 
 Rooted in David Ausubel’s *Advance Organizer Theory* and cognitive schema research, empirical studies demonstrate that **establishing macroscopic structure prior to details significantly improves comprehension depth and recall**:
 - **Inline Structure**: Anchored dynamically beside the paragraph you are reading, displaying exact hierarchical context with one-click drill-downs;
-- **Panoramic Canvas**: A global canvas mapping claims, rationale, timelines, and contrasts across the entire material, allowing learners to inspect overarching conceptual relationships while maintaining instant focus on their current reading point.
+- **Panoramic Canvas (Structure Atlas)**: A global canvas mapping claims, rationale, timelines, and contrasts across the entire material, allowing learners to inspect overarching conceptual relationships while maintaining instant focus on their current reading point.
+
+#### Structure Atlas: 7 Specialized Cognitive Layouts
+
+To faithfully reflect the internal logic of diverse knowledge domains, Nutation's Structure Atlas provides 7 specialized cognitive layouts powered by Swiss typographic geometry. Whether analyzing taxonomies, historical progressions, algorithmic pipelines, or academic debates, each concept is mapped clearly:
+
+1. **Tree Layout (Horizontal Fan Tree · Tree)**: Hierarchical decomposition with smooth Bézier branches, ideal for taxonomy trees and multi-level outlines.
+<div align="center">
+<img src="docs/assets/readme/atlas-tree.png" alt="Structure Atlas · Outline Fan Tree" width="100%" />
+</div>
+
+2. **Grid Layout (Matrix Tiles · Grid)**: Modular matrix tiles arranged in balanced parallel columns, ideal for peer concepts, cognitive subsystems, and categorical inventories.
+<div align="center">
+<img src="docs/assets/readme/atlas-grid.png" alt="Structure Atlas · Grid Matrix Tiles" width="100%" />
+</div>
+
+3. **Argument Layout (Argumentation Map · Argument)**: Primary thesis anchored at top, with supporting reasons and empirical evidence converging upward, complemented by a dedicated counter-claim zone and rebuttal arcs on the right.
+<div align="center">
+<img src="docs/assets/readme/atlas-argument.png" alt="Structure Atlas · Argumentation Map" width="100%" />
+</div>
+
+4. **Timeline Layout (Proportional Chronological Timeline · Timeline)**: Horizontally scaled along historical time with scale rulers, alternating dual lanes, and fault compression for long eras, ideal for intellectual histories and technological evolutions.
+<div align="center">
+<img src="docs/assets/readme/atlas-timeline.png" alt="Structure Atlas · Proportional Chronological Timeline" width="100%" />
+</div>
+
+5. **Chain Layout (Step-by-Step Chain · Chain)**: Sequentially numbered circular badges (1–7) with directional flow arrows and serpentine switchbacks, strictly modeling step-by-step procedures and cognitive feedback loops.
+<div align="center">
+<img src="docs/assets/readme/atlas-chain.png" alt="Structure Atlas · Step-by-Step Chain" width="100%" />
+</div>
+
+6. **Layered Layout (Causal DAG · Layered)**: Left-to-right cascading directed acyclic graph mapping causal transmission, systemic overload, and multi-factor deduction chains.
+<div align="center">
+<img src="docs/assets/readme/atlas-layered.png" alt="Structure Atlas · Causal DAG" width="100%" />
+</div>
+
+7. **Compare Layout (Multi-Dimensional Matrix Table · Compare)**: Distinct colored header strips per entity, left-hand dimension labels, and alternating zebra-striped comparison rows for multi-model evaluation.
+<div align="center">
+<img src="docs/assets/readme/atlas-compare.png" alt="Structure Atlas · Multi-Dimensional Matrix Table" width="100%" />
+</div>
 
 ### 2. Excerpting: Incremental Processing & De-escalation
 Inspired by Piotr Woźniak’s pioneering *Incremental Reading* philosophy: **A reader cannot digest every complex concept on first pass. Stalling on difficult obstacles destroys reading flow**:

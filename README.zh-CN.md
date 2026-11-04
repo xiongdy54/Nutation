@@ -71,6 +71,45 @@ flowchart LR
 - **随文结构**：阅读过程中如影随形贴在段落侧方，展示当前文字在整节论述中的层级位置，支持一键定位与深挖；
 - **结构全景**：整篇材料的全局认知画布。将全书论点、证据、时间线与对比关系全局铺开，使学习者既能俯瞰宏观脉络，又能随时聚焦当前论述。
 
+#### 结构全景：专为认知理解打造的七种结构版式
+
+为了精确表征不同人类知识材料的内在逻辑结构，Nutation 的结构全景原生支持 7 种专业认知排版版式（瑞士国际主义平面排版系统驱动），无论材料是层级分类、历史演进、工程步骤还是学术论辩，均可一览无余：
+
+1. **大纲版式（横向扇形树 · Tree）**：树状层级展开，平滑贝塞尔曲线汇聚，适合总揽多级目录体系与分层知识骨架。
+<div align="center">
+<img src="docs/assets/readme/atlas-tree.png" alt="结构全景 · 大纲版式（扇形树）" width="100%" />
+</div>
+
+2. **并列版式（网格瓷砖 · Grid）**：模块化矩阵瓷砖，多列平行排列与顶部强调色带，适合平级知识点、核心子系统与分类清单。
+<div align="center">
+<img src="docs/assets/readme/atlas-grid.png" alt="结构全景 · 并列版式（网格瓷砖）" width="100%" />
+</div>
+
+3. **论证版式（分层论证图 · Argument）**：核心主张顶置，支撑理由与实证数据自下而上分层汇聚，右侧设有独立反方一侧与反驳弧线，学术论辩与深度思辨一目了然。
+<div align="center">
+<img src="docs/assets/readme/atlas-argument.png" alt="结构全景 · 论证版式（分层论证图）" width="100%" />
+</div>
+
+4. **时间线版式（比例时间轴 · Timeline）**：横向按历史纪年比例拉伸，带年份刻度标尺、上下交错泳道与超长断层压缩，展现历史事件、思想流派与技术演进史。
+<div align="center">
+<img src="docs/assets/readme/atlas-timeline.png" alt="结构全景 · 时间线版式（比例时间轴）" width="100%" />
+</div>
+
+5. **步骤版式（流程链条 · Chain）**：带编号圆形徽章（1–7）与流向箭头，支持双向蛇形折返，精确呈现严格工程工序、算法流水线与思维闭环机制。
+<div align="center">
+<img src="docs/assets/readme/atlas-chain.png" alt="结构全景 · 步骤版式（流程链条）" width="100%" />
+</div>
+
+6. **因果版式（分层有向图 · Causal DAG）**：自左向右瀑布流因果有向无环图，展示机制传导、过载传导与推导网络，复杂机理层层递进。
+<div align="center">
+<img src="docs/assets/readme/atlas-layered.png" alt="结构全景 · 因果版式（分层有向图）" width="100%" />
+</div>
+
+7. **对照版式（多维对照表 · Compare）**：对象实体色带栏头、左侧维度标签与交替斑马纹对照行，多概念、多模型横向维度比对清晰锐利。
+<div align="center">
+<img src="docs/assets/readme/atlas-compare.png" alt="结构全景 · 对照版式（多维对照表）" width="100%" />
+</div>
+
 ### 2. 摘录卡片：渐进阅读与难点解耦
 
 借鉴 SuperMemo 创始人 Piotr Woźniak 的“渐进阅读”（Incremental Reading）哲学：**一次通读几乎不可能完全掌握所有深奥概念；遇到暂时无法消化的难点，死磕只会挫伤心流**。
