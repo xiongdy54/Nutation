@@ -233,7 +233,7 @@ export interface MaterialRoute {
 export const MATERIAL_ROUTES: Record<MaterialType, MaterialRoute> = {
   concept: { materialType: "concept", scope: "card-generation", label: "概念论述", defaultForm: "问答" },
   formula: { materialType: "formula", scope: "card-formula", label: "公式推导", defaultForm: "问答" },
-  sequence: { materialType: "sequence", scope: "card-seq", label: "流程背诵", defaultForm: "问答" },
+  sequence: { materialType: "sequence", scope: "card-seq", label: "流程背诵", defaultForm: "顺序续写" },
   enumeration: { materialType: "enumeration", scope: "card-enum", label: "枚举清单", defaultForm: "挖空" },
   image: { materialType: "image", scope: "card-occlusion", label: "图片材料", defaultForm: "图片挖空" },
   literature: { materialType: "literature", scope: "card-literature", label: "文学/诗歌背诵", defaultForm: "问答" },

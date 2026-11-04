@@ -445,11 +445,11 @@ export default function ReviewView({
       try {
         const saved = sessionStorage.getItem("reviewSession");
         if (saved) {
-          sessionStorage.removeItem("reviewSession");
           const parsed = JSON.parse(saved) as { cardId?: string; showBack?: boolean };
           if (parsed.cardId) {
             const got = await cardsApi.get(parsed.cardId);
             if (got) {
+              sessionStorage.removeItem("reviewSession");
               resumeCard = got;
               resumeShowBack = Boolean(parsed.showBack);
             }

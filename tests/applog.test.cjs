@@ -201,9 +201,11 @@ console.log("== 11) 启动期未捕获异常：落日志 + exit(1)，不留僵�
     console.log("  - 跳过：node_modules/electron/dist 可执行不存在（本节需真实 electron），不计失败");
   } else {
     const userData = dirOf("s11-userdata");
-    const proc = require("child_process").spawn(exe, ["."], {
+    const subEnv = { ...process.env, M7_TEST_USERDATA: userData, M7_APPLOG_STARTUP_CRASH: "simulated-load-failure" };
+    delete subEnv.ELECTRON_RUN_AS_NODE;
+    const proc = require("child_process").spawn(exe, ["--no-sandbox", "."], {
       cwd: path.resolve(__dirname, ".."),
-      env: { ...process.env, M7_TEST_USERDATA: userData, M7_APPLOG_STARTUP_CRASH: "simulated-load-failure" },
+      env: subEnv,
       stdio: "ignore"
     });
     const r = await new Promise((resolve) => {
