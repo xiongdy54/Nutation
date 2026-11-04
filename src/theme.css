@@ -813,6 +813,19 @@ html[data-wb-open="1"][data-wb-place="right"] .topbar { --tb-split: var(--wb-w);
 @media (prefers-reduced-motion: no-preference) {
   html[data-wb-anim] .topbar { transition: grid-template-columns var(--dur-panel) var(--ease); }
 }
+/* D264（v49.98）：全屏浮层必须整层退出窗口拖拽区——无边框窗口的 -webkit-app-region: drag
+   是窗口级几何命中，忽略 z-index / 堆叠顺序，顶栏拖拽带（主窗口 .topbar 48px；独立制卡台
+   .wbw-bar 40px）会穿过覆盖其上的浮层，把浮层顶部控件的点击吞成窗口拖拽。典型症状：截图
+   进入图片挖空后，工具条按钮落在拖拽带里的上半截完全点不动，只有露出带外的一小截能点
+   （2026-11-04 用户实测）。全屏模态 / 聚焦 / 原图浮层在场时本就不需要拖窗，整层声明
+   no-drag；浮层卸载即自动恢复。 */
+.modal-backdrop,
+.image-focus-layer,
+.image-lightbox-backdrop,
+.occlusion-editor-layer {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
 
 .brand { display: flex; align-items: center; gap: var(--sp-3); }
 .brand-mark {

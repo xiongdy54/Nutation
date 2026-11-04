@@ -337,13 +337,15 @@ try {
       layerCursor: getComputedStyle(document.querySelector('.occlusion-editor-layer')).cursor,
       stageCursor: getComputedStyle(document.querySelector('.occlusion-editor-stage')).cursor,
       imageCursor: getComputedStyle(document.querySelector('.occlusion-editor-imgbox')).cursor,
-      layerBg: getComputedStyle(document.querySelector('.occlusion-editor-layer')).backgroundColor
+      layerBg: getComputedStyle(document.querySelector('.occlusion-editor-layer')).backgroundColor,
+      layerDrag: getComputedStyle(document.querySelector('.occlusion-editor-layer')).getPropertyValue('-webkit-app-region').trim()
     };
   })())`);
   const layoutObj = JSON.parse(layout || "{}");
   check("A2 图片按主区真实可用宽放大且右栏保留", layoutObj.boxW >= layoutObj.mainW * 0.94 && layoutObj.railW === 300, layout);
   check("A3 挖空工具栏接共享表现 + 图片外关闭光标（工具条内已无关闭钮）", layoutObj.toolbarShared === true && layoutObj.closeInToolbar === false && layoutObj.contentClose === 0 && layoutObj.token.includes("url(") && layoutObj.stageCursor.includes("url(") && !layoutObj.imageCursor.includes("url("), layout);
   check("A4 挖空聚焦层为不透明纸面", /^rgb\(/.test(String(layoutObj.layerBg || "")), layout);
+  check("A5 挖空聚焦层整层退出窗口拖拽区（顶栏拖拽带不得吞掉工具条点击）", layoutObj.layerDrag === "no-drag", layout);
 
   // B. 三形状连续框选：矩形 / 椭圆（圆心拖） / 多边形（点回起点闭合）
   await cdp.eval(dragOn(0.2, 0.3, 0.65, 0.75));
