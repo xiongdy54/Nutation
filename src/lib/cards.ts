@@ -316,6 +316,69 @@ export function detectMaterialType(text: string): MaterialRoute {
   return MATERIAL_ROUTES[byMode[mode] ?? "concept"];
 }
 
+// ---------- AI 材料类型路由（auto 模式；本地正则仅作兜底） ----------
+// 本地正则只认少数关键词，真实材料几乎都落到 concept——auto 改由 AI 判型：
+// 词汇/诗词两类本地信号精确，直接采纳不发请求；其余走一次极短的分类调用（只回一个英文键，
+// temperature 0），失败/超时/回包不可解析一律回落本地 detectMaterialType，绝不阻断制卡。
+const AI_ROUTE_KEYS = ["concept", "formula", "sequence", "enumeration", "literature", "vocab"] as const;
+
+export function parseRouteReply(raw: string): MaterialType | null {
+  const m = String(raw ?? "").toLowerCase().match(/\b(concept|formula|sequence|enumeration|literature|vocab)\b/);
+  return m ? (m[1] as MaterialType) : null;
+}
+
+const ROUTE_SYSTEM_PROMPT = [
+  "你是学习软件的材料分类器。把用户给出的【材料】归入下列唯一一类，只输出该类的英文键，不要任何其他文字：",
+  "- concept：概念、定义、原理、论述、因果、观点、事实陈述等需要理解的内容（拿不准时选它）；",
+  "- formula：以公式、定理、方程、推导、计算步骤为核心，含数学/物理/化学符号表达式；",
+  "- sequence：有先后次序的流程、步骤、时间线、阶段，次序本身是需要记忆的重点；",
+  "- enumeration：并列的清单、分类、要点列表（如「有哪几类/包括…」），需要逐项记全；",
+  "- literature：诗、词、曲、文言或需要逐字背诵的文学原文；",
+  "- vocab：外语单词、短语、词条释义。",
+  "判断依据是材料的内容形态与学习目标，而不是个别关键词。"
+].join("\n");
+
+export async function routeMaterialType(
+  text: string,
+  onCancelRegister?: (cancel: () => void) => void,
+  timeoutMs = 8000
+): Promise<{ route: MaterialRoute; by: "local" | "ai" | "fallback" }> {
+  const local = detectMaterialType(text);
+  if (local.materialType === "vocab" || local.materialType === "literature") return { route: local, by: "local" };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    let cancel: (() => void) | null = null;
+    const sample = text.length > 1500 ? `${text.slice(0, 1200)}\n……\n${text.slice(-300)}` : text;
+    const ask = aiGateway.chat(
+      [
+        { role: "system", content: ROUTE_SYSTEM_PROMPT },
+        { role: "user", content: `【材料】\n${sample}` }
+      ],
+      undefined,
+      0,
+      undefined,
+      (c) => {
+        cancel = c;
+        onCancelRegister?.(c);
+      },
+      "card_gen"
+    );
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        cancel?.();
+        reject(new Error("route timeout"));
+      }, timeoutMs);
+    });
+    const key = parseRouteReply(await Promise.race([ask, timeout]));
+    if (key && (AI_ROUTE_KEYS as readonly string[]).includes(key)) return { route: MATERIAL_ROUTES[key], by: "ai" };
+    return { route: local, by: "fallback" };
+  } catch {
+    return { route: local, by: "fallback" };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // ---------- 「后续可补」注记解析（v16 递进补卡交互） ----------
 // v4 候选（G8 首轮克制多轮递进）要求模型把「该知识点后续还值得补哪些卡」写进
 // knowledgePoints[].summary 的括号注记，形如：

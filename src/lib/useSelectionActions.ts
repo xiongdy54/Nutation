@@ -17,8 +17,10 @@ import {
   siblingKeyFor,
   requestOcclusionResult,
   MATERIAL_ROUTES,
+  routeMaterialType,
   type CardDraft,
   type CardGenMode,
+  type MaterialRoute,
   type OcclusionRegion
 } from "./cards";
 import { VOCAB_KIND_LABEL, buildVocabDrafts, isVocabSelection, type DictionaryEntry, type ReadingContext, type VocabKind } from "./dict";
@@ -725,10 +727,11 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
   // opts.mindmapNodeId = 来源导图节点（卡片 context_ref 溯源 + act:mindmap-<nodeId> 同源兄弟键）。
   // 提示词与规则完全沿用既有管线（材料类型路由/确认面板/CardLint/S1/KP 归一），不另起炉灶。
   async function runAICards(text: string, webContext?: string, mode: CardGenMode = "auto", opts?: { focus?: string; mindmapNodeId?: string }) {
-    // 本地材料类型识别：auto 时按文本路由到对应提示词分支（概念/公式/序列/枚举），类型可手动覆盖
-    const route = detectMaterialType(text);
-    const resolved: CardGenMode = mode === "auto" ? route.scope : mode;
-    const shownRoute = mode === "auto" ? route : MATERIAL_ROUTES[resolved === "card-formula" ? "formula" : resolved === "card-seq" ? "sequence" : resolved === "card-enum" ? "enumeration" : resolved === "card-literature" ? "literature" : "concept"];
+    // 材料类型识别：auto 时由 AI 判型（词汇/诗词本地信号精确则直采；失败回落本地规则），类型可手动覆盖
+    let resolved: CardGenMode = mode;
+    let shownRoute: MaterialRoute = mode === "auto"
+      ? detectMaterialType(text)
+      : MATERIAL_ROUTES[resolved === "card-formula" ? "formula" : resolved === "card-seq" ? "sequence" : resolved === "card-enum" ? "enumeration" : resolved === "card-literature" ? "literature" : "concept"];
     // v48.74（D118 §3③）：新一轮开始——取消旧流；此后仅本轮 seq 的回调可写面板
     const seq = beginAIRun();
     setAiPanel({
@@ -740,11 +743,22 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
       thinking: 0,
       searched: Boolean(webContext),
       mode,
-      routeLabel: shownRoute.label,
-      routeForm: shownRoute.defaultForm,
+      // auto 判型进行中不展示本地猜测（常与最终结果不同），判定后再写入
+      routeLabel: mode === "auto" ? undefined : shownRoute.label,
+      routeForm: mode === "auto" ? undefined : shownRoute.defaultForm,
       mindmapNodeId: opts?.mindmapNodeId
     });
     try {
+      if (mode === "auto") {
+        let routeAborted = false;
+        const reg = registerAICancel(seq);
+        const routed = await routeMaterialType(text, (cancel) => reg(() => { routeAborted = true; cancel(); }));
+        if (seq !== aiRunSeq.current) return;
+        if (routeAborted) throw new Error(T("已取消"));
+        shownRoute = routed.route;
+        resolved = routed.route.scope;
+        setAiPanel((p) => (p && p.kind === "cards" ? { ...p, routeLabel: shownRoute.label, routeForm: shownRoute.defaultForm } : p));
+      }
       // D121 §2：语境包——作者/章节路径/前后文/相关已有卡（相关卡纯本地检索，失败静默）
       const cap = aiCtxRef.current && aiCtxRef.current.text === text ? aiCtxRef.current : null;
       const sectionPath = cap?.sectionPath ?? A().sectionPath?.() ?? [];

@@ -519,9 +519,9 @@ var require_react_development = __commonJS({
         {
           Object.freeze(emptyObject);
         }
-        function Component(props, context, updater) {
+        function Component(props, context2, updater) {
           this.props = props;
-          this.context = context;
+          this.context = context2;
           this.refs = emptyObject;
           this.updater = updater || ReactNoopUpdateQueue;
         }
@@ -557,9 +557,9 @@ var require_react_development = __commonJS({
         function ComponentDummy() {
         }
         ComponentDummy.prototype = Component.prototype;
-        function PureComponent(props, context, updater) {
+        function PureComponent(props, context2, updater) {
           this.props = props;
-          this.context = context;
+          this.context = context2;
           this.refs = emptyObject;
           this.updater = updater || ReactNoopUpdateQueue;
         }
@@ -651,8 +651,8 @@ var require_react_development = __commonJS({
           if (typeof type === "object") {
             switch (type.$$typeof) {
               case REACT_CONTEXT_TYPE:
-                var context = type;
-                return getContextName(context) + ".Consumer";
+                var context2 = type;
+                return getContextName(context2) + ".Consumer";
               case REACT_PROVIDER_TYPE:
                 var provider = type;
                 return getContextName(provider._context) + ".Provider";
@@ -689,27 +689,27 @@ var require_react_development = __commonJS({
         {
           didWarnAboutStringRefs = {};
         }
-        function hasValidRef(config) {
+        function hasValidRef(config2) {
           {
-            if (hasOwnProperty.call(config, "ref")) {
-              var getter = Object.getOwnPropertyDescriptor(config, "ref").get;
+            if (hasOwnProperty.call(config2, "ref")) {
+              var getter = Object.getOwnPropertyDescriptor(config2, "ref").get;
               if (getter && getter.isReactWarning) {
                 return false;
               }
             }
           }
-          return config.ref !== void 0;
+          return config2.ref !== void 0;
         }
-        function hasValidKey(config) {
+        function hasValidKey(config2) {
           {
-            if (hasOwnProperty.call(config, "key")) {
-              var getter = Object.getOwnPropertyDescriptor(config, "key").get;
+            if (hasOwnProperty.call(config2, "key")) {
+              var getter = Object.getOwnPropertyDescriptor(config2, "key").get;
               if (getter && getter.isReactWarning) {
                 return false;
               }
             }
           }
-          return config.key !== void 0;
+          return config2.key !== void 0;
         }
         function defineKeyPropWarningGetter(props, displayName) {
           var warnAboutAccessingKey = function() {
@@ -741,12 +741,12 @@ var require_react_development = __commonJS({
             configurable: true
           });
         }
-        function warnIfStringRefCannotBeAutoConverted(config) {
+        function warnIfStringRefCannotBeAutoConverted(config2) {
           {
-            if (typeof config.ref === "string" && ReactCurrentOwner.current && config.__self && ReactCurrentOwner.current.stateNode !== config.__self) {
+            if (typeof config2.ref === "string" && ReactCurrentOwner.current && config2.__self && ReactCurrentOwner.current.stateNode !== config2.__self) {
               var componentName = getComponentNameFromType(ReactCurrentOwner.current.type);
               if (!didWarnAboutStringRefs[componentName]) {
-                error('Component "%s" contains the string ref "%s". Support for string refs will be removed in a future major release. This case cannot be automatically converted to an arrow function. We ask you to manually fix this case by using useRef() or createRef() instead. Learn more about using refs safely here: https://reactjs.org/link/strict-mode-string-ref', componentName, config.ref);
+                error('Component "%s" contains the string ref "%s". Support for string refs will be removed in a future major release. This case cannot be automatically converted to an arrow function. We ask you to manually fix this case by using useRef() or createRef() instead. Learn more about using refs safely here: https://reactjs.org/link/strict-mode-string-ref', componentName, config2.ref);
                 didWarnAboutStringRefs[componentName] = true;
               }
             }
@@ -791,31 +791,31 @@ var require_react_development = __commonJS({
           }
           return element;
         };
-        function createElement(type, config, children) {
+        function createElement(type, config2, children) {
           var propName;
           var props = {};
           var key = null;
           var ref = null;
           var self = null;
           var source = null;
-          if (config != null) {
-            if (hasValidRef(config)) {
-              ref = config.ref;
+          if (config2 != null) {
+            if (hasValidRef(config2)) {
+              ref = config2.ref;
               {
-                warnIfStringRefCannotBeAutoConverted(config);
+                warnIfStringRefCannotBeAutoConverted(config2);
               }
             }
-            if (hasValidKey(config)) {
+            if (hasValidKey(config2)) {
               {
-                checkKeyStringCoercion(config.key);
+                checkKeyStringCoercion(config2.key);
               }
-              key = "" + config.key;
+              key = "" + config2.key;
             }
-            self = config.__self === void 0 ? null : config.__self;
-            source = config.__source === void 0 ? null : config.__source;
-            for (propName in config) {
-              if (hasOwnProperty.call(config, propName) && !RESERVED_PROPS.hasOwnProperty(propName)) {
-                props[propName] = config[propName];
+            self = config2.__self === void 0 ? null : config2.__self;
+            source = config2.__source === void 0 ? null : config2.__source;
+            for (propName in config2) {
+              if (hasOwnProperty.call(config2, propName) && !RESERVED_PROPS.hasOwnProperty(propName)) {
+                props[propName] = config2[propName];
               }
             }
           }
@@ -859,7 +859,7 @@ var require_react_development = __commonJS({
           var newElement = ReactElement(oldElement.type, newKey, oldElement.ref, oldElement._self, oldElement._source, oldElement._owner, oldElement.props);
           return newElement;
         }
-        function cloneElement(element, config, children) {
+        function cloneElement(element, config2, children) {
           if (element === null || element === void 0) {
             throw new Error("React.cloneElement(...): The argument must be a React element, but you passed " + element + ".");
           }
@@ -870,27 +870,27 @@ var require_react_development = __commonJS({
           var self = element._self;
           var source = element._source;
           var owner = element._owner;
-          if (config != null) {
-            if (hasValidRef(config)) {
-              ref = config.ref;
+          if (config2 != null) {
+            if (hasValidRef(config2)) {
+              ref = config2.ref;
               owner = ReactCurrentOwner.current;
             }
-            if (hasValidKey(config)) {
+            if (hasValidKey(config2)) {
               {
-                checkKeyStringCoercion(config.key);
+                checkKeyStringCoercion(config2.key);
               }
-              key = "" + config.key;
+              key = "" + config2.key;
             }
             var defaultProps;
             if (element.type && element.type.defaultProps) {
               defaultProps = element.type.defaultProps;
             }
-            for (propName in config) {
-              if (hasOwnProperty.call(config, propName) && !RESERVED_PROPS.hasOwnProperty(propName)) {
-                if (config[propName] === void 0 && defaultProps !== void 0) {
+            for (propName in config2) {
+              if (hasOwnProperty.call(config2, propName) && !RESERVED_PROPS.hasOwnProperty(propName)) {
+                if (config2[propName] === void 0 && defaultProps !== void 0) {
                   props[propName] = defaultProps[propName];
                 } else {
-                  props[propName] = config[propName];
+                  props[propName] = config2[propName];
                 }
               }
             }
@@ -1031,14 +1031,14 @@ var require_react_development = __commonJS({
           }
           return subtreeCount;
         }
-        function mapChildren(children, func, context) {
+        function mapChildren(children, func, context2) {
           if (children == null) {
             return children;
           }
           var result = [];
           var count = 0;
           mapIntoArray(children, result, "", "", function(child) {
-            return func.call(context, child, count++);
+            return func.call(context2, child, count++);
           });
           return result;
         }
@@ -1066,7 +1066,7 @@ var require_react_development = __commonJS({
           return children;
         }
         function createContext(defaultValue) {
-          var context = {
+          var context2 = {
             $$typeof: REACT_CONTEXT_TYPE,
             // As a workaround to support multiple concurrent renderers, we categorize
             // some renderers as primary and others as secondary. We only expect
@@ -1085,9 +1085,9 @@ var require_react_development = __commonJS({
             _defaultValue: null,
             _globalName: null
           };
-          context.Provider = {
+          context2.Provider = {
             $$typeof: REACT_PROVIDER_TYPE,
-            _context: context
+            _context: context2
           };
           var hasWarnedAboutUsingNestedContextConsumers = false;
           var hasWarnedAboutUsingConsumerProvider = false;
@@ -1095,7 +1095,7 @@ var require_react_development = __commonJS({
           {
             var Consumer = {
               $$typeof: REACT_CONTEXT_TYPE,
-              _context: context
+              _context: context2
             };
             Object.defineProperties(Consumer, {
               Provider: {
@@ -1104,34 +1104,34 @@ var require_react_development = __commonJS({
                     hasWarnedAboutUsingConsumerProvider = true;
                     error("Rendering <Context.Consumer.Provider> is not supported and will be removed in a future major release. Did you mean to render <Context.Provider> instead?");
                   }
-                  return context.Provider;
+                  return context2.Provider;
                 },
                 set: function(_Provider) {
-                  context.Provider = _Provider;
+                  context2.Provider = _Provider;
                 }
               },
               _currentValue: {
                 get: function() {
-                  return context._currentValue;
+                  return context2._currentValue;
                 },
                 set: function(_currentValue) {
-                  context._currentValue = _currentValue;
+                  context2._currentValue = _currentValue;
                 }
               },
               _currentValue2: {
                 get: function() {
-                  return context._currentValue2;
+                  return context2._currentValue2;
                 },
                 set: function(_currentValue2) {
-                  context._currentValue2 = _currentValue2;
+                  context2._currentValue2 = _currentValue2;
                 }
               },
               _threadCount: {
                 get: function() {
-                  return context._threadCount;
+                  return context2._threadCount;
                 },
                 set: function(_threadCount) {
-                  context._threadCount = _threadCount;
+                  context2._threadCount = _threadCount;
                 }
               },
               Consumer: {
@@ -1140,12 +1140,12 @@ var require_react_development = __commonJS({
                     hasWarnedAboutUsingNestedContextConsumers = true;
                     error("Rendering <Context.Consumer.Consumer> is not supported and will be removed in a future major release. Did you mean to render <Context.Consumer> instead?");
                   }
-                  return context.Consumer;
+                  return context2.Consumer;
                 }
               },
               displayName: {
                 get: function() {
-                  return context.displayName;
+                  return context2.displayName;
                 },
                 set: function(displayName) {
                   if (!hasWarnedAboutDisplayNameOnConsumer) {
@@ -1155,13 +1155,13 @@ var require_react_development = __commonJS({
                 }
               }
             });
-            context.Consumer = Consumer;
+            context2.Consumer = Consumer;
           }
           {
-            context._currentRenderer = null;
-            context._currentRenderer2 = null;
+            context2._currentRenderer = null;
+            context2._currentRenderer2 = null;
           }
-          return context;
+          return context2;
         }
         var Uninitialized = -1;
         var Pending = 0;
@@ -2316,7 +2316,9 @@ __export(cards_exports, {
   normalizeQualifier: () => normalizeQualifier,
   parseCloze: () => parseCloze,
   parseFollowUps: () => parseFollowUps,
+  parseRouteReply: () => parseRouteReply,
   requestOcclusionResult: () => requestOcclusionResult,
+  routeMaterialType: () => routeMaterialType,
   siblingKeyFor: () => siblingKeyFor,
   similaritySearch: () => similaritySearch
 });
@@ -2464,6 +2466,198 @@ function t(key, params) {
   return interpolate(s, params);
 }
 
+// src/lib/behavior/day.ts
+function learningDayIndex(ms, cutoffHour = 0) {
+  const d = new Date(ms);
+  const localWall = ms - d.getTimezoneOffset() * 6e4;
+  return Math.floor((localWall - cutoffHour * 36e5) / 864e5);
+}
+function learningDayStartMs(ms, cutoffHour = 0) {
+  const idx = learningDayIndex(ms, cutoffHour);
+  const base = idx * 864e5 + cutoffHour * 36e5;
+  let guess = base + new Date(ms).getTimezoneOffset() * 6e4;
+  for (let i = 0; i < 4; i++) {
+    const off = new Date(guess).getTimezoneOffset() * 6e4;
+    const next = base + off;
+    if (next === guess) break;
+    guess = next;
+  }
+  if (learningDayIndex(guess, cutoffHour) !== idx) {
+    for (const delta of [36e5, -36e5, 72e5, -72e5, 108e5, -108e5]) {
+      const cand = guess + delta;
+      if (learningDayIndex(cand, cutoffHour) === idx) {
+        guess = cand;
+        break;
+      }
+    }
+  }
+  return guess;
+}
+var pad = (n) => String(n).padStart(2, "0");
+function dayString(ms, cutoffHour = 0) {
+  const d = new Date(learningDayStartMs(ms, cutoffHour));
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function tzOffsetMinutes(ms) {
+  return -new Date(ms).getTimezoneOffset();
+}
+
+// src/lib/behavior/track.ts
+var CAPACITY = 500;
+var MAX_BYTES = 1024 * 1024;
+var FLUSH_MS = 2e3;
+var FLUSH_COUNT = 100;
+var TEXT_MAX = 200;
+var config = {
+  enabled: true,
+  generation: 1,
+  recordQueryText: false,
+  cutoffHour: 4,
+  renderId: newUuid7()
+};
+var context = {};
+var events = [];
+var spans = [];
+var bytes = 0;
+var dropped = 0;
+var timer = null;
+var installed = [];
+function randomBytes(n) {
+  const b = new Uint8Array(n);
+  const c = globalThis.crypto;
+  if (c && typeof c.getRandomValues === "function") c.getRandomValues(b);
+  else for (let i = 0; i < n; i++) b[i] = Math.floor(Math.random() * 256);
+  return b;
+}
+function newUuid7(nowMs = Date.now()) {
+  const b = randomBytes(16);
+  let ts = Math.floor(nowMs);
+  for (let i = 5; i >= 0; i--) {
+    b[i] = ts % 256;
+    ts = Math.floor(ts / 256);
+  }
+  b[6] = b[6] & 15 | 112;
+  b[8] = b[8] & 63 | 128;
+  const hex = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+function bridge() {
+  return globalThis.behaviorAPI;
+}
+function sizeOf(item) {
+  try {
+    return 96 + JSON.stringify(item.props || {}).length + String(item.text || "").length;
+  } catch {
+    return 256;
+  }
+}
+function trimToCapacity() {
+  while (events.length + spans.length > CAPACITY || bytes > MAX_BYTES) {
+    if (!events.length && !spans.length) break;
+    const e = events.length ? events.shift() : spans.shift();
+    bytes = Math.max(0, bytes - e.bytes);
+    dropped++;
+  }
+}
+function ensureTimer() {
+  if (timer || !events.length && !spans.length) return;
+  timer = setInterval(() => {
+    flushTrack();
+  }, FLUSH_MS);
+}
+function stopTimer() {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+}
+function snakeContext(c) {
+  const out = {};
+  if (c.surface) out.surface = c.surface;
+  if (c.entityType) out.entity_type = c.entityType;
+  if (c.entityId) out.entity_id = c.entityId;
+  if (c.libraryItemId) out.library_item_id = c.libraryItemId;
+  if (c.cardId) out.card_id = c.cardId;
+  if (c.extractId) out.extract_id = c.extractId;
+  if (c.kpId) out.kp_id = c.kpId;
+  if (c.ctxId) out.ctx_id = c.ctxId;
+  if (c.origin) out.origin = c.origin;
+  if (c.actor) out.actor = c.actor;
+  return out;
+}
+function track(type, payload = {}) {
+  if (!config.enabled) return;
+  const ts = Number.isFinite(payload.ts) ? payload.ts : Date.now();
+  const merged = {
+    ...snakeContext(context),
+    ...snakeContext(payload),
+    type,
+    uid: newUuid7(ts),
+    ts,
+    source_ts: Number.isFinite(payload.sourceTs) ? payload.sourceTs : ts,
+    day: dayString(ts, config.cutoffHour),
+    tz_offset: tzOffsetMinutes(ts),
+    cutoff_hour: config.cutoffHour,
+    props: payload.props && typeof payload.props === "object" ? payload.props : {}
+  };
+  if (payload.opId) merged.op_id = payload.opId;
+  if (payload.presentationId) merged.presentation_id = payload.presentationId;
+  if (Number.isFinite(payload.docPos)) merged.doc_pos = payload.docPos;
+  if (Number.isFinite(payload.durMs)) merged.dur_ms = payload.durMs;
+  if (Number.isFinite(payload.num)) merged.num = payload.num;
+  if (payload.text != null) {
+    if (config.recordQueryText) merged.text = String(payload.text).slice(0, TEXT_MAX);
+  }
+  if (!merged.actor) merged.actor = "unknown";
+  const entry = { item: merged, bytes: sizeOf(merged) };
+  events.push(entry);
+  bytes += entry.bytes;
+  trimToCapacity();
+  if (events.length + spans.length >= FLUSH_COUNT) flushTrack();
+  else ensureTimer();
+}
+function flushTrack() {
+  const api = bridge();
+  if (!api || typeof api.batch !== "function") return false;
+  if (!events.length && !spans.length) {
+    stopTimer();
+    return true;
+  }
+  const payload = {
+    generation: config.generation,
+    renderId: config.renderId,
+    events: events.map((e) => e.item),
+    spans: spans.map((s) => s.item)
+  };
+  try {
+    api.batch(payload);
+  } catch {
+    return false;
+  }
+  events = [];
+  spans = [];
+  bytes = 0;
+  stopTimer();
+  return true;
+}
+function installFlushHooks() {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  if (installed.length) return;
+  const onHidden = () => {
+    if (document.visibilityState === "hidden") flushTrack();
+  };
+  const onLeave = () => {
+    flushTrack();
+  };
+  document.addEventListener("visibilitychange", onHidden);
+  window.addEventListener("pagehide", onLeave);
+  window.addEventListener("beforeunload", onLeave);
+  installed.push(() => document.removeEventListener("visibilitychange", onHidden));
+  installed.push(() => window.removeEventListener("pagehide", onLeave));
+  installed.push(() => window.removeEventListener("beforeunload", onLeave));
+}
+installFlushHooks();
+
 // src/lib/ai.ts
 function aiConfigUsable(cfg) {
   return Boolean(cfg && (cfg.hasKey || cfg.preset === "local"));
@@ -2495,8 +2689,13 @@ var aiGateway = {
   // 流式对话：onDelta 累积增量；onThinking 上报思考模型（reasoning_content）的已思考字数；resolve 返回全文
   // v48.74（D118 §3④）：onCancelRegister（可选）在请求发出前收到一次性取消闭包——宿主据此实现
   // 「停止」按钮与新运行取消旧流（ai:abort → 主进程 AbortController → chatStream reject）。
-  chat(messages, onDelta, temperature, onThinking, onCancelRegister) {
-    return new Promise((resolve, reject) => {
+  chat(messages, onDelta, temperature, onThinking, onCancelRegister, feature = "other") {
+    const started = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const finish = (outcome, chars) => {
+      const dur = Math.max(0, Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - started));
+      track("ai.invoked", { props: { feature, outcome, dur_ms: dur, num: chars } });
+    };
+    const run = new Promise((resolve, reject) => {
       if (!window.aiAPI) {
         reject(new Error(t("AI API \u4E0D\u53EF\u7528")));
         return;
@@ -2530,6 +2729,16 @@ var aiGateway = {
       });
       window.aiAPI.chat(requestId, messages, temperature);
     });
+    return run.then(
+      (text) => {
+        finish("ok", text.length);
+        return text;
+      },
+      (err) => {
+        finish(/abort|cancel|取消|停止/i.test(String(err && err.message)) ? "aborted" : "error", 0);
+        throw err;
+      }
+    );
   }
 };
 
@@ -2707,7 +2916,10 @@ async function runKpAiProcessing(opts = {}) {
         { role: "user", content: prep.extractionInput }
       ],
       void 0,
-      0.1
+      0.1,
+      void 0,
+      void 0,
+      "kp_extract"
     );
     let rawR = "";
     if (prep.relationInput) {
@@ -2720,7 +2932,10 @@ async function runKpAiProcessing(opts = {}) {
               { role: "user", content: prep.relationInput }
             ],
             void 0,
-            0.1
+            0.1,
+            void 0,
+            void 0,
+            "kp_extract"
           );
         } catch {
           rawR = "";
@@ -3186,6 +3401,60 @@ function detectMaterialType(text) {
   };
   return MATERIAL_ROUTES[byMode[mode] ?? "concept"];
 }
+var AI_ROUTE_KEYS = ["concept", "formula", "sequence", "enumeration", "literature", "vocab"];
+function parseRouteReply(raw) {
+  const m = String(raw ?? "").toLowerCase().match(/\b(concept|formula|sequence|enumeration|literature|vocab)\b/);
+  return m ? m[1] : null;
+}
+var ROUTE_SYSTEM_PROMPT = [
+  "\u4F60\u662F\u5B66\u4E60\u8F6F\u4EF6\u7684\u6750\u6599\u5206\u7C7B\u5668\u3002\u628A\u7528\u6237\u7ED9\u51FA\u7684\u3010\u6750\u6599\u3011\u5F52\u5165\u4E0B\u5217\u552F\u4E00\u4E00\u7C7B\uFF0C\u53EA\u8F93\u51FA\u8BE5\u7C7B\u7684\u82F1\u6587\u952E\uFF0C\u4E0D\u8981\u4EFB\u4F55\u5176\u4ED6\u6587\u5B57\uFF1A",
+  "- concept\uFF1A\u6982\u5FF5\u3001\u5B9A\u4E49\u3001\u539F\u7406\u3001\u8BBA\u8FF0\u3001\u56E0\u679C\u3001\u89C2\u70B9\u3001\u4E8B\u5B9E\u9648\u8FF0\u7B49\u9700\u8981\u7406\u89E3\u7684\u5185\u5BB9\uFF08\u62FF\u4E0D\u51C6\u65F6\u9009\u5B83\uFF09\uFF1B",
+  "- formula\uFF1A\u4EE5\u516C\u5F0F\u3001\u5B9A\u7406\u3001\u65B9\u7A0B\u3001\u63A8\u5BFC\u3001\u8BA1\u7B97\u6B65\u9AA4\u4E3A\u6838\u5FC3\uFF0C\u542B\u6570\u5B66/\u7269\u7406/\u5316\u5B66\u7B26\u53F7\u8868\u8FBE\u5F0F\uFF1B",
+  "- sequence\uFF1A\u6709\u5148\u540E\u6B21\u5E8F\u7684\u6D41\u7A0B\u3001\u6B65\u9AA4\u3001\u65F6\u95F4\u7EBF\u3001\u9636\u6BB5\uFF0C\u6B21\u5E8F\u672C\u8EAB\u662F\u9700\u8981\u8BB0\u5FC6\u7684\u91CD\u70B9\uFF1B",
+  "- enumeration\uFF1A\u5E76\u5217\u7684\u6E05\u5355\u3001\u5206\u7C7B\u3001\u8981\u70B9\u5217\u8868\uFF08\u5982\u300C\u6709\u54EA\u51E0\u7C7B/\u5305\u62EC\u2026\u300D\uFF09\uFF0C\u9700\u8981\u9010\u9879\u8BB0\u5168\uFF1B",
+  "- literature\uFF1A\u8BD7\u3001\u8BCD\u3001\u66F2\u3001\u6587\u8A00\u6216\u9700\u8981\u9010\u5B57\u80CC\u8BF5\u7684\u6587\u5B66\u539F\u6587\uFF1B",
+  "- vocab\uFF1A\u5916\u8BED\u5355\u8BCD\u3001\u77ED\u8BED\u3001\u8BCD\u6761\u91CA\u4E49\u3002",
+  "\u5224\u65AD\u4F9D\u636E\u662F\u6750\u6599\u7684\u5185\u5BB9\u5F62\u6001\u4E0E\u5B66\u4E60\u76EE\u6807\uFF0C\u800C\u4E0D\u662F\u4E2A\u522B\u5173\u952E\u8BCD\u3002"
+].join("\n");
+async function routeMaterialType(text, onCancelRegister, timeoutMs = 8e3) {
+  const local = detectMaterialType(text);
+  if (local.materialType === "vocab" || local.materialType === "literature") return { route: local, by: "local" };
+  let timer2;
+  try {
+    let cancel = null;
+    const sample = text.length > 1500 ? `${text.slice(0, 1200)}
+\u2026\u2026
+${text.slice(-300)}` : text;
+    const ask = aiGateway.chat(
+      [
+        { role: "system", content: ROUTE_SYSTEM_PROMPT },
+        { role: "user", content: `\u3010\u6750\u6599\u3011
+${sample}` }
+      ],
+      void 0,
+      0,
+      void 0,
+      (c) => {
+        cancel = c;
+        onCancelRegister?.(c);
+      },
+      "card_gen"
+    );
+    const timeout = new Promise((_, reject) => {
+      timer2 = setTimeout(() => {
+        cancel?.();
+        reject(new Error("route timeout"));
+      }, timeoutMs);
+    });
+    const key = parseRouteReply(await Promise.race([ask, timeout]));
+    if (key && AI_ROUTE_KEYS.includes(key)) return { route: MATERIAL_ROUTES[key], by: "ai" };
+    return { route: local, by: "fallback" };
+  } catch {
+    return { route: local, by: "fallback" };
+  } finally {
+    if (timer2) clearTimeout(timer2);
+  }
+}
 function parseFollowUps(summaries) {
   const out = [];
   for (const raw of Array.isArray(summaries) ? summaries : []) {
@@ -3245,19 +3514,19 @@ function extractJson(raw) {
     `AI \u672A\u8FD4\u56DE\u6709\u6548 JSON\uFF1A${lastErr instanceof Error ? lastErr.message : "\u672A\u627E\u5230 JSON \u5BF9\u8C61"}`
   );
 }
-async function requestOcclusionResult(image, context, onProgress, onThinking, onCancelRegister) {
+async function requestOcclusionResult(image, context2, onProgress, onThinking, onCancelRegister) {
   const tpl = await window.promptsAPI?.get("card-occlusion");
   if (!tpl) throw new Error("\u63D0\u793A\u8BCD\u6A21\u677F\u7F3A\u5931\uFF08card-occlusion\uFF09");
   const textParts = [
     "\u3010\u4EFB\u52A1\u3011\u8BC6\u522B\u56FE\u7247\u4E2D\u9002\u5408\u8BB0\u5FC6\u6D4B\u8BD5\u7684\u5185\u5BB9\u5E76\u7ED9\u51FA\u906E\u6321\u533A\u57DF\uFF08\u5750\u6807\u4E3A\u76F8\u5BF9\u56FE\u7247\u5C3A\u5BF8\u7684\u767E\u5206\u6BD4\uFF09\u3002",
     // v25：用户已手绘区域的场景——图片是用户选区的裁剪，模型只负责读出该区域内容；
     // 指令经请求装配注入（与 generateCards 的 context.focus 同机制），提示词模板不变
-    context.focus ? `\u3010\u7528\u6237\u5DF2\u9009\u5B9A\u7684\u906E\u6321\u533A\u57DF\u3011${context.focus}` : "",
+    context2.focus ? `\u3010\u7528\u6237\u5DF2\u9009\u5B9A\u7684\u906E\u6321\u533A\u57DF\u3011${context2.focus}` : "",
     // v29（D26）：图片周边文字上下文——相关则结合出题，无关则由模型忽略
-    context.contextText ? `\u3010\u56FE\u7247\u5468\u8FB9\u6587\u5B57\u4E0A\u4E0B\u6587\uFF08\u56FE\u7247\u4E0A\u65B9 1 \u6BB5 + \u4E0B\u65B9 2 \u6BB5\uFF09\u3011
-${context.contextText}
+    context2.contextText ? `\u3010\u56FE\u7247\u5468\u8FB9\u6587\u5B57\u4E0A\u4E0B\u6587\uFF08\u56FE\u7247\u4E0A\u65B9 1 \u6BB5 + \u4E0B\u65B9 2 \u6BB5\uFF09\u3011
+${context2.contextText}
 \uFF08\u82E5\u4E0E\u56FE\u7247\u5185\u5BB9\u76F8\u5173\uFF0C\u53EF\u7ED3\u5408\u4E0A\u4E0B\u6587\u51FA\u9898\uFF1B\u65E0\u5173\u5219\u5FFD\u7565\uFF09` : "",
-    context.title ? `\u3010\u6765\u6E90\u3011\u300A${context.title}\u300B${context.section ? " \xB7 " + context.section : ""}` : ""
+    context2.title ? `\u3010\u6765\u6E90\u3011\u300A${context2.title}\u300B${context2.section ? " \xB7 " + context2.section : ""}` : ""
   ].filter(Boolean);
   const userContent = [
     { type: "image_url", image_url: { url: image.dataUrl } },
@@ -3275,12 +3544,13 @@ ${context.contextText}
     } : void 0,
     0.2,
     onThinking,
-    onCancelRegister
+    onCancelRegister,
+    "card_gen"
   );
   return { result: extractJson(raw || acc), templateId: tpl.id };
 }
 var cardGenerator = {
-  async generateCards(sourceText, context, mode, onProgress, onThinking, onCancelRegister) {
+  async generateCards(sourceText, context2, mode, onProgress, onThinking, onCancelRegister) {
     const resolved = mode === "auto" ? detectMode(sourceText) : mode;
     const tpl = await window.promptsAPI?.get(resolved);
     if (!tpl) throw new Error("\u63D0\u793A\u8BCD\u6A21\u677F\u7F3A\u5931");
@@ -3289,37 +3559,37 @@ var cardGenerator = {
     let memoryBlock = null;
     if (Number(tpl.situation_required) === 1) {
       const mem = await window.memoryAPI?.retrieve({
-        documentId: context.documentId ?? null,
-        title: context.title ?? "",
-        section: context.section ?? "",
+        documentId: context2.documentId ?? null,
+        title: context2.title ?? "",
+        section: context2.section ?? "",
         text: sourceText
       });
       if (mem?.ok && mem.block) memoryBlock = mem.block;
     }
-    const sectionLabel = context.sectionPath?.length ? context.sectionPath.join(" \u203A ") : context.section || "";
-    const sourceLine = context.title ? `\u3010\u6765\u6E90\u3011\u300A${context.title}\u300B${context.author ? " \xB7 \u4F5C\u8005\uFF1A" + context.author : ""}${sectionLabel ? " \xB7 \u7AE0\u8282\uFF1A" + sectionLabel : ""}` : "";
-    const sur = context.surrounding;
+    const sectionLabel = context2.sectionPath?.length ? context2.sectionPath.join(" \u203A ") : context2.section || "";
+    const sourceLine = context2.title ? `\u3010\u6765\u6E90\u3011\u300A${context2.title}\u300B${context2.author ? " \xB7 \u4F5C\u8005\uFF1A" + context2.author : ""}${sectionLabel ? " \xB7 \u7AE0\u8282\uFF1A" + sectionLabel : ""}` : "";
+    const sur = context2.surrounding;
     const surroundingBlock = sur && (sur.before || sur.after) ? `\u3010\u524D\u540E\u6587\uFF08\u53EA\u7528\u4E8E\u5224\u65AD\u8FD9\u6BB5\u8BDD\u662F\u8C01\u7684\u89C2\u70B9\u3001\u5728\u4EC0\u4E48\u524D\u63D0\u4E0B\u6210\u7ACB\uFF1B\u7981\u6B62\u5BF9\u524D\u540E\u6587\u51FA\u5361\uFF09\u3011
 ${sur.before}
 \u3014\u9009\u533A\u3015
 ${sur.after}` : "";
-    const relatedLines = (context.relatedCards ?? []).filter(Boolean).slice(0, 6);
+    const relatedLines = (context2.relatedCards ?? []).filter(Boolean).slice(0, 6);
     const user = [
       `\u3010\u6750\u6599\u3011
 ${sourceText}`,
       sourceLine,
       surroundingBlock,
       // v16：补充制卡指令（「后续可补」递进补卡用）——提示词模板不变，仅装配请求时注入
-      context.focus ? `\u3010\u672C\u6B21\u5236\u5361\u91CD\u70B9\uFF08\u8865\u5145\u5236\u5361\uFF09\u3011
-${context.focus}` : "",
-      context.webContext ? `\u3010\u8054\u7F51\u68C0\u7D22\u5230\u7684\u4E8B\u4EF6\u80CC\u666F\uFF08\u4EC5\u4F9B\u7406\u89E3\uFF0C\u7981\u6B62\u7F16\u9020\u6765\u6E90\uFF09\u3011
-${context.webContext}` : "",
-      context.existingCards?.length ? `\u3010\u7528\u6237\u5DF2\u6709\u5361\u7247\uFF08\u6CE8\u610F R10 \u8054\u60F3\u4E0E\u5E72\u6270\u63D0\u793A\uFF0C\u7981\u6B62\u91CD\u590D\u6216\u6362\u76AE\uFF09\u3011
-${context.existingCards.slice(0, context.existingCardsLimit ?? 10).join("\n")}` : "",
+      context2.focus ? `\u3010\u672C\u6B21\u5236\u5361\u91CD\u70B9\uFF08\u8865\u5145\u5236\u5361\uFF09\u3011
+${context2.focus}` : "",
+      context2.webContext ? `\u3010\u8054\u7F51\u68C0\u7D22\u5230\u7684\u4E8B\u4EF6\u80CC\u666F\uFF08\u4EC5\u4F9B\u7406\u89E3\uFF0C\u7981\u6B62\u7F16\u9020\u6765\u6E90\uFF09\u3011
+${context2.webContext}` : "",
+      context2.existingCards?.length ? `\u3010\u7528\u6237\u5DF2\u6709\u5361\u7247\uFF08\u6CE8\u610F R10 \u8054\u60F3\u4E0E\u5E72\u6270\u63D0\u793A\uFF0C\u7981\u6B62\u91CD\u590D\u6216\u6362\u76AE\uFF09\u3011
+${context2.existingCards.slice(0, context2.existingCardsLimit ?? 10).join("\n")}` : "",
       relatedLines.length ? `\u3010\u76F8\u5173\u5DF2\u6709\u5361\uFF08\u542B\u7B54\u6848\uFF0C\u7528\u4E8E\u53D1\u73B0\u7B54\u6848\u51B2\u7A81\u4E0E\u9650\u5B9A\u7F3A\u5931\uFF1B\u7981\u6B62\u91CD\u590D\u6216\u6362\u76AE\uFF09\u3011
 ${relatedLines.join("\n")}` : "",
-      context.userProfile ? `\u3010\u7528\u6237\u753B\u50CF\uFF08R9 \u4E2A\u6027\u5316\u4F8B\u5B50\u4F18\u5148\u7528\uFF09\u3011
-${context.userProfile}` : "",
+      context2.userProfile ? `\u3010\u7528\u6237\u753B\u50CF\uFF08R9 \u4E2A\u6027\u5316\u4F8B\u5B50\u4F18\u5148\u7528\uFF09\u3011
+${context2.userProfile}` : "",
       memoryBlock || ""
     ].filter(Boolean).join("\n\n");
     let acc = "";
@@ -3334,7 +3604,8 @@ ${context.userProfile}` : "",
       } : void 0,
       0.4,
       onThinking,
-      onCancelRegister
+      onCancelRegister,
+      "card_gen"
     );
     const result = extractJson(raw || acc);
     for (const c of result.cards) c.qualifier = normalizeQualifier(c.qualifier);
@@ -3345,7 +3616,7 @@ ${context.userProfile}` : "",
         if (ref) c.memoryRefValid = memoryBlock.includes(ref);
       }
     }
-    const { surrounding: _sur, relatedCards: _rel, ...ctxForBatch } = context;
+    const { surrounding: _sur, relatedCards: _rel, ...ctxForBatch } = context2;
     void _sur;
     void _rel;
     const batch = await window.batchesAPI?.create({
@@ -3353,15 +3624,15 @@ ${context.userProfile}` : "",
       sourceText,
       context: {
         ...ctxForBatch,
-        authorPresent: Boolean(context.author),
-        sectionPath: context.sectionPath ?? [],
+        authorPresent: Boolean(context2.author),
+        sectionPath: context2.sectionPath ?? [],
         surroundingChars: sur ? (sur.before?.length ?? 0) + (sur.after?.length ?? 0) : 0,
         relatedCardsCount: relatedLines.length,
         // v48.61（D103）：生成时模型名快照（生成信息区展示用；诊断留痕同批装配）
         model: aiCfg?.model ?? null,
         // 诊断留痕：确认联网背景是否真的进入了上下文
-        webContextChars: context.webContext ? context.webContext.length : 0,
-        webContextPreview: context.webContext ? context.webContext.slice(0, 200) : "",
+        webContextChars: context2.webContext ? context2.webContext.length : 0,
+        webContextPreview: context2.webContext ? context2.webContext.slice(0, 200) : "",
         // v46：记忆注入留痕（审计 §1.9）
         memoryInjected: Boolean(memoryBlock),
         memoryBlockChars: memoryBlock ? memoryBlock.length : 0
@@ -3373,9 +3644,9 @@ ${context.userProfile}` : "",
   },
   // M1.1（v15，D16）：图片挖空生成链路——图片已入库，把 dataURL 交 GLM 多模态识别遮挡区域，
   // 返回 regions（归一化百分比坐标）+ 每区域一张 imageOcclusion 草稿（rects 共享同一 occlusionJson）
-  async generateOcclusionCards(image, context, onProgress, onThinking, onCancelRegister) {
-    const { result, templateId: tplId } = await requestOcclusionResult(image, context, onProgress, onThinking, onCancelRegister);
-    const preset = context.presetRegion;
+  async generateOcclusionCards(image, context2, onProgress, onThinking, onCancelRegister) {
+    const { result, templateId: tplId } = await requestOcclusionResult(image, context2, onProgress, onThinking, onCancelRegister);
+    const preset = context2.presetRegion;
     if (preset) {
       const px = clampPct(preset.rect.x);
       const py = clampPct(preset.rect.y);
@@ -3444,7 +3715,7 @@ ${context.userProfile}` : "",
         const batch02 = await window.batchesAPI?.create({
           scope: "card-occlusion",
           sourceText: `[\u56FE\u7247\u9009\u533A] ${image.assetPath}`,
-          context: { ...context, imageAsset: image.assetPath, userRegion: true, d26Mapped: true },
+          context: { ...context2, imageAsset: image.assetPath, userRegion: true, d26Mapped: true },
           promptTemplateId: tplId,
           result
         });
@@ -3481,7 +3752,7 @@ ${context.userProfile}` : "",
       const batch0 = await window.batchesAPI?.create({
         scope: "card-occlusion",
         sourceText: `[\u56FE\u7247\u9009\u533A] ${image.assetPath}`,
-        context: { ...context, imageAsset: image.assetPath, userRegion: true, d26Fallback: true },
+        context: { ...context2, imageAsset: image.assetPath, userRegion: true, d26Fallback: true },
         promptTemplateId: tplId,
         result
       });
@@ -3514,13 +3785,13 @@ ${context.userProfile}` : "",
     const batch = await window.batchesAPI?.create({
       scope: "card-occlusion",
       sourceText: `[\u56FE\u7247] ${image.assetPath}`,
-      context: { ...context, imageAsset: image.assetPath, regionCount: regions.length },
+      context: { ...context2, imageAsset: image.assetPath, regionCount: regions.length },
       promptTemplateId: tplId,
       result
     });
     return { batchId: batch?.id || "", result, templateId: tplId };
   },
-  async explain(sourceText, context, question, onDelta, onThinking, opts, onCancelRegister) {
+  async explain(sourceText, context2, question, onDelta, onThinking, opts, onCancelRegister) {
     if (opts?.mode === "ste") {
       const tpl2 = await window.promptsAPI?.get("reader-explain-ste");
       if (!tpl2) throw new Error("\u63D0\u793A\u8BCD\u6A21\u677F\u7F3A\u5931\uFF08reader-explain-ste\uFF09");
@@ -3532,7 +3803,7 @@ ${context.userProfile}` : "",
       const user2 = [
         `\u3010\u9009\u4E2D\u6587\u672C\u3011
 ${sourceText}`,
-        context ? `\u3010\u4E0A\u4E0B\u6587\u3011${context}` : "",
+        context2 ? `\u3010\u4E0A\u4E0B\u6587\u3011${context2}` : "",
         `\u3010\u6750\u6599\u8BED\u8A00\u3011${matLang || "\u672A\u6807\u6CE8\u2014\u2014\u8BF7\u81EA\u68C0\u6750\u6599\u8BED\u8A00\u5E76\u5728 <!--ste:matLang=\u2026--> \u6807\u8BB0\u4E2D\u62A5\u544A"}`,
         `\u3010\u89E3\u8BFB\u8BED\u8A00\u3011${outLang}\uFF08${steOutputLangName(outLang)}\uFF09`,
         // v48.74（D118 追加）：追问必须送达——此前 ste 分支丢掉 question，四个追问按钮与
@@ -3547,7 +3818,8 @@ ${sourceText}`,
         onDelta,
         0.3,
         onThinking,
-        onCancelRegister
+        onCancelRegister,
+        "ste"
       );
     }
     const tpl = await window.promptsAPI?.get("reader-explain");
@@ -3558,7 +3830,7 @@ ${sourceText}`,
     const user = `${langLine}\u3010\u9009\u4E2D\u6587\u672C\u3011
 ${sourceText}
 
-${context ? `\u3010\u4E0A\u4E0B\u6587\u3011${context}` : ""}
+${context2 ? `\u3010\u4E0A\u4E0B\u6587\u3011${context2}` : ""}
 
 ${question ? `\u3010\u7528\u6237\u8FFD\u95EE\u3011${question}` : "\u8BF7\u89E3\u91CA\u8FD9\u6BB5\u6587\u5B57\u3002"}`;
     return aiGateway.chat(
@@ -3569,12 +3841,13 @@ ${question ? `\u3010\u7528\u6237\u8FFD\u95EE\u3011${question}` : "\u8BF7\u89E3\u
       onDelta,
       0.7,
       onThinking,
-      onCancelRegister
+      onCancelRegister,
+      "explain"
     );
   },
   // v48.101（D146）：手动制卡「带入 AI 回答」生成链——按制卡规则对问题直答。
   // 只输出答案本身（最小信息原则）：无前缀、无铺垫、目标 ≤15 字；同语言作答；不编造出处。
-  async answerForCard(question, context, onDelta, onCancelRegister) {
+  async answerForCard(question, context2, onDelta, onCancelRegister) {
     const sys = [
       "\u4F60\u662F\u95F4\u9694\u91CD\u590D\u5B66\u4E60\u8F6F\u4EF6\u7684\u5236\u5361\u52A9\u624B\u3002\u7528\u6237\u6B63\u5728\u624B\u52A8\u5236\u5361\u7684\u95EE\u7B54\u9898\u4E0A\u8BF7\u6C42\u751F\u6210\u7B54\u6848\u3002",
       "\u8BF7\u4E25\u683C\u9075\u5B88\u4EE5\u4E0B\u5236\u5361\u89C4\u5219\u4F5C\u7B54\uFF1A",
@@ -3586,8 +3859,8 @@ ${question ? `\u3010\u7528\u6237\u8FFD\u95EE\u3011${question}` : "\u8BF7\u89E3\u
     const user = [
       `\u3010\u95EE\u9898\u3011
 ${question}`,
-      context ? `\u3010\u6750\u6599\u5F15\u7528\uFF08\u4F5C\u7B54\u4F18\u5148\u4F9D\u636E\uFF1B\u672A\u6DB5\u76D6\u65F6\u53EF\u7528\u901A\u8BC6\u8865\u5145\uFF09\u3011
-${context}` : ""
+      context2 ? `\u3010\u6750\u6599\u5F15\u7528\uFF08\u4F5C\u7B54\u4F18\u5148\u4F9D\u636E\uFF1B\u672A\u6DB5\u76D6\u65F6\u53EF\u7528\u901A\u8BC6\u8865\u5145\uFF09\u3011
+${context2}` : ""
     ].filter(Boolean).join("\n\n");
     return aiGateway.chat(
       [
@@ -3597,7 +3870,8 @@ ${context}` : ""
       onDelta,
       0.4,
       void 0,
-      onCancelRegister
+      onCancelRegister,
+      "card_gen"
     );
   }
 };
@@ -3981,7 +4255,9 @@ function hasSourceAnchor(ref) {
   normalizeQualifier,
   parseCloze,
   parseFollowUps,
+  parseRouteReply,
   requestOcclusionResult,
+  routeMaterialType,
   siblingKeyFor,
   similaritySearch
 });
