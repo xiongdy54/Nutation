@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="docs/assets/icon.png" width="88" alt="Nutation logo" />
+<img src="docs/assets/icon.png" width="88" alt="Nutation Logo" />
 
 # Nutation
 
-**A local-first incremental reading studio — read, excerpt, remember.**
+**Understand first, remember deeply. A local-first workbench uniting deep reading, comprehension, and retention into a single seamless loop.**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](./LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%2064--bit%20%28x64%20%2F%20ARM64%29-0078D6)](#getting-started)
@@ -18,243 +18,165 @@ English | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md)
 </div>
 
 <div align="center">
-<img src="docs/assets/readme/reader-excerpts-en.png" alt="Nutation reader with the excerpt sidebar" width="100%" />
-<p><sub>The reading desk: the text, your excerpts, and every annotation one click away.</sub></p>
+<img src="docs/assets/readme/reader-excerpts-en.png" alt="Nutation Reading Environment with Inline Structure" width="100%" />
+<p><sub>The reading environment: immersive multi-paragraph prose with dynamic inline structure mapping the author's logical progression.</sub></p>
 </div>
 
-Nutation is a desktop studio for incremental reading. It keeps the whole loop on your machine: open a book, mark what matters, turn it into cards, and let an FSRS scheduler bring it back at the right time. Everything is local; AI is optional, and when you use it, it only drafts — nothing enters your library without your confirmation.
+At its core, genuine learning consists of two continuous phases: **first understanding, then remembering**.
 
-## How it works
+Memorizing without understanding leads to brittle, useless rote learning that fades quickly and cannot be transferred. Conversely, understanding without deliberate retention results in fleeting epiphanies that vanish within days. Conventional software isolates these steps: reading apps offer passive consumption, note-taking apps accumulate static text, and flashcard apps force isolated drills out of context.
+
+**Nutation** unites reading, structural comprehension, and spaced retention into one unified, local-first workbench.
+
+---
+
+## Architecture: The Cognitive Loop
 
 ```mermaid
 flowchart LR
-    A["Read<br/>EPUB · PDF · Word · Web · MD"] --> B["Excerpt &amp; annotate<br/>in place"]
-    B --> C["Create cards<br/>AI draft or manual"]
-    C --> D["Review<br/>FSRS scheduling"]
-    D --> E["Next step<br/>learner model"]
-    E --> A
+    subgraph 01_Input["01 Ingestion"]
+        A["Multi-format Reader<br/>EPUB / PDF / Word / TXT / MD"]
+    end
+    subgraph 02_Comprehend["02 Deep Understanding (Cognitive Load Reduction)"]
+        B1["Structure Maps<br/>Inline Outline · Panoramic Canvas"]
+        B2["Excerpt Cards<br/>Incremental Extraction · No Deadlocks"]
+        B3["Concise AI Explanation<br/>ASD-STE100 Rules · Disambiguation"]
+    end
+    subgraph 03_Retain["03 Long-term Retention (Active Recall)"]
+        C1["Card Workbench<br/>Q&A · Cloze · Vocabulary · Sequence"]
+        C2["FSRS 6.0 Scheduler<br/>Optimal Retention · Self-tuning Optimizer"]
+    end
+
+    A --> B1 & B2 & B3
+    B1 & B2 & B3 --> C1
+    C1 --> C2
+    C2 -.->|"Jump back to source context"| A
 ```
 
-## One structure, two ways to see it
+---
+
+## 1. Deep Understanding: Schemas & Barrier Elimination
+
+Cognitive science proves that without a high-level cognitive schema, working memory is rapidly exhausted by complex syntax and dense prose. Nutation delivers three coordinated mechanisms for comprehension:
+
+### 1. Structure Maps: Forest Before Trees
 
 <div align="center">
-<img src="docs/assets/readme/structure-en.gif" alt="Inline structure handing off to the structure overview" width="900" />
-<p><sub>Inline structure → overview → back. The two views are the same map.</sub></p>
+<video src="docs/assets/readme/structure-en.mp4" controls width="100%"></video>
+<p><sub>Inline structure → panoramic overview → back to reader. Seamless transition between macro structure and micro detail.</sub></p>
 </div>
 
-**Inline structure** sits beside the passage you are reading. The current node is anchored to the text; from there you can jump to the source, ask for an explanation, deepen the branch, or open the whole map.
+Rooted in David Ausubel’s *Advance Organizer Theory* and cognitive schema research, empirical studies demonstrate that **establishing macroscopic structure prior to details significantly improves comprehension depth and recall**:
+- **Inline Structure**: Anchored dynamically beside the paragraph you are reading, displaying exact hierarchical context with one-click drill-downs;
+- **Panoramic Canvas**: A global canvas mapping claims, rationale, timelines, and contrasts across the entire material, allowing learners to inspect overarching conceptual relationships while maintaining instant focus on their current reading point.
 
-**Overview** puts the material on one canvas, centered on where you are reading. Each group is laid out by its own structure — outline, grid, argument, timeline, steps, causal chain, comparison — and pan/zoom, breadcrumbs, relation emphasis and node actions stay out of the way until you need them. The handoff between the two views is a 420 ms shared-element transition.
+### 2. Excerpting: Incremental Processing & De-escalation
+Inspired by Piotr Woźniak’s pioneering *Incremental Reading* philosophy: **A reader cannot digest every complex concept on first pass. Stalling on difficult obstacles destroys reading flow**:
+- Extract difficult passages into standalone excerpt items with customizable annotation layers and priorities for asynchronous processing;
+- Every excerpt retains native CFI / page anchors, enabling instant navigation back to the original context at any future date.
 
-Some readers like to see the whole skeleton first; others start from a passage and work outward. Nutation supports both directions; it does not prescribe one order.
+### 3. Concise AI Explanation: Technical Standard-grade Clarity
+Academic and technical literature is frequently obscured by convoluted clauses, polysemy, and stylistic ambiguity. Nutation implements an AI explanation module adapted from the aerospace industry's **ASD-STE100 (Simplified Technical English)** standard:
+- **Disambiguation**: Identifies structural, syntactic, or terminological ambiguities;
+- **Single-Intent Sentence Decomposition**: Enforces concise sentences and strict "one idea per sentence" rules, untangling nested clauses into clear causal chains;
+- **Glossary Isolation**: Isolates domain terminology into clear definitions while preserving original nuances and uncertainties without patronizing over-summarization.
 
 <div align="center">
-<img src="docs/assets/readme/structure-en.png" alt="Structure overview around the passage being read" width="100%" />
-<p><sub>The overview around the passage: claim, reasons, evidence, and the story around them.</sub></p>
+<video src="docs/assets/readme/ai-explain-en.mp4" controls width="560"></video>
+<p><sub>Structured explanation: linguistic disambiguation, decomposed sentences, and isolated terminology.</sub></p>
 </div>
 
-Maps are generated with the model you configure. Once generated, they are part of your local library: the inline view and the overview work offline.
+---
 
-## Spaced repetition, scheduled by FSRS
+## 2. Long-term Retention: Active Recall & FSRS 6.0
+
+Short-term memory decays exponentially (the Ebbinghaus Forgetting Curve). Transitioning short-term working memory into long-term retention requires **deliberate active recall scheduled across increasing intervals**.
 
 <div align="center">
-<img src="docs/assets/readme/fsrs-en.gif" alt="FSRS review: reveal the answer, choose a grade, move to the next card" width="760" />
-<p><sub>Reveal → four grades → next card.</sub></p>
+<video src="docs/assets/readme/fsrs-en.mp4" controls width="760"></video>
+<p><sub>FSRS review session: active recall prompt → 3D card reveal → 4-grade rating feedback.</sub></p>
 </div>
 
-Nutation uses **FSRS-6.0** through `ts-fsrs` 5.4.2. The scheduler keeps a stability and difficulty estimate for every card and uses them to place the next review. The 21-dimensional weights can be retrained from your own `review_logs` with the `fsrs-rs` optimizer in Settings. A trained parameter set is an immutable snapshot: applying it changes future scheduling only, never the history of a card.
-
-The review session is built for continuous drill: four grades with interval previews (space permitting), auto-advance, one-click undo, jump to the source and back, and leech detection with a rescue flow for cards that keep lapsing. The dashboard is derived from the same review logs — no separate, invented numbers.
-
-FSRS is an open scheduling algorithm, not a promise that you will remember. It decides *when* a card is worth seeing again; what you do with that moment is still yours.
-
-## The workbench is one shortcut away
+### 1. Integrated Card Workbench
+Summoned in place (`Ctrl+K`) or as an independent, always-on-top window (`Ctrl+Alt+K`):
+- **Heuristic Card Routing**: Automatically detects material archetypes (conceptual statements → Q&A, mathematical derivations → LaTeX Q&A, sequential procedures → sequential fill cards, enumerations → Cloze deletions, vocabulary → 4-way language cards);
+- **Screen Capture & Image Occlusion**: Summon the independent always-on-top workbench from anywhere, click "Image Occlusion" to capture arbitrary screen regions (such as diagrams, anatomical charts, or workflow maps in your browser), and draw occlusion masks with rectangle, ellipse, and polygon tools to generate image-based cards, with all assets safely stored in your local asset repository;
+- **CardLint Quality Engine**: A strictly local, static validation engine applied equally to AI-generated and manually authored cards. Grounded in Piotr Wozniak's knowledge formulation principles, it extends far beyond the Minimum Information Principle (intercepting overloaded answers, overlong prompts, and excessive cloze deletions): it systematically intercepts cognitive pitfalls (preventing yes/no questions and broad enumerations, enforcing explicit recall thresholds for collection questions), guards against clue leakage in context prefixes, enforces academic rigour (requiring view attributions and full entity names), prompts for date stamps on volatile facts, and coordinates with local similarity search to prevent redundant or conflicting cards.
 
 <div align="center">
-<img src="docs/assets/readme/workbench-en.gif" alt="The standalone workbench opened with Ctrl+Alt+K" width="560" />
-<p><sub>Ctrl+Alt+K opens the standalone workbench. The same panel also docks in the main window.</sub></p>
+<video src="docs/assets/readme/occlusion-en.mp4" controls width="760"></video>
+<p><sub>Cross-app screen capture & image occlusion full-loop: global shortcut summons workbench → drag-to-crop screen region (authentic Mapo Tofu recipe) → precise rectangle & ellipse occlusion on key ingredient targets → one-click card creation & seamless review loop with question prompt, answer reveal, and FSRS grading.</sub></p>
 </div>
 
-The workbench puts manual card creation, AI card creation and AI explanation in one place. In the main window it docks on the right (`Ctrl+K`); with `Ctrl+Alt+K` it becomes a standalone, always-on-top window that stays with you while you read something else. Both are the same component, so a change in one is a change in the other.
+### 2. Powered by the Advanced FSRS 6.0 Algorithm
+For review scheduling, we extend our heartfelt gratitude to open-source developer **[Jarrett Ye (L-M-Sherlock)](https://github.com/L-M-Sherlock)** and the **[Open Spaced Repetition](https://github.com/open-spaced-repetition)** community for designing and generously open-sourcing the FSRS algorithm.
 
-The manual side works without any AI service. The AI side only drafts; the explanation panel sits at the bottom, with Auto, General interpretation, Concise interpretation and Free question modes. Drafts survive tab switches, and the cross-tab ghost lets you carry text from one side to the other with `Alt+Enter`.
+Nutation adopts the modern **FSRS 6.0 algorithm** (via the `ts-fsrs` 5.4.2 engine):
+- **Accurate Mathematical Scheduling**: Tracks Stability ($S$), Retrievability ($R$), and Difficulty ($D$) per card to target precise review intervals at the optimum threshold before memory lapse, achieving high retention with fewer total reviews;
+- **Personalized Self-Optimization**: Bundles the native `fsrs-rs` optimizer to train 21 personalized weight parameters directly on your own historical `review_logs` ("the more you review, the more accurate the scheduling becomes").
 
-## AI-assisted cards, routed by material type
+---
 
-<div align="center">
-<img src="docs/assets/readme/ai-cards-en.gif" alt="AI card drafts in the workbench" width="560" />
-<p><sub>Select a passage or paste text; the draft arrives with a material type, knowledge points and a confirmation step.</sub></p>
-</div>
+## Privacy & Local-First Guarantees
 
-Nutation routes the material locally before calling a model: the default card form follows the kind of text you selected. The route is a local heuristic, not a verdict — you can override it and re-run.
+- **Zero Accounts, Zero Telemetry**: No registration required. No usage metrics or personal data are ever tracked or uploaded.
+- **Complete Data Sovereignty**: All books, excerpts, cards, and scheduling logs reside in your local SQLite database (WAL mode + strict transaction commits).
+- **AI is Strictly Optional and Transparent**: Reading, excerpting, card authoring, and FSRS reviews work 100% offline. AI only acts as a drafting assistant—no data ever enters your library without explicit confirmation.
 
-| Material type | Default card form |
-| --- | --- |
-| Concept | Q&A (convertible to a flip card) |
-| Formula | Q&A with LaTeX |
-| Sequence | Q&A (sequence continuation) |
-| Enumeration | Cloze |
-| Image | Image occlusion |
-| Literature / poetry | Q&A |
-| Vocabulary | Four-card set (recognition / recall / listening / sentence cloze) |
+---
 
-Every draft is a proposal. You can edit the front and back, turn a Q&A into a flip card, accept one card or the whole batch, or reject it. CardLint runs a local quality pass and surfaces warnings before the card enters the queue. AI never writes into your library without your confirmation; without an AI service, manual card creation works exactly the same.
+## Supported Formats
 
-The input is a selected passage or pasted text. There is no separate product-level length cap — the practical limit is the context window of the model you configured.
+| Format | Engine / Ingestion | Features |
+| --- | --- | --- |
+| **EPUB · MOBI · AZW3 · FB2 · CBZ** | Foliate-js custom runtime | Strict CFI anchor preservation across reflows |
+| **PDF** | Native high-performance renderer | Seamless scrolling and continuous cross-page highlights |
+| **Word (.docx) · TXT · Markdown · HTML** | Ingestion pipeline | Structural heading hierarchy preserved |
+| **Pasted Text** | Instant compilation | Convert clipboard materials into structured local books |
 
-<details>
-<summary>Draft panel (still)</summary>
-<br />
-<div align="center">
-<img src="docs/assets/readme/ai-cards-en.png" alt="AI card draft panel with Accept, Edit and Flip card" width="560" />
-</div>
-</details>
+---
 
-## Concise explanation, with the limits stated
+## Getting Started
 
-<div align="center">
-<img src="docs/assets/readme/ai-explain-en.gif" alt="Concise interpretation streaming in the workbench" width="560" />
-<p><sub>Concise interpretation: ambiguity points, sentence-by-sentence explanation, multiple readings, terms.</sub></p>
-</div>
+### Installation
+- **Windows 10 / Windows 11 64-bit (x64 / ARM64)**.
+- Download the installer (`.exe`) from [GitHub Releases](https://github.com/xiongdy54/Nutation/releases). Upgrades and uninstalls will never delete your local library databases.
 
-The explanation panel offers Auto, General interpretation, Concise interpretation and Free question. **Concise interpretation** borrows the clarity principles of ASD-STE100 — short sentences, one idea per sentence, active voice, controlled terms, no added information, preserved uncertainty — and applies them to the output language. It is not a translation of the source, and it does not simplify away the source's claims.
-
-The output is structured: ambiguity points (only language-level obstacles), a sentence-by-sentence explanation, multiple readings when the text genuinely supports more than one, and a short term list. The goal is to make a difficult passage easier to *enter*, not to replace it.
-
-Nutation is **not affiliated with or certified by ASD**, and the standard's text is not embedded in the product. An explanation can be wrong; the source text remains the authority. Treat the output as a reading aid, not as a verification of the source.
-
-<div align="center">
-<img src="docs/assets/readme/ai-explain-en.png" alt="Concise interpretation output" width="560" />
-<p><sub>The answer scrolls to the terms; the mode bar stays at the bottom.</sub></p>
-</div>
-
-## Also in the studio
-
-- **Reading kernel — everything is a book** — EPUB, MOBI, AZW3, FB2, CBZ and PDF open directly; Word, TXT, Markdown and HTML import as books; pasted text becomes a book. TOC sidebar, scroll or paginated modes, several paper looks, and progress that returns you to the exact spot.
-- **Excerpts & annotations** — select a passage to excerpt it, annotate in place, browse annotations in a sidebar, review excerpts one at a time, and jump back to the source passage.
-- **Dashboard** — a per-day activity timeline, learning heatmap, due forecast, domain distribution and grade mix, all derived from your own logs.
-- **Card browser** — query syntax, batch operations, and the quality findings that CardLint recorded for each card.
-- **Learner model & next step** — a structured “Next” panel built from local learning evidence; learner memory is kept as local Markdown files.
-- **Also built in** — knowledge points and a knowledge graph, dictionary (online + local StarDict / DSL / ECDICT), journal with AI insight, quick capture with global shortcuts, UDC domain classification, skins, and remappable shortcuts.
-
-## Why "Nutation"?
-
-When a plant grows, its tip slowly draws circles in the air, sensing its surroundings before choosing a direction. This movement is called **circumnutation**. It has no map, and no standard answer. Every plant feels the world at its own rhythm and finds its own way.
-
-**Nutation** is named after this.
-
-I believe learning should be the same: no compulsory subjects, no single path, and no standard answer you are required to reach. Start from your own environment, follow your own curiosity, probe circle by circle, and grow bit by bit.
-
-Circling is not being lost — it is searching for direction. Being slow is not falling behind — it is taking root.
-
-May every learner, like that young seedling, explore without fear, take detours without regret, and finally grow into a shape that belongs only to themselves.
-
-## Supported formats
-
-| Format | How it opens |
-| --- | --- |
-| EPUB · MOBI · AZW3 · FB2 · CBZ | Native reader kernel (foliate-js), CFI anchors |
-| PDF | Built-in PDF reading |
-| Word (.docx) · TXT · Markdown · HTML | One-click import as a book |
-| Pasted text | Becomes a synthesized, readable book |
-
-## Privacy & local-first
-
-- **Zero account** — no sign-up, it works the moment it opens.
-- **Zero remote telemetry** — no account and no upload. Interaction signals used by the learner model are stored locally in your data folder and never sent to us.
-- **Zero cloud** — a local SQLite database and local files are the only sources of truth. AI requests, when configured, go directly from your machine to the provider you chose.
-- **AI optional** — reading, excerpts, annotations, manual cards and FSRS review work without an AI service. AI card generation, concise explanation and new map generation need a configured model. Keys are encrypted per provider with OS-level storage and can be turned off entirely.
-
-## Tech stack
-
-| Layer | Choice |
-| --- | --- |
-| Desktop shell | Electron 45 + Vite 6 |
-| Frontend | React 18 + TypeScript (strict) |
-| Reader kernel | foliate-js (vendored snapshot) behind an anti-corruption layer, CFI anchors |
-| Storage | SQLite (better-sqlite3, WAL), transactional writes with explicit persist |
-| Scheduling | `ts-fsrs` 5.4.2 (FSRS-6.0) + `fsrs-rs` optimizer — 21-dimensional weights trained from your own review logs |
-| AI gateway | OpenAI-compatible streaming, presets including local Ollama / LM Studio, keys encrypted with safeStorage |
-| Rendering | markdown-it / react-markdown, KaTeX, Milkdown |
-| Packaging | electron-builder — Windows NSIS installer; macOS and Linux build targets are also in the repo |
-
-## Getting started
-
-### Download
-
-Grab the Windows installer from the [Releases](https://github.com/xiongdy54/Nutation/releases) page. Nutation requires **Windows 10/11 64-bit (x64 / ARM64)** — there is no 32-bit (ia32) build, since Electron 44+ no longer ships Windows 32-bit binaries. The setup wizard lets you pick the installation directory; uninstalling never deletes your data.
-
-### Build from source
-
-Prerequisites: [Node.js](https://nodejs.org/) 22.12+ and npm.
-
-On Linux, Electron also needs system libraries — the postinstall step starts the Electron binary to verify the native SQLite module:
-
-```bash
-# Debian / Ubuntu (Ubuntu 24.04+ replaces libasound2 with libasound2t64)
-sudo apt-get install -y libgtk-3-0 libnss3 libxss1 libgbm1 libasound2 xvfb
-# Fedora / RHEL / Amazon Linux
-sudo dnf install -y gtk3 nss libXScrnSaver mesa-libgbm alsa-lib xorg-x11-server-Xvfb
-```
-
-If a step only builds the app and never runs Electron (for example a CI build job), set `NUTATION_SKIP_ABI_VERIFY=1` to skip the ABI verification.
-
+### Building from Source
 ```bash
 git clone https://github.com/xiongdy54/Nutation.git
 cd Nutation
-npm install        # pins the native SQLite module for Electron automatically
-npm run dev        # development mode (Vite + Electron, hot reload)
+npm install        # Automatically locks native SQLite modules to Electron ABI
+npm run dev        # Launch Vite + Electron dev environment with HMR
+npm run build      # Compile renderer bundles
+npm run dist       # Build NSIS production package
 ```
 
-Production build and packaging:
+---
 
-```bash
-npm run build      # build the renderer into dist/
-npm start          # run the app from the built output
-npm run dist       # produce the Windows NSIS installer into release/
-npm run dist:mac   # macOS package (build on macOS)
-npm run dist:linux # Linux package (build on Linux)
-```
+## Why "Nutation"?
 
-## Where your data lives
+As a seedling grows, its tip traces gentle, continuous spiral loops through 3D space, actively sensing light, gravity, and obstacles to find its optimal upward trajectory. Botanists call this phenomenon **circumnutation**.
 
-All data stays on your machine:
+Human learning is never a linear sprint. Like that seedling, genuine mastery demands that you explore in gradual spirals from your current vantage point, pause to root deeply when encountering difficulties, and expand step by step.
 
-- Installed builds: `%APPDATA%\Nutation\`
-- Development builds: `%APPDATA%\Nutation-dev\`
+May every learner find their own natural rhythm of growth.
 
-The old `incremental-reading-dev` folder is migrated to the new location on first launch; if the rename fails, Nutation keeps using the old folder rather than starting a new, empty one. The folder contains `library.db` (library, cards, review logs), `dictionary.db`, `learner.db`, backups and learner memory files. Built-in manual and automatic backups live alongside; copying this folder is a full backup. Uninstalling the app does not delete it.
+---
 
-## Roadmap
+## License & Acknowledgements
 
-- Auto-update through GitHub Releases (electron-updater is already wired)
-- Signed and notarized macOS packages, and a stable Linux channel
-- Optional cloud sync — the local library remains the single source of truth
+- Licensed under **[GNU AGPL v3.0](./LICENSE)**.
+- Special thanks to **[Jarrett Ye (L-M-Sherlock)](https://github.com/L-M-Sherlock)** and **[Open Spaced Repetition](https://github.com/open-spaced-repetition)** for developing and open-sourcing the FSRS scheduler (ts-fsrs) and optimizer (fsrs-rs).
+- Built on [foliate-js](https://github.com/johnfactotum/foliate-js), [SuperMemo](https://www.supermemo.com/), Electron, React, better-sqlite3, and KaTeX.
 
-Nutation is under active development. Feedback and issue reports are welcome.
-
-## Contributing
-
-The project is currently developed in a single-author, design-doc-driven workflow. Issue reports, usage feedback and bug reproductions are very welcome — open an [issue](https://github.com/xiongdy54/Nutation/issues). Code contributions land under the project's license.
-
-## License
-
-Licensed under the [GNU Affero General Public License v3.0](./LICENSE). You may use, study, modify and redistribute Nutation under its terms; if you run a modified version as a network service, the AGPL requires you to offer its source to users.
-
-## Acknowledgments
-
-- [foliate-js](https://github.com/johnfactotum/foliate-js) — the EPUB/MOBI reader kernel
-- [ts-fsrs](https://github.com/open-spaced-repetition/ts-fsrs) & [fsrs-rs](https://github.com/open-spaced-repetition/fsrs-rs) — the FSRS scheduler and optimizer (Open Spaced Repetition)
-- [SuperMemo](https://www.supermemo.com/) — the incremental reading methodology that inspired this project
-- Electron · React · Vite · better-sqlite3 · pdf.js · KaTeX · Milkdown · and the open-source ecosystem around them
+---
 
 <details>
-<summary>About the demo library and the AI responses</summary>
+<summary>About the demo library and video captures</summary>
 
-The screenshots use a demo library built from public-domain excerpts: Lu Xun's *Kong Yiji* (Chinese UI) and Arthur Conan Doyle's *A Scandal in Bohemia* (English UI).
+The demo videos and screenshots use public-domain classic texts: John Stuart Mill's *On Liberty* (Chapter II) for Chinese and Japanese, and Charles Darwin's *On the Origin of Species* (Chapter III) for English. The original texts are unabridged. The Mapo Tofu recipe diagram used for image occlusion is an original demonstration graphic.
 
-The AI responses in the animated demos are streamed through Nutation's real AI gateway from a local deterministic test provider. The UI, streaming, drafting, editing and confirmation paths are the real application; the response text is prewritten so the demos are reproducible. No commercial model is implied.
-
-The English README uses screenshots of the English UI; the Chinese README uses the Chinese UI. The Japanese README uses the English screenshots. The app UI itself supports 简体中文, 繁體中文, English and 日本語.
+The inline-to-atlas structure transition, cross-app image occlusion card authoring & review loop (authentic Mapo Tofu recipe), the FSRS review loop (strictly obeying the R2 Minimum Information Principle), and the ASD-STE100 concise interpretation stream are captured from Nutation's live software interface in 60fps high definition.
 
 </details>

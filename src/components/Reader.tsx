@@ -1337,7 +1337,8 @@ export default function Reader({
       showToast(T("请先完成或关闭当前的图片挖空"));
       return;
     }
-    const box = scrollRef.current?.getBoundingClientRect();
+    const override = (window as unknown as { __overrideCaptureRegion?: { left: number; top: number; width: number; height: number } }).__overrideCaptureRegion;
+    const box = override || scrollRef.current?.getBoundingClientRect();
     const capture = window.assetsAPI?.captureRegion;
     if (!box || box.width < 8 || box.height < 8 || !capture) {
       showToast(T("当前环境无法截图"));

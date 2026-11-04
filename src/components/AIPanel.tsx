@@ -627,8 +627,8 @@ export default function AIPanel({
             <span className="ai-route-meta mono">
               {panel.routeLabel
                 ? mode === "auto"
-                  ? T("识别为{label} · 默认形式：{form}", { label: panel.routeLabel, form: panel.routeForm ?? "" })
-                  : T("默认形式：{form}", { form: panel.routeForm ?? "" })
+                  ? T("识别为{label} · 默认形式：{form}", { label: T(panel.routeLabel), form: T(panel.routeForm ?? "") })
+                  : T("默认形式：{form}", { form: T(panel.routeForm ?? "") })
                 : ""}
             </span>
             {(panel.drafts?.length || panel.error) && !panel.running && (

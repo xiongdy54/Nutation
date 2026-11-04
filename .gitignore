@@ -15,3 +15,6 @@ capture.html.bak
 
 # 皮肤引擎截图产物（本机渲染基线，重跑 tests/skin-baseline-shot.mjs 再生）
 tests/__skin-*/
+
+# 设计研讨的本地临时会话（正式样张仍放 design-samples/）
+.superpowers/
