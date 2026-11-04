@@ -25,6 +25,9 @@ check("概念默认形式=问答", rConcept.defaultForm === "问答", "问答", 
 check("枚举默认形式=挖空", rEnum.defaultForm === "挖空", "挖空", rEnum.defaultForm);
 check("映射表含图片材料 → card-occlusion/图片挖空", cards.MATERIAL_ROUTES.image.scope === "card-occlusion" && cards.MATERIAL_ROUTES.image.defaultForm === "图片挖空", "card-occlusion/图片挖空", cards.MATERIAL_ROUTES.image);
 check("detectMode 旧接口保持兼容（公式）", cards.detectMode("勾股定理 公式 a^2+b^2=c^2") === "card-formula", "card-formula", cards.detectMode("勾股定理 公式 a^2+b^2=c^2"));
+// AI 路由回包解析（纯函数）
+check("parseRouteReply 取出键", cards.parseRouteReply("sequence") === "sequence" && cards.parseRouteReply("Answer: Formula.") === "formula", "sequence/formula", [cards.parseRouteReply("sequence"), cards.parseRouteReply("Answer: Formula.")]);
+check("parseRouteReply 无法解析→null", cards.parseRouteReply("不确定") === null && cards.parseRouteReply("") === null, null, cards.parseRouteReply("不确定"));
 
 console.log("== M1-2 CardLint L11 语义（M1.1b：缺资产而非缺 front） ==");
 const occOk = cards.lintCard({ front: "图中遮挡区域对应的是什么？", back: "海马体", cardType: "imageOcclusion", occlusion: { assetPath: "bookasset://x/y.png", rects: [{ x: 1, y: 2, w: 3, h: 4, ord: 0 }] } });
