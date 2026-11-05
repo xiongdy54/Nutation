@@ -486,6 +486,9 @@ export default function Reader({
 
   // ---------- 选区动作编排（批 4 Task 7，R30）：实现全在 src/lib/useSelectionActions.ts，
   // 这里只注入宿主能力（锚点/选区清理/图片聚焦）并接收状态与回调——Reader 不留动作实现副本。
+  // v49.99（D265）：侧栏「图片挖空」的内部截图源（截阅读区，不隐藏窗口）——函数体在
+  // occlEditor 会话态与内核 refs 就绪后定义，adapter 经 ref 读最新实现。
+  const captureWorkbenchRef = useRef<(() => Promise<{ dataUrl: string; alt: string } | null>) | null>(null);
   const selActions = useSelectionActions({
     selectionText: () => selection?.text ?? null,
     selectionSpans: () => selection?.spans,
@@ -539,7 +542,9 @@ export default function Reader({
       get: () => null,
       close: () => {},
       setBusy: () => {}
-    }
+    },
+    // v49.99（D265）：侧栏制卡台「图片挖空」＝截阅读区（原工具栏截图链路），不隐藏窗口
+    captureWorkbenchImage: () => captureWorkbenchRef.current?.() ?? Promise.resolve(null)
   });
   const {
     aiPanel,
@@ -828,8 +833,6 @@ export default function Reader({
           // 在那里按下鼠标常是「加选第二段」的起手，清集合会让多段选择在 PDF 上永远只剩最后一段。
           // foliate 的章节在 iframe 里，事件根本不冒泡到宿主，本项只影响 PDF 与宿主侧正文。
           t.closest(".reader-engine-host") ||
-          // v48.41（D81）：工具栏选区动作组是动作面——点「摘录/制卡」时 mousedown 不得清集合与选区
-          t.closest(".reader-sel-actions") ||
           // v48.102（D147）：制卡台坞是选区动作面——「带入选区」要读 Reader 选区快照
           //（EPUB 引擎选区在 iframe 里只有快照可读），点坞的 mousedown 不得清集合与选区
           t.closest(".wb-root"))) return;
@@ -1326,23 +1329,19 @@ export default function Reader({
   );
 
   /**
-   * D122 截图：截取阅读区当前可见内容（主进程 webContents.capturePage，覆盖 foliate iframe / PDF canvas
-   * 等渲染层读不到像素的内核）→ 与「点击正文图片」同一条路径进入图片挖空编辑器（默认框遮罩、
-   * 裁剪/AI 建议在编辑器内）。截前先清选区并等两帧重绘，浮条/选区高亮不入镜。
+   * D122 截图 / v49.99（D265）制卡台「图片挖空」内部截图源：
+   * 截取阅读区当前可见内容（主进程 webContents.capturePage，覆盖 foliate iframe / PDF canvas
+   * 等渲染层读不到像素的内核），**不隐藏软件窗口**。截前先清选区并等两帧重绘，浮条/选区高亮不入镜。
+   * 返回图片交 useSelectionActions.startWorkbenchCapture 打开图片挖空编辑器；守卫（编辑器/弹窗在场）
+   * 已收口到 hook，所有宿主一致。
    */
-  const handleCaptureReader = useCallback(async () => {
-    // 制卡台常驻后 manualOpen / aiPanel 常为真（表单常驻、AI 面板留存）——不能再当作「弹层在场」拦截，
-    // 否则截图钮永远静默无反应（用户 2026-10-10 反馈）。只有图片挖空编辑器 / 图片挖空弹窗在场才拦。
-    if (occlEditor || (manualOpen && manualImage)) {
-      showToast(T("请先完成或关闭当前的图片挖空"));
-      return;
-    }
+  const captureReaderForWorkbench = useCallback(async () => {
     const override = (window as unknown as { __overrideCaptureRegion?: { left: number; top: number; width: number; height: number } }).__overrideCaptureRegion;
     const box = override || scrollRef.current?.getBoundingClientRect();
     const capture = window.assetsAPI?.captureRegion;
     if (!box || box.width < 8 || box.height < 8 || !capture) {
       showToast(T("当前环境无法截图"));
-      return;
+      return null;
     }
     setSelection(null);
     engineSelRef.current = null;
@@ -1350,7 +1349,7 @@ export default function Reader({
     const dataUrl = await capture({ x: box.left, y: box.top, width: box.width, height: box.height });
     if (!dataUrl) {
       showToast(T("截图失败"));
-      return;
+      return null;
     }
     imageAnchorRef.current = {
       locator: kernelRef.current?.getCurrentLocation() ?? null,
@@ -1358,8 +1357,9 @@ export default function Reader({
       alt: T("页面截图"),
       contextText: undefined
     };
-    openOcclusionEditor({ dataUrl, alt: T("页面截图") }, undefined);
-  }, [manualOpen, manualImage, occlEditor, openOcclusionEditor, showToast]);
+    return { dataUrl, alt: T("页面截图") };
+  }, [T, showToast]);
+  captureWorkbenchRef.current = captureReaderForWorkbench;
 
   /** v25：选区提交前把整图落盘（assets 表）——卡片 occlusion_json 需要稳定的 assetPath */
   const ensureImageAsset = useCallback(
@@ -1863,18 +1863,12 @@ export default function Reader({
   const turnAnimatedDisabledTitle = T("PDF 为连续滚动容器，不适用翻页过渡");
   const turnEffectOn = normalizeTurnEffect(readerSettings.appearance.turnEffect) === "glide";
   // D122：与选区相关的动作（批注/制卡/AI 制卡/AI 解释/查词）与「摘录/形式」标注选项全部迁入
-  // 选区浮条（SelectionMenu，随选区出现在鼠标旁）；工具栏只留**不依赖文字选区**的一项：
-  //   · 截图＝截取阅读区可见内容 → 进入与「点击正文图片」同一条图片挖空制卡流程
-  //     （取代原「图片挖空」资源库选图按钮——正文图片本身点击即可挖空，该按钮冗余）
-  // v48.97（D141，用户指令）：原「制卡」钮（免选区自由制卡，D92 §3.4）**删除**——它与顶栏
-  // 常驻「制卡台」入口重复（同一个制卡台面板）；有选区的制卡仍走选区浮条，快捷键
-  // reader.makeCard 与 SelectionPopover 的 manual 动作均不受影响。
+  // 选区浮条（SelectionMenu，随选区出现在鼠标旁）。
+  // v48.97（D141，用户指令）：原「制卡」钮（免选区自由制卡，D92 §3.4）删除——与顶栏制卡台入口重复。
+  // v49.99（D265，用户指令）：工具栏「截图」钮退役——截取阅读区并进入图片挖空制卡的功能
+  // 由侧栏制卡台的「图片挖空」继承（Reader 经 adapter.captureWorkbenchImage 提供同一个截图链路）；
+  // 工具栏不再渲染 `data-sel-actions` 动作组，markdown 分支的 .reader-md-actions 一并删除。
   const selBarStyle = useSelectionBarStyle();
-  const selActionsGroup = (
-    <div className="reader-engine-controls-group reader-sel-actions" data-sel-actions>
-      <button type="button" className="btn-rail" data-sel-act="capture" title={T("截取当前阅读区域并进入图片挖空制卡")} onClick={() => void handleCaptureReader()}>{T("截图")}</button>
-    </div>
-  );
 
   /**
    * 侧栏可用性（v48.44/D84）：**恒可用**——三页签恒可点（空数据＝页签内空态），
@@ -1993,12 +1987,9 @@ export default function Reader({
                 </div>
                 <div className="reader-engine-col">
               <div className="reader-engine-controls" data-atlas={atlasOpen ? "1" : undefined}>
-                {selActionsGroup}
                 <div className="reader-engine-controls-group reader-engine-controls-right">
                   {/* v48.44（D84）：翻页钮移到「更多」左侧。
-                      v48.50（D90 增补）：分隔线移到组首——「图片挖空」与翻页贴得太近（用户指令），
-                      用 hairline 在选区动作组与翻页/菜单组之间给出可见断点。 */}
-                  <span className="reader-engine-divider" aria-hidden="true" />
+                      v49.99（D265）：左侧选区动作组退役，组间分隔线随之删除（右列控件贴右缘）。 */}
                   {backChip ? (
                     <button type="button" className="btn btn-outline btn-sm reader-back-chip" data-reader-back-chip onClick={() => { const l = backChip; setBackChip(null); if (l) void kernelRef.current?.goTo(l); }}>
                       {T("↩ 回到刚才的位置")}
@@ -2398,8 +2389,8 @@ export default function Reader({
             </>
           ) : (
             <>
-            {/* v48.41（D81）：markdown（粘贴书）分支的选区动作组——与引擎工具栏同一份，置顶常驻。 */}
-            <div className="reader-md-actions">{selActionsGroup}</div>
+            {/* v49.99（D265）：markdown 分支工具栏截图钮退役，.reader-md-actions 容器一并删除；
+                图片挖空入口＝侧栏制卡台「图片挖空」 */}
             <article className="reader-markdown">
               <h1 className="reader-title">{title}</h1>
               {contextLabel && <p className="reader-context">{contextLabel}</p>}

@@ -121,8 +121,9 @@ ${para(`第${i}章正文。`, 12)}
 }
 
 // ---------- 页面内探针 ----------
-// 一次取全：左带（页签行）/ 页签钮 / 开关钮 / 右带（工具行）/ 选区动作钮（制卡·截图）。
-// 每个量都带 label（元素文本）自证测的是哪个元素；两态共用（收起态页签行被 visibility 隐藏，仍可量 rect）。
+// 一次取全：左带（页签行）/ 页签钮 / 开关钮 / 右带（工具行）/ 翻页钮。
+// 每个量都带 label（元素文本/aria-label）自证测的是哪个元素；两态共用（收起态页签行被 visibility 隐藏，仍可量 rect）。
+// v49.99（D265）：阅读器工具栏选区动作组（原仅剩「截图」）退役，几何基准改用恒在的翻页钮（同 24 档）。
 const JS_BAND = `(() => {
   const r = (el) => { const b = el.getBoundingClientRect(); return { t: +b.top.toFixed(1), b: +b.bottom.toFixed(1), l: +b.left.toFixed(1), w: +b.width.toFixed(1), h: +b.height.toFixed(1) }; };
   const cs = (el) => getComputedStyle(el);
@@ -131,7 +132,7 @@ const JS_BAND = `(() => {
   const tabs = [...document.querySelectorAll("[data-sidebar-tab]")];
   const toggle = document.querySelector("[data-reader-sidebar-toggle]");
   const controls = document.querySelector(".reader-engine-controls");
-  const acts = [...document.querySelectorAll("[data-sel-actions] [data-sel-act]")];
+  const navBtns = [...document.querySelectorAll(".reader-engine-controls .reader-nav-btn")];
   const rail = document.querySelector("[data-reader-side-rail]");
   const sb = document.querySelector("[data-reader-sidebar]");
   const out = {
@@ -139,7 +140,7 @@ const JS_BAND = `(() => {
     tabs: tabs.map((el) => ({ label: txt(el), ...r(el), fs: cs(el).fontSize, fw: cs(el).fontWeight })),
     toggle: toggle ? { label: txt(toggle), ...r(toggle), pos: cs(toggle).position, left: cs(toggle).left, top: cs(toggle).top, fs: cs(toggle).fontSize } : null,
     controls: controls ? { h: +controls.getBoundingClientRect().height.toFixed(1), padTop: cs(controls).paddingTop, padLeft: cs(controls).paddingLeft } : null,
-    acts: acts.map((el) => ({ label: txt(el), ...r(el), fs: cs(el).fontSize })),
+    nav: navBtns.map((el) => ({ label: el.getAttribute("aria-label") || txt(el), ...r(el), fs: cs(el).fontSize })),
     rail: rail ? { w: +rail.getBoundingClientRect().width.toFixed(1), transition: cs(rail).transition } : null,
     sidebarW: sb ? +sb.getBoundingClientRect().width.toFixed(1) : null,
     mainW: (() => { const m = document.querySelector(".reader-engine-main"); return m ? +m.getBoundingClientRect().width.toFixed(1) : null; })(),
@@ -249,20 +250,19 @@ async function main() {
     console.log("      页签行:", JSON.stringify(open.tabsRow));
     console.log("      页签钮:", JSON.stringify(open.tabs));
     console.log("      工具行:", JSON.stringify(open.controls));
-    console.log("      选区动作钮:", JSON.stringify(open.acts));
+    console.log("      翻页钮:", JSON.stringify(open.nav));
     console.log("      开关钮:", JSON.stringify(open.toggle), "| 顶栏导航:", JSON.stringify(open.topbarNav));
     console.log("      轨:", JSON.stringify(open.rail));
     console.log("      过渡:", JSON.stringify({ rail: open.rail && open.rail.transition, controls: open.controlsTransition }));
     console.log("      环境:", JSON.stringify(open.env));
 
-    // A0 自证：量到的就是这几枚钮（文本逐字；v48.97/D141 起工具栏动作组只剩「截图」——「制卡」钮
-    // 与顶栏常驻制卡台入口重复已删，有选区的制卡走选区浮条，故此处期望集随之下调）
+    // A0 自证：量到的就是这几枚钮（文本逐字；D265 起工具栏动作组退役，几何基准＝恒在的翻页钮）
     check(
-      "A0 探针自证（页签＝目录/摘录（D254 起图谱移出侧栏）；动作钮＝截图；开关钮＝收起/展开）",
+      "A0 探针自证（页签＝目录/摘录（D254 起图谱移出侧栏）；基准钮＝上一页/下一页；开关钮＝收起/展开）",
       (open.tabs || []).map((x) => x.label).join(",") === "目录,摘录" &&
-        (open.acts || []).map((x) => x.label).join(",") === "截图" &&
+        (open.nav || []).map((x) => x.label).join(",") === "上一页,下一页" &&
         ["收起", "展开"].includes((open.toggle || {}).label),
-      JSON.stringify({ tabs: (open.tabs || []).map((x) => x.label), acts: (open.acts || []).map((x) => x.label), toggle: open.toggle && open.toggle.label })
+      JSON.stringify({ tabs: (open.tabs || []).map((x) => x.label), nav: (open.nav || []).map((x) => x.label), toggle: open.toggle && open.toggle.label })
     );
     // A1 左带与右带同高（两列顶栏带对齐）
     check(
@@ -270,18 +270,18 @@ async function main() {
       Boolean(open.tabsRow && open.controls) && Math.abs(open.tabsRow.h - open.controls.h) <= 0.5,
       JSON.stringify({ tabsRowH: open.tabsRow && open.tabsRow.h, controlsH: open.controls && open.controls.h })
     );
-    // A2 页签钮高 = 选区动作钮高（＝D139 主诉求；v48.97/D141 起动作组只剩「截图」，按 ≥1 判）
-    const actH = (open.acts || []).map((a) => a.h);
+    // A2 页签钮高 = 工具栏翻页钮高（＝D139 主诉求；D265 起动作组退役，基准改用同档翻页钮）
+    const navH = (open.nav || []).map((a) => a.h);
     check(
-      "A2 页签钮高 = 工具栏动作钮（截图）高（±0.5）",
-      (open.tabs || []).length === 2 && actH.length >= 1 && (open.tabs || []).every((t) => Math.abs(t.h - actH[0]) <= 0.5),
-      JSON.stringify({ tabsH: (open.tabs || []).map((t) => t.h), actsH: actH })
+      "A2 页签钮高 = 工具栏翻页钮高（±0.5）",
+      (open.tabs || []).length === 2 && navH.length >= 1 && (open.tabs || []).every((t) => Math.abs(t.h - navH[0]) <= 0.5),
+      JSON.stringify({ tabsH: (open.tabs || []).map((t) => t.h), navH })
     );
-    // A3 页签钮与动作钮同顶同底（同一视觉带，不是只有高度相同）
+    // A3 页签钮与翻页钮同顶同底（同一视觉带，不是只有高度相同）
     check(
-      "A3 页签钮与制卡钮同顶同底（±0.5）",
-      (open.tabs || []).length > 0 && actH.length > 0 && Math.abs(open.tabs[0].t - open.acts[0].t) <= 0.5 && Math.abs(open.tabs[0].b - open.acts[0].b) <= 0.5,
-      JSON.stringify({ tab: open.tabs[0], act: open.acts[0] })
+      "A3 页签钮与翻页钮同顶同底（±0.5）",
+      (open.tabs || []).length > 0 && navH.length > 0 && Math.abs(open.tabs[0].t - open.nav[0].t) <= 0.5 && Math.abs(open.tabs[0].b - open.nav[0].b) <= 0.5,
+      JSON.stringify({ tab: open.tabs[0], nav: open.nav[0] })
     );
     // A4 左右两带内容同顶（内距同为 sp-2=8）
     check(
@@ -298,18 +298,18 @@ async function main() {
 
     // ===== B 浮动开关钮（fixed，两态同位同带）=====
     console.log("== B 浮动开关钮 ==");
-    const btnH = (open.acts || [])[0]?.h;
+    const btnH = (open.nav || [])[0]?.h;
     check(
-      "B1 展开态：开关钮 fixed(16, 56) 宽 40 高 = 动作钮高（±0.5）",
+      "B1 展开态：开关钮 fixed(16, 56) 宽 40 高 = 翻页钮高（±0.5）",
       Boolean(open.toggle) && open.toggle.pos === "fixed" && open.toggle.left === "16px" && open.toggle.top === "56px" &&
         Math.abs(open.toggle.w - 40) <= 0.5 && typeof btnH === "number" && Math.abs(open.toggle.h - btnH) <= 0.5,
       JSON.stringify({ toggle: open.toggle, actH: btnH })
     );
     check(
-      "B2 展开态：开关钮与制卡/截图同带（同顶同底 ±0.5）",
-      Boolean(open.toggle) && (open.acts || []).length > 0 &&
-        Math.abs(open.toggle.t - open.acts[0].t) <= 0.5 && Math.abs(open.toggle.b - open.acts[0].b) <= 0.5,
-      JSON.stringify({ toggle: open.toggle, act: (open.acts || [])[0] })
+      "B2 展开态：开关钮与翻页钮同带（同顶同底 ±0.5）",
+      Boolean(open.toggle) && (open.nav || []).length > 0 &&
+        Math.abs(open.toggle.t - open.nav[0].t) <= 0.5 && Math.abs(open.toggle.b - open.nav[0].b) <= 0.5,
+      JSON.stringify({ toggle: open.toggle, nav: (open.nav || [])[0] })
     );
     await screenshot(cdp, "tmp-d139-band-open.png");
     // 收起态：开关钮仍在同一带（文案变「展开」）
@@ -318,7 +318,7 @@ async function main() {
     const closedAgain = JSON.parse(String(await cdp.eval(JS_BAND)) || "{}");
     console.log("  · 收起态开关钮:", JSON.stringify(closedAgain.toggle));
     check(
-      "B3 收起态：开关钮同位同高（top 56 / 高 = 动作钮高），文案＝展开",
+      "B3 收起态：开关钮同位同高（top 56 / 高 = 翻页钮高），文案＝展开",
       Boolean(closedAgain.toggle) && closedAgain.toggle.label === "展开" && closedAgain.toggle.top === "56px" &&
         Math.abs(closedAgain.toggle.t - closed.toggle.t) <= 0.5 && Math.abs(closedAgain.toggle.h - open.toggle.h) <= 0.5,
       JSON.stringify({ closed: closedAgain.toggle, before: closed.toggle })

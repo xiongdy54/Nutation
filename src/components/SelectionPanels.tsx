@@ -290,7 +290,8 @@ export default function SelectionPanels({
   // v48.101（D146）：「带入 AI 回答」生成链——无既有回答且正面非空时，按制卡规则直答并流式写入
   // 背面字段（sel.generateManualAnswer 并发门与失败 toast 在 hook；落点＝ManualFormHandle.setBackValue）
   // （函数体在 §4.2 块后定义——落点依赖 manualFormRef）
-  // 手动制卡题型（题型页签在标题行里，表单受控）。「图片挖空」＝启动整屏截图（截完直接弹挖空编辑器），不切表单
+  // 手动制卡题型（题型页签在标题行里，表单受控）。「图片挖空」＝启动宿主截图（阅读器/摘录页截当前内容面，
+  // 独立制卡台窗口整屏截图；截完直接弹挖空编辑器），不切表单
   type ManualMode = "qa" | "reverse" | "cloze" | "imageOcclusion";
   const [manualMode, setManualMode] = useState<ManualMode>("qa");
   useEffect(() => setManualMode("qa"), [sel.manualSeq]);
@@ -536,7 +537,7 @@ export default function SelectionPanels({
         />
       )}
 
-      {/* D123 修订 3：制卡台「图片挖空 → 截图」产生的编辑器（阅读器自己的点击图片入口仍由 Reader 渲染） */}
+      {/* D123 修订 3：制卡台「图片挖空 → 截图」产生的编辑器（D265：截图源按宿主分派；阅读器自己的点击图片入口仍由 Reader 渲染） */}
       {occlShown?.workbench && (
         <OcclusionEditor
           image={occlShown.image}

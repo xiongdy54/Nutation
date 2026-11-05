@@ -1032,8 +1032,9 @@ ipcMain.handle("assets:saveImage", (_e, ownerKey, ext, base64, kind) => {
   }
 });
 
-// D122 阅读器「截图」：截取**发起请求的窗口**内的视口矩形（CSS px，webContents.capturePage 按 DIP 取）。
+// D122 窗口内截图：截取**发起请求的窗口**内的视口矩形（CSS px，webContents.capturePage 按 DIP 取）。
 // 能截到 foliate iframe / PDF canvas 这类渲染层 DOM 读不到像素的内核；矩形夹进窗口内容区，越界/空 ⇒ null。
+// D265（v49.99）：原阅读器工具栏截图入口退役，改由侧栏制卡台「图片挖空」消费（截阅读区/摘录卡面，不隐藏窗口）。
 ipcMain.handle("reader-capture:region", async (e, rect) => {
   try {
     const wc = e.sender;
@@ -1053,7 +1054,8 @@ ipcMain.handle("reader-capture:region", async (e, rect) => {
   }
 });
 
-// D123 修订 3：制卡台「图片挖空 → 截图」——整块屏幕任意内容框选（遮罩窗口），返回 PNG dataURL / null
+// D123 修订 3：**独立**制卡台窗口的「图片挖空 → 截图」——整块屏幕任意内容框选（遮罩窗口），返回 PNG dataURL / null
+//（D265：主窗口侧栏制卡台不再走这里，改用 reader-capture:region）
 ipcMain.handle("screen-capture:start", (e) => screenCapture.start(e.sender));
 
 // ---------- M2 数据备份与恢复（§9.1 M2） ----------

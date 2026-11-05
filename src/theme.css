@@ -5734,16 +5734,10 @@ body.reader-surface {
   white-space: nowrap;
 }
 @media (max-width: 1150px) { .reader-pageinfo { display: none; } }
-/* 组间分隔（次要手段：主分组靠空间，1px 线仅作视觉断点） */
-.reader-engine-divider {
-  width: 1px;
-  align-self: stretch;
-  margin-block: var(--sp-1);
-  background: var(--reader-border);
-}
+/* v49.99（D265）：左侧选区动作组退役后，组间分隔线不再有第二组可分隔——规则删除 */
 /* v48.45（D85，用户指令⑤）：右上三钮（翻页/更多/阅读设置）＝**顶栏导航同款**——
    无边框、32 高、secondary 档 500、次文字色、hover grey-1 底（阅读外观按 --reader-fg 混色取档）。
-   D84⑦ 对这三钮的「24 高有框」口径作废；左侧选区动作组的有框语言不变。
+   D84⑦ 对这三钮的「24 高有框」口径作废（左侧选区动作组已随 D265 退役）。
    v48.50（D90，用户指令③）修订：三钮**全部降为 24 高**（同日增补把翻页也收进来——用户：
    「翻页按钮请也变小收窄与其他按钮高度对齐」）；「更多/阅读设置」为 btn-rail 同族（有框、meta 字号，
    框色走 --reader-border 随阅读主题混色），翻页 icon 钮保持无边框。 */
@@ -5832,7 +5826,7 @@ body.reader-surface {
 }
 /* ---------- D130 R3：阅读设置弹层分组 + 个性化控件（零新 Token，全部既有档位） ---------- */
 /* 「Group with space, not lines」：组间 margin-block ≥ 2× 组内行距（sp-2 vs sp-1），空间先行；
-   hairline 仅作视觉断点（次手段，与 .reader-engine-divider 同一立场）。 */
+   hairline 仅作视觉断点（次手段）。 */
 .reader-tool-menu-group {
   margin-block: var(--sp-2);
 }
@@ -8039,7 +8033,7 @@ body.capture-body #root { height: 100vh; }
 .seg-rail button:hover { color: var(--text-primary); }
 /* v48.44/D84 现状 --grey-1 底 → D88 §4.4：选中态＝强调，归 accent（§2.2 映射「选中填充」行）——
    accent-soft 底（浅 8% / 深 16%，既有 token 派生保证可读）+ accent 字 + 500 字重；
-   同时覆盖摘录页 .extract-toolbar 与阅读器 .reader-sel-actions 内的段控（同一类族）。 */
+   摘录页 .extract-toolbar 内的段控沿用本口径（阅读器工具栏动作组已随 D265 退役）。 */
 .seg-rail button.on { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
 .btn-rail {
   height: 24px;
@@ -8446,9 +8440,7 @@ button.crumb-root:hover { color: var(--text-primary); text-decoration: underline
 .cb-row.is-open { background: var(--accent-soft); }
 .queue-row.is-open { border-color: var(--accent); background: var(--accent-soft); }
 
-/* v48.41（D81）：markdown 阅读分支的选区动作组容器（引擎分支的组直接挂在 .reader-engine-controls 里）
-   v48.44（D84）：组内钮已有自己的 1px 框（.seg-rail / .btn-rail），原 border-color 桥接规则删除 */
-.reader-md-actions { display: flex; padding: 0 var(--sp-4) var(--sp-2); }
+/* v49.99（D265）：.reader-md-actions（markdown 分支工具栏截图钮容器）随截图钮退役删除 */
 /* PDF 文中留痕的下划线形式：透明底 + 底边 2px 批注实色线（el 内联 borderBottomColor） */
 .reader-doc-mark.is-underline {
   background: transparent;
@@ -8612,7 +8604,8 @@ button.crumb-root:hover { color: var(--text-primary); text-decoration: underline
   .md-tb-menu { animation: stage-pop-in 150ms var(--ease) both; }
 }
 
-/* （D122：§K.4 阅读器选区动作组悬浮弹层 .reader-sel-actions-pop 已退役——被选区浮条 .sel-bar 取代） */
+/* （D122：§K.4 阅读器选区动作组悬浮弹层 .reader-sel-actions-pop 已退役——被选区浮条 .sel-bar 取代；
+   v49.99/D265：固定工具栏动作组 .reader-sel-actions 随「截图」钮退役一并删除） */
 
 /* ---------- 摘录卡正文盒（Milkdown 根作用域） ----------
    D95 v1.3 的「.editor 类劫持逐项抵消」随 §J.2 根治退役：批注浮层类名已改名 .annot-editor，

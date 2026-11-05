@@ -163,6 +163,33 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
       }
     });
   }
+  /**
+   * v49.99（D265）：侧栏制卡台「图片挖空」在本页的内部截图源——截当前卡面 `.extract-face`
+   *（缺省回落整页），**不隐藏软件窗口**；只有独立制卡台窗口才走整屏截图（其窗口内没有阅读内容）。
+   */
+  const captureWorkbenchImage = useCallback(async () => {
+    const el = document.querySelector<HTMLElement>(".extract-face") ?? pageRef.current;
+    const box = el?.getBoundingClientRect();
+    const capture = window.assetsAPI?.captureRegion;
+    if (!box || box.width < 8 || box.height < 8 || !capture) {
+      setFlash(T("当前环境无法截图"));
+      window.setTimeout(() => setFlash(null), 1800);
+      return null;
+    }
+    window.getSelection()?.removeAllRanges();
+    multiHighlightRef.current?.clear();
+    multiRangesRef.current = [];
+    lastRawRef.current = null;
+    setFaceSel(null);
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    const dataUrl = await capture({ x: box.left, y: box.top, width: box.width, height: box.height });
+    if (!dataUrl) {
+      setFlash(T("截图失败"));
+      window.setTimeout(() => setFlash(null), 1800);
+      return null;
+    }
+    return { dataUrl, alt: T("页面截图") };
+  }, [T]);
   // 多段选择的修饰键（v48.38 / D78）：settings.app.multiSelectKey——与 Reader 同源同订阅（改动即时生效）
   useEffect(() => {
     let alive = true;
@@ -553,6 +580,8 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
     clearAnchor: () => {
       /* 摘录页无制卡锚点（正文即锚） */
     },
+    // v49.99（D265）：侧栏「图片挖空」截当前卡面，不隐藏窗口（独立制卡台窗口才整屏截图）
+    captureWorkbenchImage,
     occlusionSourceRef: { current: "engine" },
     showToast: (msg) => {
       setFlash(msg);

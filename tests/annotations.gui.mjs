@@ -312,7 +312,8 @@ try {
   // v48.42（D82）：双段控——前两枚＝模式（高亮/摘录+高亮），后两枚＝形式（高亮/下划线）
   check("工具栏含双段控四枚（模式2 + 形式2，D83 段控上移）", Array.isArray(m1.seg) && m1.seg.length === 4 && m1.seg[1].t === "摘录+高亮" && m1.seg[3].t === "下划线", JSON.stringify(m1.seg));
   check("菜单＝批注框+色块（无段控）", m1.comment === true && m1.seg.length === 4, JSON.stringify({ comment: m1.comment, seg: m1.seg }));
-  check("菜单含动作行（阅读器六项）", Array.isArray(m1.acts) && m1.acts.length === 6 && m1.acts.includes("图片挖空"), JSON.stringify(m1.acts));
+  // v49.99（D265）：工具栏截图钮退役，选区浮条动作＝批注/制卡/AI 制卡/AI 解释/查词（图片挖空改由侧栏制卡台入口）
+  check("菜单含动作行（阅读器五项）", Array.isArray(m1.acts) && m1.acts.length === 5 && !m1.acts.includes("图片挖空"), JSON.stringify(m1.acts));
   await screenshot(cdp, "tmp-annot-reader-menu.png");
 
   // ============================================================
@@ -1102,11 +1103,11 @@ try {
   // v48.45（D85）：开关钮浮在轨顶（不在 .reader-engine-controls 行内），探针单独取它
   const toolBtns = await cdp.eval(`JSON.stringify([...document.querySelectorAll(".reader-engine-controls button, [data-reader-sidebar-toggle]")].map((b) => b.textContent.trim()))`);
   check(
-    "⑪e 工具栏（D83/D84/D85）＝收起/展开（轨顶浮钮）+ 双段控 + 六动作 + 更多/阅读设置 + 翻页左移",
+    "⑪e 工具栏（D83/D84/D85；D265）＝收起/展开（轨顶浮钮）+ 更多/阅读设置 + 翻页；选区动作组（截图）退役",
     (() => {
       const labels = JSON.parse(String(toolBtns) || "[]");
-      return labels.includes("展开") && labels.includes("摘录+高亮") && labels.includes("下划线") &&
-        labels.includes("图片挖空") && labels.includes("更多") && labels.includes("阅读设置");
+      return labels.includes("展开") && labels.includes("更多") && labels.includes("阅读设置") &&
+        !labels.includes("图片挖空") && !labels.includes("截图");
     })(),
     toolBtns
   );

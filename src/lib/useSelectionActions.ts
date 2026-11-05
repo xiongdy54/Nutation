@@ -112,6 +112,12 @@ export interface SelectionActionsAdapter {
     close: () => void;
     setBusy: (busy: boolean) => void;
   };
+  /**
+   * v49.99（D265）制卡台「图片挖空」的内部截图源：阅读器截阅读区、摘录页截当前卡面，
+   * **不隐藏软件窗口**；不提供＝回落到 assetsAPI.captureScreen 整屏框选（独立制卡台窗口，
+   * 其窗口内没有阅读内容可截，隐藏窗口是唯一入口）。
+   */
+  captureWorkbenchImage?: () => Promise<{ dataUrl: string; alt: string } | null>;
 }
 
 /** v25：按选区包围盒裁剪（AI 需要「只看选区内容」的图片；坐标以原图百分比给出） */
@@ -631,20 +637,39 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
     setOcclEditor({ image, origin: origin ?? null });
   }
 
-  /** D123 修订 3：制卡台「图片挖空」→ 整屏框选截图（主进程遮罩窗口，可截软件之外的任意内容）→
-      直接弹出图片挖空编辑器；取消框选不做任何事。 */
+  /** D123 修订 3 / v49.99（D265）：制卡台「图片挖空」→ 弹图片挖空编辑器。
+      截图源按宿主分派：宿主提供 captureWorkbenchImage 时截软件内部内容（阅读器＝阅读区、
+      摘录页＝当前卡面，均不隐藏窗口）；否则回落主进程整屏框选（独立制卡台窗口专用）。
+      取消框选不做任何事。 */
   async function startWorkbenchCapture() {
-    if (occlEditor) return;
-    const capture = window.assetsAPI?.captureScreen;
-    if (!capture) {
-      showToast(T("当前环境无法截图"));
+    // 守卫与 D122 工具栏截图一致：挖空编辑器 / 图片挖空弹窗在场时不再叠加一层
+    if (occlEditor || (manualOpen && manualImage)) {
+      showToast(T("请先完成或关闭当前的图片挖空"));
       return;
     }
-    const dataUrl = await capture();
-    if (!dataUrl) return;
+    let shot: { dataUrl: string; alt: string } | null = null;
+    try {
+      const internal = A().captureWorkbenchImage;
+      if (internal) {
+        shot = await internal();
+      } else {
+        const capture = window.assetsAPI?.captureScreen;
+        if (!capture) {
+          showToast(T("当前环境无法截图"));
+          return;
+        }
+        const dataUrl = await capture();
+        if (dataUrl) shot = { dataUrl, alt: T("屏幕截图") };
+      }
+    } catch {
+      // 渲染层 capturePage / 独立窗口整屏链路异常：不落编辑器，给出可见反馈
+      showToast(T("截图失败"));
+      return;
+    }
+    if (!shot) return;
     A().clearKernelSelection?.();
     occlusionSourceRef.current = "engine";
-    setOcclEditor({ image: { dataUrl, alt: T("屏幕截图") }, origin: null, workbench: true });
+    setOcclEditor({ image: { dataUrl: shot.dataUrl, alt: shot.alt }, origin: null, workbench: true });
   }
 
   function closeOcclusionEditor() {

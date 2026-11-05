@@ -1,7 +1,7 @@
-// 自由制卡台宿主（v48.79 / D123）：没有「当前阅读位置」的页面（书架/复习/卡片/日记/数据）与独立制卡台窗口
-// 共用同一套 useSelectionActions + SelectionPanels——手动制卡免选区、AI 解释/制卡走「粘贴文字」入口，
+// 自由制卡台宿主（v48.79 / D123；v49.99 / D265 仅服务独立制卡台窗口）：
+// 窗口内没有「当前阅读位置」——手动制卡免选区、AI 解释/制卡走「粘贴文字」入口，
 // 卡片不带来源锚（contextRef=null，与既有「contextRef 为 NULL 的老卡」同口径）。
-// 阅读器与摘录页有自己的宿主（带选区/来源上下文），不会与本宿主同时挂载。
+// 主窗口的阅读器与摘录页各有带阅读上下文的宿主；其余页面不再挂本宿主（制卡走 Ctrl+Alt+K 独立窗口）。
 import { useCallback, useRef, useState } from "react";
 import SelectionPanels from "./SelectionPanels";
 import { useSelectionActions } from "../lib/useSelectionActions";

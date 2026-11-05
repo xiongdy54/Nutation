@@ -5,7 +5,8 @@
 // @runtime: node  @tier: 2  @gui: true  @id: D144  @timeout: 300
 // 运行：npm run build 之后 `node tests/d144.gui.mjs`（CDP 驱动 dist 真实应用，自启自关）
 // 隔离：M7_TEST_USERDATA 指向 tests/tmp-d144-userdata（先清空，全新库），绝不触碰真实库（§7.3）。
-// 无需建书：书架页即挂自由制卡台宿主（FreeWorkbenchHost），坞入口＝顶栏「制卡台」按钮（workbench-entry）。
+// D265（v49.99）：侧栏制卡台只在阅读上下文出现——先建一本粘贴书并打开阅读器，坞入口＝顶栏「制卡台」
+// 按钮（workbench-entry）；书架/复习等非阅读页不再挂 FreeWorkbenchHost。
 // 零网络：AI 未配置路径为确定性降级——发送后 catch 落「AI 服务尚未配置」错误面板（.ai-error），
 // 该错误文本同时充当场景 5 选区三钮的选区素材（解释板块内容区内可选中文字）。
 // 两窗口同步替代口径（交接包许可）：独立制卡台窗口（workbench.tsx）与主窗口共用同一
@@ -21,6 +22,8 @@ import path from "node:path";
 const ROOT = path.resolve(import.meta.dirname, "..");
 const PORT = "9250";
 const USER_DATA = path.join(ROOT, "tests", "tmp-d144-userdata");
+const BOOK = "FSRSTEST D144 验证书";
+const BOOK_MD = "D144 制卡台回归夹具。";
 
 let pass = 0, fail = 0;
 function check(name, cond, actual) {
@@ -93,29 +96,6 @@ const setTA = (sel, v) => `(() => {
   return "set";
 })()`;
 
-// 解释板块内容区程序化选区（Range 覆盖错误/答案文本 + mouseup 派发）——三钮选单触发（§4.4 mouseup 后出现）
-const selectInExplain = () => `(() => {
-  const body = document.querySelector('[data-testid="wb-explain-body"]');
-  if (!body) return "no-body";
-  const el = body.querySelector(".ai-error") || body.querySelector(".ai-answer");
-  if (!el) return "no-text-el";
-  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  let node = null;
-  while (walker.nextNode()) {
-    const t = walker.currentNode;
-    if ((t.textContent || "").trim().length > 3) { node = t; break; }
-  }
-  if (!node) return "no-text-node";
-  const r = document.createRange();
-  r.setStart(node, 0);
-  r.setEnd(node, Math.min(node.textContent.length, 24));
-  const s = window.getSelection();
-  s.removeAllRanges();
-  s.addRange(r);
-  document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  return "selected:" + r.toString().slice(0, 16);
-})()`;
-
 async function waitTrue(cdp, expr, timeout = 15000) {
   const t0 = Date.now();
   while (Date.now() - t0 < timeout) {
@@ -123,6 +103,51 @@ async function waitTrue(cdp, expr, timeout = 15000) {
     await wait(250);
   }
   return false;
+}
+
+// 解释内容区真实拖选（无人值守窗口里程序化选区可能因绘制器未聚焦而 toString() 为空；
+// 与 SelectionMenu 的 GUI 套件同法走 CDP 鼠标事件，选中即会触发 document mouseup）
+const explainSelGeo = `(() => {
+  window.getSelection()?.removeAllRanges();
+  const el = document.querySelector('[data-testid="wb-explain-body"] .ai-error, [data-testid="wb-explain-body"] .ai-answer');
+  if (!el) return "";
+  el.scrollIntoView({ block: "center" });
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let node = null;
+  while (walker.nextNode()) {
+    if ((walker.currentNode.textContent || "").trim().length > 3) { node = walker.currentNode; break; }
+  }
+  if (!node) return "";
+  const r = document.createRange();
+  r.setStart(node, 0);
+  r.setEnd(node, Math.min(node.textContent.length, 24));
+  const rects = r.getClientRects();
+  const first = rects[0], last = rects[rects.length - 1];
+  if (!first || !last) return "";
+  return JSON.stringify({ x1: first.left + 2, y1: first.top + first.height / 2, x2: last.right - 2, y2: last.top + last.height / 2, text: r.toString().slice(0, 16) });
+})()`;
+
+async function selectExplainText(cdp) {
+  const geo = parseState(await cdp.eval(explainSelGeo));
+  if (typeof geo.x1 !== "number") return "NO TEXT";
+  const from = { x: geo.x1, y: geo.y1 };
+  const to = { x: geo.x2, y: geo.y2 };
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x, y: from.y });
+  await wait(40);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", buttons: 1, clickCount: 1 });
+  for (let i = 1; i <= 6; i++) {
+    await cdp.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: from.x + ((to.x - from.x) * i) / 6,
+      y: from.y + ((to.y - from.y) * i) / 6,
+      button: "left",
+      buttons: 1
+    });
+    await wait(30);
+  }
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button: "left", buttons: 0, clickCount: 1 });
+  await wait(300);
+  return "selected:" + (geo.text || "");
 }
 
 const FRONT_PM = '[data-card-dock] [data-testid="wb-manual-body"] .ProseMirror';
@@ -140,6 +165,51 @@ try {
   const cdp = await connect();
   await wait(2500);
   check("应用启动（根节点挂载）", (await cdp.eval(`!!document.querySelector("#root")`)) === true, "未挂载");
+  await cdp.eval("window.focus()"); // 无人值守运行时确保文档获得焦点（选区/剪贴板类断言需要）
+
+  // ---------- S0 建书并打开阅读器（D265：侧栏制卡台只在阅读上下文出现） ----------
+  console.log("== S0 建书并打开阅读器 ==");
+  await cdp.eval(`(async () => JSON.stringify(await window.libraryAPI.createFromPaste(${JSON.stringify(BOOK)}, ${JSON.stringify(BOOK_MD)})))()`);
+  await cdp.eval("window.location.reload()");
+  await wait(3000);
+  // D265：书架等非阅读页不渲染顶栏入口，Ctrl+K 不拦截（旧行为会 preventDefault 并请求开坞）
+  const shelfGate = parseState(await cdp.eval(`JSON.stringify({
+    entry: !!document.querySelector('[data-testid="workbench-entry"]'),
+    dock: !!document.querySelector('[data-card-dock]'),
+    prevented: (() => {
+      const e = new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true, cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    })()
+  })`));
+  check("书架页无制卡台入口，Ctrl+K 不拦截（D265）", shelfGate.entry === false && shelfGate.dock === false && shelfGate.prevented === false, JSON.stringify(shelfGate));
+  const opened = await cdp.eval(`(() => {
+    const t = [...document.querySelectorAll(".book-card")].find((x) => (x.getAttribute("title") || "").includes("D144") || (x.textContent || "").includes("D144"));
+    if (!t) return "BOOK NOT FOUND";
+    t.click();
+    return "clicked";
+  })()`);
+  check("测试书打开（book-card 点击）", opened === "clicked", opened);
+  // 书卡点击是异步取文档 + 建读书载荷；偶发落在书架挂载/过渡的首帧会被吞——按可见结果重试，不假定一次必成
+  let readerReady = false;
+  for (let i = 0; i < 8 && !readerReady; i++) {
+    readerReady = await waitTrue(cdp, `!!document.querySelector('.reader-engine-layout, .reader-scroll')`, 2000);
+    if (!readerReady) await cdp.eval(`document.querySelector('.book-card[title*="D144"]')?.click()`);
+  }
+  const s0diag = parseState(await cdp.eval(`JSON.stringify({
+    reader: !!document.querySelector('.reader-engine-layout, .reader-scroll'),
+    cards: document.querySelectorAll('.book-card').length,
+    body: (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 160)
+  })`));
+  check("阅读器就绪（书卡点击后进入 reader 视图）", readerReady === true, JSON.stringify(s0diag));
+  // 无人值守窗口可能不产帧：changeView 的原生 View Transition 会停在 data-vt=1（遮罩挡命中），
+  // 先强制一帧让 finished 结算，再继续交互（真实聚焦窗口不需要这一步）。
+  if ((await cdp.eval(`document.documentElement.dataset.vt || ""`)) === "1") {
+    await cdp.send("Page.captureScreenshot", { format: "png" });
+    await waitTrue(cdp, `!document.documentElement.dataset.vt`, 5000);
+  }
+  check("视图过渡已结算（无 data-vt 遮罩）", (await cdp.eval(`!document.documentElement.dataset.vt`)) === true, "data-vt 未清除");
+  check("阅读器顶栏「制卡台」入口在场", (await waitTrue(cdp, `!!document.querySelector('[data-testid="workbench-entry"]')`, 15000)) === true, "入口未出现 | " + JSON.stringify(s0diag));
 
   // ---------- S1 唤坞与默认 IA（§2.1 / §4.1 默认态：手动制卡页签 + 解释板块收起） ----------
   console.log("== S1 唤坞与默认 IA ==");
@@ -271,8 +341,8 @@ try {
 
   // ---------- S5 解释内容区选区三按钮选单（§4.4）+ 把手/坞收展状态保留 ----------
   console.log("== S5 选区三按钮选单 + 收展状态保留 ==");
-  const sel1 = await cdp.eval(selectInExplain());
-  check("解释内容区程序化选区成功（触发素材＝降级错误文本）", String(sel1).startsWith("selected:"), sel1);
+  const sel1 = await selectExplainText(cdp);
+  check("解释内容区拖选成功（触发素材＝降级错误文本）", String(sel1).startsWith("selected:"), sel1);
   await wait(200);
   // 选区可能被相邻渲染挤断（毫秒级竞态，与被测行为无关）——首次未触发则重选一次再判
   let s5a = parseState(await cdp.eval(`JSON.stringify({
@@ -281,7 +351,7 @@ try {
     place: document.querySelector('.dock-trio')?.getAttribute('data-place') || ''
   })`));
   if (!s5a.trio) {
-    await cdp.eval(selectInExplain());
+    await selectExplainText(cdp);
     await wait(300);
     s5a = parseState(await cdp.eval(`JSON.stringify({
       trio: !!document.querySelector('.dock-trio'),
@@ -298,7 +368,7 @@ try {
     dockStillOpen: document.querySelector('[data-card-dock]')?.getAttribute('data-dock-collapsed') === null
   })`));
   check("Esc 关闭选单＝单层语义：坞不被连锁收起", s5b.trioGone && s5b.dockStillOpen, JSON.stringify(s5b));
-  await cdp.eval(selectInExplain());
+  await selectExplainText(cdp);
   await wait(200);
   const trioBack = await cdp.eval(`!!document.querySelector('.dock-trio')`);
   check("选单可重复触发", trioBack === true, trioBack);
@@ -311,7 +381,7 @@ try {
   })`));
   check("引用：输入条头部插入「> 引用块」且既有草稿保留其后", s5d.trioGone && s5d.composer.startsWith("> ") && s5d.composer.includes("尚未配置"), JSON.stringify(s5d));
   check("引用不自动开合解释板块（§4.4-c 板块保持原态）", s5d.open === "true", s5d.open);
-  await cdp.eval(selectInExplain());
+  await selectExplainText(cdp);
   await wait(200);
   await cdp.eval(`document.querySelector('[data-trio-act="copy"]').click()`);
   await wait(300);
@@ -352,6 +422,35 @@ try {
     frontKept: (document.querySelector(${JSON.stringify(FRONT_PM)})?.textContent || '').includes('D144 幽灵源文')
   })`));
   check("再展开：回默认手动页签且草稿无损（收起 ≠ 关闭）", s5i.open && s5i.tabManual === "true" && s5i.frontKept, JSON.stringify(s5i));
+
+  // ---------- S6 侧栏「图片挖空」＝应用内截图（D265；不隐藏窗口） ----------
+  console.log("== S6 侧栏图片挖空（内部截图） ==");
+  await cdp.eval(`window.focus()`);
+  // 无人值守窗口可能被判定为遮挡而不产帧；先强制一次 CDP 截图唤醒合成器，再看 capturePage 是否可返回
+  await cdp.send("Page.captureScreenshot", { format: "png" });
+  await wait(300);
+  const clickedOccl = await cdp.eval(`(() => {
+    const tab = [...document.querySelectorAll('[data-testid="manual-types"] [role="tab"]')].find((b) => b.textContent.trim() === "图片挖空");
+    if (!tab) return "NO TAB";
+    tab.click();
+    return "clicked";
+  })()`);
+  check("手动题型页签点「图片挖空」（不切表单，直接启动截图）", clickedOccl === "clicked", clickedOccl);
+  // 无人值守窗口下 Electron capturePage 可能返回空（本机实测 captureRegion=null）：内部链路的确定性判据＝
+  // 数秒内要么出现带 data:image 的编辑器，要么落「截图失败」toast；若误走整屏 captureScreen（隐藏窗口 +
+  // 框选），两者都不会发生，等待超时即为失败。真实像素冒烟由人工在可见窗口补验（设计稿 §5.5）。
+  const occlOrFail = await waitTrue(cdp, `!!document.querySelector('[data-testid="occlusion-editor"]') || (document.querySelector('.wb-toast')?.textContent || '').includes('截图失败')`, 20000);
+  const s6 = parseState(await cdp.eval(`JSON.stringify({
+    editor: !!document.querySelector('[data-testid="occlusion-editor"]'),
+    img: document.querySelector('[data-testid="occlusion-editor"] img')?.getAttribute('src')?.slice(0, 22) || '',
+    toast: document.querySelector('.wb-toast')?.textContent || '',
+    dockStillOpen: document.querySelector('[data-card-dock]')?.getAttribute('data-dock-collapsed') === null
+  })`));
+  check(
+    "侧栏「图片挖空」走内部 captureRegion 链（编辑器/失败 toast 秒级出现，不等整屏框选；侧栏仍在）",
+    occlOrFail === true && (s6.editor ? s6.img.startsWith("data:image/") : String(s6.toast).includes("截图失败")) && s6.dockStillOpen,
+    JSON.stringify(s6)
+  );
 
   console.log(`\n${fail === 0 ? "ALL PASS" : "FAILED"}: ${pass} passed, ${fail} failed`);
 } catch (err) {

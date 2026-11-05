@@ -49,7 +49,6 @@ import { applyAccent } from "./lib/accentVar";
 // v49.8（D182）：多语言 i18n——loadLocale 启动装载（D237：资源按需装载）/ useT 渲染订阅 / t 自然键翻译
 import { loadLocale, useT, t } from "./lib/i18n";
 import { useThemePlugin } from "./lib/themePlugins";
-import FreeWorkbenchHost from "./components/FreeWorkbenchHost";
 import { WB_STATE_EVENT, requestWorkbenchToggle, type WorkbenchState } from "./lib/workbenchLayout";
 
 declare global {
@@ -172,17 +171,6 @@ export default function App() {
     window.addEventListener(WB_STATE_EVENT, on);
     return () => window.removeEventListener(WB_STATE_EVENT, on);
   }, []);
-  // D123：Ctrl/⌘+K 开合制卡台（任何页面；设置弹窗期间不响应；已被编辑器等 preventDefault 的不抢）
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.repeat || settingsOpenRef.current) return;
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "k") return;
-      e.preventDefault();
-      requestWorkbenchToggle();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
   // D123：独立制卡台窗口建卡后，主窗口各页刷新
   useEffect(() => window.windowAPI?.onCardsChanged?.(() => eventBus.emit("cards/changed")), []);
   // v36（M8-A）：添加材料模态提升到 App 级——书架入口与全局快捷键共用；且快捷键呼出时
@@ -201,6 +189,20 @@ export default function App() {
   useEffect(() => {
     viewRef.current = view;
   }, [view]);
+  // D265（v49.99）：侧栏制卡台只服务有阅读上下文的视图（阅读器 / 摘录复习）；
+  // 其余页面不再响应 Ctrl+K——制卡改走 Ctrl+Alt+K 独立制卡台窗口。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.repeat || settingsOpenRef.current) return;
+      const name = viewRef.current.name;
+      if (name !== "reader" && name !== "extractSession") return;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "k") return;
+      e.preventDefault();
+      requestWorkbenchToggle();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // 世代号：快速连点时新过渡会跳过旧过渡（旧 finished 仍会结算）——旧清理不得误删新过渡刚写入的标记
   const vtGenRef = useRef(0);
   // v48.41（D81）：摘录/复习会话的顶栏标题＝**当前卡材料名**（两页经 onMaterialName 上报；
@@ -864,21 +866,24 @@ export default function App() {
         <div className="topbar-half">
           {view.name !== "shelf" && <span className="topbar-title">{topTitle}</span>}
           <div className="topbar-right">
-            {/* D123：制卡台唯一入口（手动制卡 / AI 制卡 / AI 解释同一模块）；快捷键只在悬停提示里 */}
-            <button
-              type="button"
-              className={`topbar-wb${wb.open ? " is-on" : ""}`}
-              data-testid="workbench-entry"
-              aria-pressed={wb.open}
-              title={T("制卡台（Ctrl+K）")}
-              onClick={requestWorkbenchToggle}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <rect x="3" y="5" width="18" height="14" rx="1" />
-                <path d="M7 10h10M7 14h6" />
-              </svg>
-              <span>{T("制卡台")}</span>
-            </button>
+            {/* D123：制卡台入口（手动制卡 / AI 制卡 / AI 解释同一模块）；快捷键只在悬停提示里。
+                D265（v49.99）：侧栏制卡台只出现在阅读上下文（阅读器 / 摘录复习），其余页面用 Ctrl+Alt+K 独立窗口 */}
+            {(view.name === "reader" || view.name === "extractSession") && (
+              <button
+                type="button"
+                className={`topbar-wb${wb.open ? " is-on" : ""}`}
+                data-testid="workbench-entry"
+                aria-pressed={wb.open}
+                title={T("制卡台（Ctrl+K）")}
+                onClick={requestWorkbenchToggle}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="3" y="5" width="18" height="14" rx="1" />
+                  <path d="M7 10h10M7 14h6" />
+                </svg>
+                <span>{T("制卡台")}</span>
+              </button>
+            )}
             <button className="icon-btn" title={T("设置")} data-ui="button-icon" onClick={() => setSettingsOpen(true)}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M18.92 10.02 22.13 9.66A10.4 10.4 0 0 1 22.13 14.34L18.92 13.98A7.2 7.2 0 0 1 17.18 17L19.09 19.61A10.4 10.4 0 0 1 15.04 21.95L13.74 18.99A7.2 7.2 0 0 1 10.26 18.99L8.96 21.95A10.4 10.4 0 0 1 4.91 19.61L6.82 17A7.2 7.2 0 0 1 5.08 13.98L1.87 14.34A10.4 10.4 0 0 1 1.87 9.66L5.08 10.02A7.2 7.2 0 0 1 6.82 7L4.91 4.39A10.4 10.4 0 0 1 8.96 2.05L10.26 5.01A7.2 7.2 0 0 1 13.74 5.01L15.04 2.05A10.4 10.4 0 0 1 19.09 4.39L17.18 7A7.2 7.2 0 0 1 18.92 10.02Z" />
@@ -908,8 +913,7 @@ export default function App() {
       </header>
       <div className="app-main" data-ui="view">
         {mainContent}
-        {/* D123：无阅读上下文的页面（书架/复习/卡片/日记/数据）挂自由制卡台宿主；阅读器与摘录页自带宿主 */}
-        {view.name !== "reader" && view.name !== "queue" && view.name !== "extractSession" && <FreeWorkbenchHost />}
+        {/* D265（v49.99）：非阅读上下文不再挂侧栏制卡台宿主；制卡走 Ctrl+Alt+K 独立窗口 */}
       </div>
       {/* v48.13（P2）：全局后台活动指示器——生成任务在主进程持有，与当前界面无关 */}
       <BackgroundActivity onOpenMap={(documentId, mapId, resumeRunId) => void openMaterialMap(documentId, mapId, resumeRunId)} />

@@ -77,10 +77,10 @@ const selOk = await evalJS(`(() => {
   return 'MARKER NOT FOUND';
 })()`);
 await new Promise((r) => setTimeout(r, 500));
-// v48.41（D81）：菜单只留形式段控+调色排；动作行上移阅读器工具栏（data-sel-act）。
-// 断言动作组文本集（语义＝「动作齐全」，不数色块）。
+// v48.41（D81）：菜单动作行（data-sel-act）；v49.99（D265）：工具栏截图钮退役，
+// 选区浮条动作剩五项——批注/制卡/AI 制卡/AI 解释/查词（图片挖空改由侧栏制卡台入口）。
 const menu = await evalJS(`[...document.querySelectorAll('[data-sel-act]')].map((b) => b.textContent.trim()).join('/')`);
-check("阅读器工具栏动作组 6 项（含图片挖空）", String(menu).split("/").length === 6 && String(menu).includes("图片挖空"), String(selOk) + " | " + menu);
+check("阅读器选区动作 5 项（图片挖空撤出选区动作）", String(menu).split("/").length === 5 && !String(menu).includes("图片挖空"), String(selOk) + " | " + menu);
 
 // 3) 手动制卡「翻转问答」→ 应创建两张互为翻转的独立 qa 卡（v16 D18）
 // v25/M5：类型页签由 3 个扩为 4 个（新增「图片挖空」）
