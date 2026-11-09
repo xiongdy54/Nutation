@@ -1,0 +1,659 @@
+// 选区动作的面板编排（手动制卡 / 查词 / AI）——批 4 Task 10 从 Reader.tsx 原样搬出，
+// 摘录页、阅读器与自由宿主（其余页面 / 独立窗口）共用同一份渲染（§4 纪律：宿主不得保留实现副本）。
+// 本组件只做「把 useSelectionActions 的状态与回调接到既有面板上」，不含业务逻辑。
+// v48.79（D123）：学习坞升级为「制卡台」——手动制卡表单**常驻**（可收成仅标题行，草稿保留），
+// AI 区为页签（解释｜制卡）；入口只有顶栏按钮 / Ctrl+K（经 wb:toggle 事件开合），不再有坞内关闭钮与把手。
+// 页签体隐藏保活（display:none 不卸载：流式继续、表单草稿不丢）；词典面板/图片挖空 modal 维持独立弹窗不入坞。
+// v48.100（D144 #2）：IA 重设计——制卡板块（「手动制卡｜AI 制卡」双页签，默认手动，两体常驻保活）+
+// 解释板块（恒在坞底、默认收起；把手/内容槽/按钮行槽/composer 槽由 CardDock 承载，编排在本组件）。
+// v48.100（D144 #3）：解释板块功能落地——悬浮按钮行＝ExplainModeBar 四 ghost 钮（§4.3 语义矩阵在
+// selectExplainMode）；composer 值受控 + ref 句柄（#5「引用」头部插入落点）；自动展开通道在
+// useSelectionActions（runExplain/runAsk/内容派生），把手开收不打断在途流式；解释空态 FreeSource
+// 实例按 §10 退役（解释入口唯一归口＝底部输入条）。
+// v48.100（D144 #4）：AI 侧 FreeSource 材料框文本受控上提（§6）；手动侧首框值镜像（onFrontChange，
+// 宿主只读）+ ManualFormHandle 写入。v48.101（D146）：幽灵接受唯一路径＝Alt+Enter。
+// v49.95（D261）：跨页签幽灵草稿层与 Alt+Enter 接受整体退役——输入面不再叠加来源文字提示，
+// 跨页签内容各自保留（文本受控状态不变，解释选单「复制」仍经镜像追加）。
+import ManualCardEditor, { ManualCardForm, type ManualFormHandle } from "./ManualCardEditor";
+import CardDock, { type CardsTab } from "./CardDock";
+import AIPanel, { ChatComposer, ExplainModeBar, ExplainThread, type ChatComposerHandle, type ExplainComposerMode } from "./AIPanel";
+// D144 #5（§4.4）：坞内三按钮选单（解释内容区选区触发）+ 其定位锚类型（placePopover 视口坐标）
+import { DockTrioMenu } from "./DockTrioMenu";
+import type { PopoverRect } from "../lib/popoverPlace";
+import { isImeComposing } from "../lib/ime";
+import { DictPanel } from "./DictPanel";
+import { useT } from "../lib/i18n";
+import OcclusionEditor from "./editor/OcclusionEditor";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { growTextarea } from "../lib/autoGrow";
+import { cardsApi, type CardDraft, type CardRecord } from "../lib/cards";
+import DisambiguateModal from "./DisambiguateModal";
+import type { TagVocabEntry } from "../lib/tags";
+import type { DictionaryEntry, ReadingContext, VocabKind } from "../lib/dict";
+import type { SelectionActions } from "../lib/useSelectionActions";
+import {
+  WB_TOGGLE_EVENT,
+  publishWorkbenchState,
+  setLastWorkbenchOpen,
+  type WorkbenchDockPlacement
+} from "../lib/workbenchLayout";
+
+/** 无选区/无面板时的自由材料输入：粘贴或输入一段文字 → AI 解释 / AI 制卡（自由模式与独立窗口的主入口）。
+ *  v48.100（D144 #4）：文本受控上提到 SelectionPanels（§6）；
+ *  v49.95（D261）：幽灵草稿层与 Alt+Enter 接受退役（输入面不再叠加来源文字提示）。 */
+function FreeSource({
+  text,
+  onTextChange,
+  onExplain,
+  onCards,
+  prefer
+}: {
+  text: string;
+  onTextChange: (v: string) => void;
+  onExplain: (t: string) => void;
+  onCards: (t: string) => void;
+  prefer: "explain" | "cards";
+}) {
+  const t = text.trim();
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  const T = useT();
+  useLayoutEffect(() => {
+    if (ref.current) growTextarea(ref.current, 168);
+  }, [text]);
+  return (
+    <div className="wb-free" data-testid="wb-free-source">
+      <div className="wb-free-input">
+        <textarea
+          ref={ref}
+          value={text}
+          placeholder={T("粘贴或输入要处理的文字")}
+          aria-label={T("待处理文字")}
+          rows={1}
+          onChange={(e) => onTextChange(e.target.value)}
+        />
+      </div>
+      {/* 有内容才出现，高度随之展开（collapse-clip）；空态一行即止 */}
+      <div className={`collapse-clip wb-free-clip${t ? " is-open" : ""}`}>
+        <div className="collapse-inner">
+          <div className="wb-free-acts">
+            <button type="button" className={`btn btn-sm ${prefer === "explain" ? "btn-primary" : "btn-outline"}`} disabled={!t} onClick={() => onExplain(t)}>
+              {T("AI 解释")}
+            </button>
+            <button type="button" className={`btn btn-sm ${prefer === "cards" ? "btn-primary" : "btn-outline"}`} disabled={!t} onClick={() => onCards(t)}>
+              {T("AI 制卡")}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function SelectionPanels({
+  sel,
+  dockMeta,
+  placementOverride
+}: {
+  /** useSelectionActions 的返回值（原样传入；类型即钩子返回值，不另立影子类型） */
+  sel: SelectionActions;
+  /** 手动区标题行 meta（材料名，有则显，无则省） */
+  dockMeta?: string;
+  /** 独立窗口传 "window"：制卡台占满窗口，不推让，且常开 */
+  placementOverride?: "window";
+  /** @deprecated D123：保留以兼容旧宿主调用，已不使用（AIPanel 自算计时） */
+  selectionText?: string | null;
+  nowTick?: number;
+  elapsedSec?: number;
+}) {
+  const T = useT();
+  const { aiPanel, manualOpen, manualImage, manualQuote, dictPanel, dockOpen } = sel;
+  // D270：放置固定右侧（窗口内推）；独立窗口仍以 "window" 覆写
+  const placement: WorkbenchDockPlacement = placementOverride ?? "right";
+  // v48.60（D101）：标签词表建议（cards.tags_json ∪ extracts.tag_json 派生；建卡/卡片改动后刷新）
+  const [tagVocab, setTagVocab] = useState<TagVocabEntry[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      window.cardsAPI?.listTags?.().then((list) => {
+        if (!cancelled) setTagVocab(list ?? []);
+      });
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [sel.manualSeq, sel.dockOpen]);
+
+  const [manualCollapsed, setManualCollapsed] = useState(false);
+  // D144 #2：制卡板块页签（默认「手动制卡」，用户拍板）；解释板块开态在 hook（sel.explainOpen，
+  // D144 #3 通道：runExplain/runAsk/内容派生自动展开；把手开合＝纯 state，不打断在途流式）
+  const [cardsTab, setCardsTab] = useState<CardsTab>("manual");
+  // D144 #3：解释板块「当前方式」（四值 §4.3；三解读方式的会话内记忆＝hook explainMode）与
+  // composer 受控值（「引用」头部插入的数据面，#5 选单落点）
+  const [composerMode, setComposerMode] = useState<ExplainComposerMode>("auto");
+  const [composerText, setComposerText] = useState("");
+  const composerRef = useRef<ChatComposerHandle | null>(null);
+  // 内容派生桥接（D144 §2.1）：AI 制卡内容到达（kind 变化或同 kind 重跑，与 hook 派生同口径）→
+  // 制卡板块自动切「AI 制卡」页签；解释内容到达→解释板块自动展开在 hook runExplain/runAsk 入口（#3）。
+  // 显式点击只改 cardsTab（changeCardsTab）。
+  useEffect(() => {
+    if (aiPanel && (aiPanel.kind === "cards" || aiPanel.kind === "occlusion")) setCardsTab("aicards");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiPanel?.kind, aiPanel?.startedAt]);
+  const dockRootRef = useRef<HTMLDivElement | null>(null);
+
+  /** 把焦点交给手动表单的第一个可输入字段（点开即可打字，D88 §15 注记延续） */
+  const focusManual = () => {
+    // 修订 9：① 等滑入动画结束（制卡台此刻仍在屏幕外 translateX，聚焦屏外元素会让浏览器去滚动
+    // overflow:hidden 的祖先把它「滚进视野」——顶栏随之整体平移，随后弹回）；② preventScroll 双保险；
+    // ③ 聚焦后把可能被带偏的祖先滚动位置归零。
+    window.setTimeout(() => {
+      const root = document.querySelector('[data-testid="wb-cards"]');
+      const first = root?.querySelector('textarea, input:not([type=checkbox]):not([type=range]), [contenteditable="true"]');
+      (first as HTMLElement | null)?.focus({ preventScroll: true });
+      for (const el of [document.documentElement, document.body, document.querySelector<HTMLElement>(".app-shell")]) {
+        if (el && (el.scrollLeft || el.scrollTop)) {
+          el.scrollLeft = 0;
+          el.scrollTop = 0;
+        }
+      }
+    }, 300);
+  };
+
+  // 顶栏按钮 / Ctrl+K → 开合制卡台（每个页面恰有一个宿主挂着本组件）
+  const toggleRef = useRef<() => void>(() => {});
+  toggleRef.current = () => {
+    if (placementOverride === "window") return;
+    if (!sel.dockEverOpened || !sel.dockOpen) {
+      setManualCollapsed(false);
+      setCardsTab("manual"); // D144：唤坞回到默认「手动制卡」页签（点开即可打字）
+      sel.expandDock();
+      focusManual();
+    } else {
+      sel.collapseDock();
+    }
+  };
+  useEffect(() => {
+    const on = () => toggleRef.current();
+    window.addEventListener(WB_TOGGLE_EVENT, on);
+    return () => window.removeEventListener(WB_TOGGLE_EVENT, on);
+  }, []);
+
+  // 工具栏/浮条「制卡」（actions.manual）唤坞时：手动制卡页签展开并聚焦
+  useEffect(() => {
+    if (sel.manualOpen && !sel.manualImage) {
+      setManualCollapsed(false);
+      setCardsTab("manual");
+      focusManual();
+    }
+  }, [sel.manualOpen, sel.manualImage]);
+
+  // 独立窗口：制卡台常开（不读跨页意图）；主窗口的跨页「开着」状态由
+  // useSelectionActions 在挂载时同步初始化（D270）。
+  useLayoutEffect(() => {
+    if (placementOverride === "window") sel.expandDock();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placementOverride]);
+
+  // 向顶栏按钮同步状态（静态方块点：AI 在跑 / 无动画）
+  const threadBusy = sel.thread.some((x) => x.running);
+  const busy = !!aiPanel?.running || threadBusy;
+  const isOpen = sel.dockEverOpened && dockOpen;
+  useEffect(() => {
+    if (placementOverride === "window") return;
+    publishWorkbenchState({ open: isOpen, busy, draft: false });
+    // 只在「本宿主已挂载过且稳定」后记录，避免新宿主首帧（尚未按 lastOpen 展开）把标记冲掉
+    if (isOpen || sel.dockEverOpened) setLastWorkbenchOpen(isOpen);
+  }, [isOpen, busy, placementOverride]);
+  useEffect(() => {
+    if (placementOverride === "window") return;
+    return () => publishWorkbenchState({ open: false, busy: false, draft: false });
+  }, [placementOverride]);
+
+  /** 手动制卡保存链（modal / dock 同一份：落库 → closeManual 换 key 清空表单） */
+  const saveManual = async (p: Parameters<typeof sel.handleManualCard>[0]) => {
+    try {
+      return await sel.handleManualCard(p);
+    } finally {
+      sel.closeManual();
+    }
+  };
+  /** D121 §4.1「保存并辨析」：弹窗挂在本组件（表单随换 key 卸载后仍存活）；新卡为 A、相似卡为 B */
+  const [disamb, setDisamb] = useState<{ card: CardRecord; other: string } | null>(null);
+  const openDisamb = async (newId: string, otherId: string) => {
+    const card = await cardsApi.get(newId).catch(() => null);
+    if (card) setDisamb({ card, other: otherId });
+  };
+
+  /** AI 面板元素（explain / cards+occlusion 两页签体共用同一 props；occlusion 归制卡页签） */
+  const aiPanelNode = aiPanel ? (
+    <AIPanel
+      panel={aiPanel}
+      onAccept={(d, idx, edited) => sel.acceptDraft(d, idx, edited)}
+      onAcceptOcclusion={(d, idx) => sel.acceptOcclusionDraft(d, idx)}
+      onEdit={(idx, patch) => {
+        sel.setAiPanel((p) => {
+          if (!p || !p.drafts) return p;
+          const next = [...p.drafts];
+          next[idx] = { ...next[idx], ...patch };
+          return { ...p, drafts: next };
+        });
+      }}
+      onSplitReverse={(idx) => {
+        // v16（D18）：「转翻转卡」= 拆为两张互为翻转的独立 qa 草稿（各自有独立 FSRS 调度）
+        sel.setAiPanel((p) => {
+          if (!p || !p.drafts) return p;
+          const d = p.drafts[idx];
+          const a: CardDraft = { ...d, cardType: "qa", front: d.front, back: d.back };
+          const b: CardDraft = {
+            ...d,
+            cardType: "qa",
+            front: (d.back || "").trim() || d.front,
+            back: d.front,
+            cloze: null
+          };
+          const next = [...p.drafts.slice(0, idx), a, b, ...p.drafts.slice(idx + 1)];
+          // 拆分点之后的已接受/补充标记索引整体右移一位，保持对位
+          const accepted = new Set([...(p.accepted ?? [])].map((k) => (k > idx ? k + 1 : k)));
+          const supplemental = new Set([...(p.supplemental ?? [])].map((k) => (k > idx ? k + 1 : k)));
+          return { ...p, drafts: next, accepted, supplemental };
+        });
+      }}
+      onRejectAll={sel.rejectAllDrafts}
+      onExplain={(q) => sel.runExplain(aiPanel.text, q)}
+      onAsk={(q) => void sel.runAsk(q)}
+      onMakeCards={() => {
+        // v48.104（D149 ④）：从解释面板「就此制卡」/ 制卡面板「重跑」共用本回调——仅解释来源
+        // 需要先归档（线程留痕）并把解释板块自动收起到底；制卡面板重跑不动解释板块
+        if (aiPanel.kind === "explain") sel.archiveExplainToThread();
+        sel.runAICards(aiPanel.text, undefined, sel.aiMode);
+      }}
+      onModeChange={(m) => sel.changeAiMode(m)}
+      mode={sel.aiMode}
+      onSearchBackground={() => sel.searchAndRetry(aiPanel.text)}
+      onFollowUpCards={(item, kpTitle, hint) => sel.runFollowUpCards(item, kpTitle, hint)}
+      onExploration={(item, kpTitle, srcKey) => sel.runExploration(item, kpTitle, srcKey)}
+      explainMode={sel.explainMode}
+      onExplainModeChange={(m) => sel.changeExplainMode(m)}
+      // v48.74（D118 §3④）：生成中「停止」→ ai:abort 取消当前请求
+      onStop={() => sel.stopAIRun()}
+    />
+  ) : null;
+  // 「带入 AI 回答」：最近一条已完成的追问回答 > 当前解释面板的回答
+  const latestAnswer = () => {
+    const th = [...sel.thread].reverse().find((x) => x.answer && !x.running);
+    if (th?.answer) return th.answer;
+    return aiPanel?.kind === "explain" ? aiPanel.answer ?? "" : "";
+  };
+  // v48.101（D146）：「带入 AI 回答」生成链——无既有回答且正面非空时，按制卡规则直答并流式写入
+  // 背面字段（sel.generateManualAnswer 并发门与失败 toast 在 hook；落点＝ManualFormHandle.setBackValue）
+  // （函数体在 §4.2 块后定义——落点依赖 manualFormRef）
+  // 手动制卡题型（题型页签在标题行里，表单受控）。「图片挖空」＝启动宿主截图（阅读器/摘录页截当前内容面，
+  // 独立制卡台窗口整屏截图；截完直接弹挖空编辑器），不切表单
+  type ManualMode = "qa" | "reverse" | "cloze" | "imageOcclusion";
+  const [manualMode, setManualMode] = useState<ManualMode>("qa");
+  useEffect(() => setManualMode("qa"), [sel.manualSeq]);
+  const pickMode = (m: ManualMode) => {
+    if (m === "imageOcclusion") {
+      void sel.startWorkbenchCapture();
+      return;
+    }
+    setManualMode(m);
+  };
+  const MANUAL_TABS: Array<[ManualMode, string]> = [
+    ["qa", "问答题"],
+    ["reverse", "翻转问答"],
+    ["cloze", "填空题"],
+    ["imageOcclusion", "图片挖空"]
+  ];
+  // D144 #2：制卡板块页签切换（显式点击 > 内容派生）。v48.100（D144 #3）：hook 的 changeDockTab /
+  // manualActive 已随旧页签坞退役——手动表单＝常驻页签体，无「手动暂态」概念。
+  const changeCardsTab = (t: CardsTab) => {
+    setCardsTab(t);
+  };
+  // 解释板块把手显隐（D144 §2.1）：仅有解释内容（解释面板在场或追问线程非空）或已展开时在场
+  const hasExplainContent = aiPanel?.kind === "explain" || sel.thread.length > 0;
+  // D144 §4.3 语义矩阵（悬浮按钮行，按钮双职＝迁移当前方式 + 发送/重跑）：
+  // 「有解释语境」＝解释面板在场或线程非空；重跑仅解释面板可承接（changeExplainMode 按
+  // kind==="explain" 门控，D91 §5.3 切换即重跑），仅线程在场而无面板时退化为仅置方式。
+  const selectExplainMode = (m: ExplainComposerMode) => {
+    setComposerMode(m);
+    const text = composerText.trim();
+    if (text) {
+      // 有字：按该方式发送输入文字（§4.3「有文字」格全通——新语境盖旧语境，runExplain 清线程
+      // 既有语义保留；自由提问走 runAsk 独立线程）；发送后清空（自动展开由 runExplain/runAsk 入口承接）
+      if (m === "ask") void sel.runAsk(text);
+      else void sel.runExplain(text, null, m);
+      setComposerText("");
+      return;
+    }
+    if (m === "ask") return; // 自由提问非解读方式：无字仅迁移当前方式（无重跑语义）
+    // 空：仅置当前方式（会话内记忆＝hook explainMode）；解释面板在场则切换即重跑（D91）
+    sel.changeExplainMode(m);
+  };
+  // Enter /「发送」钮＝按「当前方式」发送（§4.3）：ask→runAsk，其余→runExplain(文字, null, 方式)；
+  // 自动展开由 hook 通道承接（runExplain/runAsk 入口 setExplainOpen(true)）
+  const sendComposer = (q: string) => {
+    const text = q.trim();
+    if (!text) return;
+    if (composerMode === "ask") void sel.runAsk(text);
+    else void sel.runExplain(text, null, composerMode);
+    setComposerText("");
+  };
+  const cardsOf = (text: string) => void sel.runAICards(text, undefined, sel.aiMode);
+  const explainOf = (text: string) => void sel.runExplain(text, null);
+
+  // ===== 跨页签草稿状态（D144 #4；v49.95 / D261 幽灵层退役） =====
+  // AI 侧 FreeSource 文本仍受控上提；手动侧保持第一文本框镜像（解释选单「复制」据此追加）。
+  const [freeText, setFreeText] = useState("");
+  const [manualFront, setManualFront] = useState("");
+  const manualFormRef = useRef<ManualFormHandle | null>(null);
+  // v49.95（D261）：独立制卡台进入图片挖空编辑器 → 主进程把窗口展开为固定宽幅（右栏 300px +
+  // 画布才有可用幅面）；编辑器关闭 / 保存后收回进入前宽度。主进程逐帧插值（Windows 无原生窗口
+  // 动画），系统减动效或应用「动效关闭」时瞬时切换。仅独立窗口（placementOverride==="window"）
+  // 生效；主窗口内的同一编辑器不改窗口尺寸。
+  // 内容丝滑（用户实测「窗口内的内容」也卡）：窗口每帧变宽时若内容跟着逐帧重排（坞体文字回流、
+  // 编辑器 fitImage 逐帧重算图片），每帧布局成本远超窗口本身——所以：
+  //   ① 窗口变宽 / 收窄期间坞体钉在「进入前窗口宽度」、右缘对齐（html.wbw-pin，窗口向左生长时视觉上
+  //      纹丝不动，零重排）；
+  //   ② 进入：窗口落位后才挂载编辑器（挂载即淡入，fitImage 只算一次），淡入完成再解钉——
+  //      解钉时坞体整体重排发生在不透明的编辑器层下面，看不见；
+  //   ③ 退出：编辑器先淡出（html.wbw-occl-out），再钉位收窗——不硬切。
+  const occlEditorOpen = !!sel.occlEditor;
+  const [occlPhase, setOcclPhase] = useState<"off" | "on" | "leaving">("off");
+  const occlLast = useRef(sel.occlEditor);
+  if (sel.occlEditor) occlLast.current = sel.occlEditor;
+  const wideRef = useRef(false);
+  const narrowWRef = useRef(0);
+  useEffect(() => {
+    if (placementOverride !== "window") return;
+    const resizeWindow = window.windowAPI?.workbenchResize?.bind(window.windowAPI);
+    if (!resizeWindow) {
+      setOcclPhase(occlEditorOpen ? "on" : "off");
+      return;
+    }
+    const root = document.documentElement;
+    const pin = () => {
+      root.style.setProperty("--wbw-pin-w", `${narrowWRef.current}px`);
+      root.classList.add("wbw-pin");
+    };
+    const unpin = () => root.classList.remove("wbw-pin");
+    const reduce =
+      (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false) ||
+      document.body.classList.contains("motion-off");
+    let cancelled = false;
+    const timers: number[] = [];
+    if (occlEditorOpen) {
+      root.classList.remove("wbw-occl-out");
+      if (!wideRef.current) narrowWRef.current = window.innerWidth;
+      wideRef.current = true;
+      pin();
+      void resizeWindow("wide", !reduce).finally(() => {
+        if (cancelled) return;
+        setOcclPhase("on");
+        timers.push(window.setTimeout(unpin, reduce ? 0 : 260)); // 等编辑器层淡入完成再解钉
+      });
+    } else if (wideRef.current) {
+      const collapse = () => {
+        if (cancelled) return;
+        root.classList.remove("wbw-occl-out");
+        setOcclPhase("off");
+        wideRef.current = false;
+        pin();
+        void resizeWindow("restore", !reduce).finally(() => {
+          if (!cancelled) unpin();
+        });
+      };
+      if (reduce) {
+        collapse();
+      } else {
+        root.classList.add("wbw-occl-out");
+        setOcclPhase("leaving");
+        timers.push(window.setTimeout(collapse, 170));
+      }
+    } else {
+      setOcclPhase("off");
+    }
+    return () => {
+      cancelled = true;
+      timers.forEach((t) => window.clearTimeout(t));
+    };
+  }, [placementOverride, occlEditorOpen]);
+  const occlShown = placementOverride !== "window"
+    ? sel.occlEditor
+    : occlPhase === "off" ? null : occlLast.current;
+  // v48.101（D146）：「带入 AI 回答」生成链——无既有回答且正面非空时，按制卡规则直答并流式写入
+  // 背面字段（sel.generateManualAnswer 并发门与失败 toast 在 hook；落点＝ManualFormHandle.setBackValue）
+  const generateAnswerIntoBack = (question: string) => {
+    void sel.generateManualAnswer(question, (acc) => manualFormRef.current?.setBackValue(acc));
+  };
+
+  // ===== D144 #5（§4.4）：解释板块内选区三按钮选单 =====
+  // 触发：解释内容区（引用块 / 答案 / 追问线程文本，容器＝wb-explain-body）选中 ≥1 字符，
+  // mouseup 后出现于选区上方（popoverPlace prefer above，放不下自动翻下方）。关闭四路：
+  // 执行任一动作（三回调内 closeTrio）/ Esc / 点击选单外（mousedown 判 .dock-trio 外）/ 选区坍塌
+  // （selectionchange）。收起态内容区不可见无法选中＝天然不触发；选中后把手收起 / 坞收起 →
+  // 由下方 effect 一并关闭。监听挂 document（选单为 fixed 浮层，与 SelectionMenu 同域视口坐标）。
+  const [trio, setTrio] = useState<{ anchor: PopoverRect; text: string } | null>(null);
+  const closeTrio = () => setTrio(null);
+  useEffect(() => {
+    const onUp = () => {
+      // mouseup 后选区才最终稳定：让一拍再读（与触发语义「mouseup 后出现」一致）
+      window.setTimeout(() => {
+        const s = window.getSelection();
+        if (!s || s.isCollapsed || s.rangeCount === 0) return;
+        const body = document.querySelector('[data-testid="wb-explain-body"]');
+        if (!body || !body.contains(s.anchorNode)) return;
+        const text = s.toString();
+        if (!text.trim()) return;
+        const rect = s.getRangeAt(0).getBoundingClientRect();
+        setTrio({ anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }, text });
+      }, 0);
+    };
+    const onSelChange = () => {
+      setTrio((t) => (t && (window.getSelection()?.isCollapsed ?? true) ? null : t));
+    };
+    const onDown = (e: MouseEvent) => {
+      setTrio((t) => (t && !(e.target instanceof Element && e.target.closest(".dock-trio")) ? null : t));
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (isImeComposing(e)) return; // 组字中的 Esc 属于输入法（取消组字），不关 trio 浮层
+      // §4.4 关闭「Esc」＝单层语义：仅 trio 在场才消费（preventDefault——独立窗口 workbench 的
+      // Esc 收窗判据为 !e.defaultPrevented，浮层消费 Esc 不再连锁收窗；trio 不在场不拦截）
+      if (e.key === "Escape") setTrio((t) => (t ? (e.preventDefault(), null) : t));
+    };
+    document.addEventListener("mouseup", onUp);
+    document.addEventListener("selectionchange", onSelChange);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("selectionchange", onSelChange);
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, []);
+  // 选中后解释板块收起（把手）或坞收起 → 内容区不可见，选单一并关闭
+  useEffect(() => {
+    if (!sel.explainOpen || !dockOpen) setTrio(null);
+  }, [sel.explainOpen, dockOpen]);
+  // §4.4-a「AI 制卡」：runAICards(选中文本) 既有管线零改动（坞内选区不经阅读器选区通道，
+  // 故直调而非 actAICards——后者取文口为 A().selectionText()）；坞展开 + 切「AI 制卡」页签 +
+  // 流式草稿面板均由既有派生链承接（hook 新内容到达唤坞 effect + 本组件 aiPanel.kind effect）
+  const trioAICards = (text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    void sel.runAICards(t, undefined, sel.aiMode);
+    closeTrio();
+  };
+  // §4.4-b「复制」：写入手动制卡当前题型第一文本框——空→直写；非空→末尾补两个换行后追加
+  // （永不覆盖既有输入）；聚焦该框文末＝ManualFormHandle.setFrontValue 内置 caret 收尾；
+  // 落点＝坞展开 + 切「手动制卡」页签；真实内容到达 → 手动侧幽灵条件自然脱落（§4.2，零专门清理）
+  const trioCopy = (text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    const cur = manualFront.replace(/\s*$/, "");
+    manualFormRef.current?.setFrontValue(cur ? `${cur}\n\n${t}` : t);
+    setCardsTab("manual");
+    sel.expandDock();
+    closeTrio();
+  };
+  // §4.4-c「引用」：ChatComposer.insertQuote 头插「> 选中文本」+空行（既有草稿保留其后）、聚焦
+  // 输入框文末、板块保持收起（不动 explainOpen——用户尚未发送）
+  const trioQuote = (text: string) => {
+    if (!text.trim()) return;
+    composerRef.current?.insertQuote(text);
+    closeTrio();
+  };
+
+  return (
+    <>
+      {dictPanel && (
+        <DictPanel
+          panel={dictPanel}
+          reading={sel.dictReading}
+          popupFields={sel.dictFields}
+          manualLang={sel.dictManualLang}
+          onClose={() => sel.setDictPanel(null)}
+          onRetry={() => void sel.runLookup(false, dictPanel.selectedText)}
+          onUseLocal={() => void sel.runLookup(true, dictPanel.selectedText)}
+          // v38（D35）：面板语言切换——以对应语言重查（"auto"=清除手动选择走自动路由）
+          onSelectLanguage={(lang) => {
+            sel.setDictManualLangBoth(lang === "auto" ? null : lang);
+            void sel.runLookup(false, dictPanel.selectedText);
+          }}
+          onMakeCards={(entry: DictionaryEntry, ctx: ReadingContext, kinds: VocabKind[]) => void sel.acceptVocabCards(entry, ctx, kinds)}
+        />
+      )}
+      {/* 图片挖空（manualImage 在场＝来自图片聚焦工具条）维持 modal，不入坞（D88/D92 语义不变） */}
+      {manualOpen && manualImage && (
+        <ManualCardEditor
+          quote={manualQuote ?? ""}
+          imageRegion={manualImage}
+          onCancel={sel.closeManual}
+          onSave={saveManual}
+        />
+      )}
+
+      {/* D123 修订 3：制卡台「图片挖空 → 截图」产生的编辑器（D265：截图源按宿主分派；阅读器自己的点击图片入口仍由 Reader 渲染） */}
+      {occlShown?.workbench && (
+        <OcclusionEditor
+          image={occlShown.image}
+          origin={occlShown.origin}
+          onAISuggest={sel.runOcclusionSuggest}
+          onClose={sel.closeOcclusionEditor}
+          onSubmit={sel.submitOcclusionEditor}
+        />
+      )}
+
+      {/* 制卡台：首次唤起后挂载；收起≠关闭（面板滑出、状态保留）；展开/收起只经顶栏按钮 / Ctrl+K / Esc */}
+      {sel.dockEverOpened && (
+        <div ref={dockRootRef} className="wb-root">
+          <CardDock
+            tab={cardsTab}
+            onTabChange={changeCardsTab}
+            placement={placement}
+            dockOpen={dockOpen}
+            manualCollapsed={manualCollapsed}
+            onToggleManual={() => setManualCollapsed((v) => !v)}
+            onCollapse={sel.collapseDock}
+            manualTabs={
+              <div className="wb-tabs" role="tablist" aria-label={T("卡片类型")} data-testid="manual-types">
+                {MANUAL_TABS.map(([m, label]) => (
+                  <button key={m} type="button" role="tab" aria-selected={manualMode === m} className={manualMode === m ? "on" : undefined} onClick={() => pickMode(m)}>
+                    {T(label)}
+                  </button>
+                ))}
+              </div>
+            }
+            manual={
+              <ManualCardForm
+                key={sel.manualSeq}
+                ref={manualFormRef}
+                variant="dock"
+                mode={manualMode}
+                onModeChange={setManualMode}
+                quote={manualQuote ?? ""}
+                tagSuggestions={tagVocab}
+                initialTags={sel.manualTagsInitial}
+                onCancel={sel.closeManual}
+                onSave={saveManual}
+                onDisambiguate={(n, o) => void openDisamb(n, o)}
+                onPickSelection={() => sel.readSelectionText()}
+                onPickAnswer={latestAnswer}
+                onGenerateAnswer={generateAnswerIntoBack}
+                answerGenerating={sel.manualAnswerBusy}
+                onFrontChange={setManualFront}
+              />
+            }
+            aicards={
+              <div className="wb-scroll">
+                {aiPanel && (aiPanel.kind === "cards" || aiPanel.kind === "occlusion") ? (
+                  <>
+                    {aiPanel.kind === "occlusion" && <div className="dock-badge mono">图片挖空</div>}
+                    {aiPanelNode}
+                  </>
+                ) : (
+                  <div className="dock-empty" data-dock-empty="cards">
+                    <FreeSource
+                      prefer="cards"
+                      text={freeText}
+                      onTextChange={setFreeText}
+                      onExplain={explainOf}
+                      onCards={cardsOf}
+                    />
+                  </div>
+                )}
+              </div>
+            }
+            explainOpen={sel.explainOpen}
+            onToggleExplain={() => sel.setExplainOpen((v) => !v)}
+            explainHandleVisible={sel.explainOpen || hasExplainContent}
+            explainBody={
+              /* 解释内容槽（D144 §4.3）：既有解释页签内容整体平移（引用块/状态行/答案/事后建议/
+                 追问 chips/就此制卡）+ 追问线程；空态不再渲染 FreeSource——解释入口唯一归口＝
+                 底部输入条（§10 退役项，D144 #3） */
+              <>
+                {aiPanel?.kind === "explain" ? aiPanelNode : null}
+                {/* v48.104（D149 ④）：线程行内「制卡」同样跳转 AI 制卡页签——解释板块自动收起到底
+                    （内容本就在线程里，无需归档；把手因线程非空仍在场，可再展开） */}
+                <ExplainThread
+                  items={sel.thread}
+                  onMake={(answer) => {
+                    sel.setExplainOpen(false);
+                    cardsOf(answer);
+                  }}
+                />
+              </>
+            }
+            explainModeBar={
+              /* D144 §4.3：四 ghost 钮（自动｜通用解读｜简明解读｜自由提问），语义矩阵在 selectExplainMode */
+              <ExplainModeBar
+                mode={composerMode}
+                hasText={!!composerText.trim()}
+                hasContext={hasExplainContent}
+                onModeSelect={selectExplainMode}
+              />
+            }
+            explainComposer={
+              <ChatComposer
+                ref={composerRef}
+                busy={threadBusy}
+                value={composerText}
+                onValueChange={setComposerText}
+                onSend={sendComposer}
+              />
+            }
+          />
+        </div>
+      )}
+      {/* D144 #5（§4.4）：解释内容区选区三按钮选单（fixed 浮层，位置随 trio.anchor） */}
+      {trio && (
+        <DockTrioMenu anchor={trio.anchor} text={trio.text} onAiCards={trioAICards} onCopy={trioCopy} onQuote={trioQuote} />
+      )}
+      {disamb && (
+        <DisambiguateModal card={disamb.card} presetOther={disamb.other} origin="manual" onClose={() => setDisamb(null)} />
+      )}
+    </>
+  );
+}

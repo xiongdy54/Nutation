@@ -1,0 +1,290 @@
+// 统计数据页（v2 简化布局）：组件有序列表，wide/half 两种尺寸，拖拽=列表位置交换
+// 数据：stats:overview 一次拉取；eventbus 刷新；布局/可见性/图型选择全部走 settings(scope=dashboard)
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { statsApi, type StatsOverview } from "../../lib/stats";
+import { settingsStore } from "../../lib/settings";
+import { eventBus } from "../../lib/eventbus";
+import { WIDGETS, widgetById, normalizeChartId, rnd, type WidgetDef } from "./widgets";
+import Dropdown from "../Dropdown";
+import {
+  defaultLayoutV2, isSaneLayoutV2, toRows, reorder, syncHidden,
+  type DashLayoutV2, type WidgetSize
+} from "./layout";
+import { IconGrip } from "../icons";
+import { useT } from "../../lib/i18n";
+
+interface WidgetConfig {
+  dataKey: string;
+  chart: string;
+}
+
+/* 模块级缓存（stale-while-revalidate）：切页会卸载/重挂统计页，若每次从骨架屏起步，
+   就会出现「骨架 → 内容」的一次跳变（闪烁）。缓存上次的数据与布局，重挂载首帧直接渲染内容，
+   后台再静默拉最新数据覆盖。 */
+const dashCache: {
+  overview: StatsOverview | null;
+  layout: DashLayoutV2 | null;
+  hidden: string[];
+  configs: Record<string, WidgetConfig>;
+} = { overview: null, layout: null, hidden: [], configs: {} };
+
+export default function Dashboard() {
+  const T = useT();
+  const [overview, setOverviewState] = useState<StatsOverview | null>(dashCache.overview);
+  const setOverview = useCallback((o: StatsOverview) => { dashCache.overview = o; setOverviewState(o); }, []);
+  const [error, setError] = useState<string | null>(null);
+  const [layout, setLayoutState] = useState<DashLayoutV2 | null>(dashCache.layout);
+  const setLayout = useCallback((u: DashLayoutV2 | null | ((p: DashLayoutV2 | null) => DashLayoutV2 | null)) => {
+    setLayoutState((prev) => {
+      const next = typeof u === "function" ? u(prev) : u;
+      dashCache.layout = next;
+      return next;
+    });
+  }, []);
+  const [hidden, setHidden] = useState<string[]>(dashCache.hidden);
+  const [configs, setConfigs] = useState<Record<string, WidgetConfig>>(dashCache.configs);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [paletteTick, setPaletteTick] = useState(0);
+
+  // 初始加载
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [hiddenS, configsS, layoutS] = await Promise.all([
+          settingsStore.get<string[]>("dashboard", "hiddenWidgets", []),
+          settingsStore.get<Record<string, WidgetConfig>>("dashboard", "configs", {}),
+          settingsStore.get<DashLayoutV2 | null>("dashboard", "layout", null)
+        ]);
+        if (!alive) return;
+        dashCache.hidden = hiddenS;
+        dashCache.configs = configsS;
+        setHidden(hiddenS);
+        setConfigs(configsS);
+        setLayout(syncHidden(isSaneLayoutV2(layoutS) ? layoutS! : defaultLayoutV2(hiddenS), hiddenS));
+        const o = await statsApi.overview();
+        if (!alive) return;
+        if (o) setOverview(o);
+        else setError(T("统计服务不可用（statsAPI 未注入）"));
+      } catch (err) {
+        if (alive) setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  // 数据刷新 + 主题切换重绘
+  useEffect(() => {
+    const refresh = () => { statsApi.overview().then((o) => { if (o) setOverview(o); }); };
+    const off1 = eventBus.on("cards/changed", refresh);
+    const off2 = eventBus.on("library/changed", refresh);
+    const off3 = eventBus.on("workflow/changed", refresh);
+    const off4 = eventBus.on("theme/changed", () => { setPaletteTick((t) => t + 1); refresh(); });
+    return () => { off1(); off2(); off3(); off4(); };
+  }, []);
+
+  const persistLayout = useCallback((next: DashLayoutV2) => {
+    settingsStore.set("dashboard", "layout", next);
+  }, []);
+
+  const handleMove = useCallback((sourceId: string, targetId: string) => {
+    setLayout((prev) => {
+      if (!prev) return prev;
+      const next = reorder(prev, sourceId, targetId);
+      persistLayout(next);
+      return next;
+    });
+  }, [persistLayout]);
+
+  const onLeafDragOver = useCallback((widgetId: string) => (e: React.DragEvent) => {
+    if (!dragId || dragId === widgetId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDropTargetId((prev) => (prev === widgetId ? prev : widgetId));
+  }, [dragId]);
+
+  const onLeafDrop = useCallback((widgetId: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    const source = dragId || e.dataTransfer.getData("text/widget-id");
+    if (source && source !== widgetId) handleMove(source, widgetId);
+    setDragId(null);
+    setDropTargetId(null);
+  }, [dragId, handleMove]);
+
+  /** 键盘重排：`draggable` 只有鼠标能拖，键盘用户此前完全没有等价路径
+   * （规范：键盘可达 —— 所有交互元素 Tab 可达并可完成同一件事）。
+   * Alt + ←/→（↑/↓ 同义）把当前组件在 order 里前移/后移一格，
+   * 与拖拽走同一条 reorder + persistLayout，不产生第二套排序逻辑。 */
+  const moveStep = useCallback((widgetId: string, dir: -1 | 1) => {
+    setLayout((prev) => {
+      if (!prev) return prev;
+      const i = prev.order.indexOf(widgetId);
+      const target = prev.order[i + dir];
+      if (i < 0 || target === undefined) return prev;
+      const next = reorder(prev, widgetId, target);
+      persistLayout(next);
+      return next;
+    });
+  }, [persistLayout]);
+
+  const onWidgetHeadKeyDown = useCallback((widgetId: string) => (e: React.KeyboardEvent) => {
+    if (!e.altKey) return;
+    const dir = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : null;
+    if (dir === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    moveStep(widgetId, dir);
+  }, [moveStep]);
+
+  const getConfig = useCallback((w: WidgetDef): WidgetConfig => {
+    const raw = configs[w.id] || { dataKey: w.defaultData, chart: w.defaultChart };
+    // 存量配置里的旧 chart id 归一化为新图型 id（渲染与下拉显示一致）
+    return { dataKey: raw.dataKey, chart: normalizeChartId(w.id, raw.chart) };
+  }, [configs]);
+
+  const setConfig = useCallback((widgetId: string, patch: Partial<WidgetConfig>) => {
+    setConfigs((prev) => {
+      const next = { ...prev, [widgetId]: { ...(prev[widgetId] || { dataKey: widgetById(widgetId)!.defaultData, chart: widgetById(widgetId)!.defaultChart }), ...patch } };
+      dashCache.configs = next;
+      settingsStore.set("dashboard", "configs", next);
+      return next;
+    });
+  }, []);
+
+  // 设置面板开关组件/改宽度后同步（settingsStore.set 会发 settings/changed）
+  useEffect(() => {
+    return eventBus.on("settings/changed", async (payload?: unknown) => {
+      const scope = (payload as { scope?: string; key?: string } | undefined)?.scope;
+      if (scope && scope !== "dashboard") return;
+      const [hiddenS, layoutS] = await Promise.all([
+        settingsStore.get<string[]>("dashboard", "hiddenWidgets", []),
+        settingsStore.get<DashLayoutV2 | null>("dashboard", "layout", null)
+      ]);
+      dashCache.hidden = hiddenS;
+      setHidden(hiddenS);
+      setLayout((prev) => {
+        const merged = syncHidden(prev || defaultLayoutV2(hiddenS), hiddenS);
+        // 设置页只改 sizes 时（layoutS 带 sizes），以设置页为准
+        if (layoutS && layoutS.sizes) return { ...merged, sizes: { ...merged.sizes, ...layoutS.sizes } };
+        return merged;
+      });
+    });
+  }, []);
+
+  const renderWidget = useCallback((widgetId: string) => {
+    const def = widgetById(widgetId);
+    if (!def || !overview) return null;
+    const cfg = getConfig(def);
+    const size = layout?.sizes[widgetId] === "half" ? "half" : "wide";
+    const chartOptions = [...new Map(def.dataKeys.flatMap((dk) => (def.charts[dk] || []).map((c) => [c.id, { value: c.id, label: T(c.label), dk }]))).values()];
+    const dataOptions = def.dataKeys.map((dk) => ({
+      value: dk,
+      label: T(def.dataLabels?.[dk] ?? (dk === "domains-main" ? "按主类" : dk === "domains-detail" ? "按二级" : dk === "duration-hist" ? "时长分布" : dk === "duration-by-field" ? "按领域" : dk))
+    }));
+    return (
+      <div
+        key={widgetId}
+        className={`dash-widget card-fill dash-widget-${size}`}
+        data-widget={widgetId}
+        data-dragging={dragId === widgetId || undefined}
+        data-drop={dropTargetId === widgetId || undefined}
+        onDragOver={onLeafDragOver(widgetId)}
+        onDrop={onLeafDrop(widgetId)}
+      >
+        <div
+          className="dash-widget-head"
+          draggable
+          onDragStart={(e) => { e.dataTransfer.setData("text/widget-id", widgetId); e.dataTransfer.effectAllowed = "move"; setDragId(widgetId); }}
+          onDragEnd={() => { setDragId(null); setDropTargetId(null); }}
+        >
+          {/* 键盘重排的落点做成真正的 <button>，而不是给 head 挂 role="button"：
+              head 里嵌着两个 Dropdown 按钮，role="button" 套可聚焦子元素是无效 ARIA。
+              把手本身也从此有了焦点环，Alt + 方向键即可换位。 */}
+          <button
+            type="button"
+            className="icon-btn dash-widget-reorder"
+            aria-label={`${T(def.title)} · ${T("重新排列：Alt + 左/右方向键前移或后移")}`}
+            onKeyDown={onWidgetHeadKeyDown(widgetId)}
+          >
+            <IconGrip size={16} className="dash-grip" />
+          </button>
+          <span className="dash-widget-title">{T(def.title)}</span>
+          <div className="dash-widget-tools" onClick={(e) => e.stopPropagation()}>
+            {chartOptions.length > 1 && (
+              <Dropdown
+                title={T("切换图型")}
+                value={cfg.chart}
+                options={chartOptions}
+                onChange={(chartId) => {
+                  // 当前数据档支持该图型就保留档位；否则落到第一个支持的档位
+                  const offers = (k: string) => (def.charts[k] || []).some((c) => c.id === chartId);
+                  const dk = offers(cfg.dataKey) ? cfg.dataKey : (def.dataKeys.find(offers) || cfg.dataKey);
+                  setConfig(widgetId, { chart: chartId, dataKey: dk });
+                }}
+              />
+            )}
+            {dataOptions.length > 1 && (
+              <Dropdown
+                title={T("选择数据")}
+                value={cfg.dataKey}
+                options={dataOptions}
+                onChange={(dk) => {
+                  const cs = def.charts[dk] || [];
+                  setConfig(widgetId, { dataKey: dk, chart: cs.some((c) => c.id === cfg.chart) ? cfg.chart : (cs[0]?.id || cfg.chart) });
+                }}
+              />
+            )}
+          </div>
+        </div>
+        <div className="dash-widget-body">
+          {def.render(overview, cfg.dataKey, cfg.chart, rnd)}
+        </div>
+      </div>
+    );
+  }, [overview, getConfig, setConfig, dragId, dropTargetId, onLeafDragOver, onLeafDrop, onWidgetHeadKeyDown, layout]);
+
+  // 可见组件行分解（Hooks 规则：useMemo 在条件 return 之前）
+  const rows = useMemo(() => {
+    if (!layout) return [];
+    return toRows(layout);
+  }, [layout]);
+
+  if (error) {
+    return (
+      <section className="dashboard dash-page">
+        <div className="empty-state">
+          <p className="empty-text">{error}</p>
+        </div>
+      </section>
+    );
+  }
+
+  if (!overview || !layout) {
+    return (
+      <section className="dashboard dash-page">
+        <div className="dash-skeleton">
+          <div className="skeleton skeleton-kpi" />
+          <div className="skeleton skeleton-chart" />
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="dashboard dash-page" data-palette-tick={paletteTick}>
+      <div className="dash-grid">
+        {rows.map((row, i) => {
+          if (row.kind === "pair") {
+            return (
+              <div className="dash-row" key={`r${i}`}>
+                {row.ids.map((id) => renderWidget(id))}
+              </div>
+            );
+          }
+          return renderWidget(row.id);
+        })}
+      </div>
+    </section>
+  );
+}

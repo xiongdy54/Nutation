@@ -1,0 +1,13 @@
+{
+  "importantCount": 13,
+  "inlineSvgCount": 33,
+  "hoverOpacityCount": 0,
+  "colorLiterals": {
+    "src/components/Reader.tsx": 4,
+    "src/components/SettingsPanel.tsx": 4,
+    "src/components/charts/kit.tsx": 16,
+    "src/lib/mindmap/v2/svg.ts": 9,
+    "src/main.tsx": 1,
+    "src/skins/_lab/index.tsx": 3
+  }
+}

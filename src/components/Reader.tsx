@@ -1,0 +1,2775 @@
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent as ReactFocusEvent,
+  type KeyboardEvent as ReactKeyboardEvent
+} from "react";
+import ReadMarkdown from "./editor/ReadMarkdown";
+import "katex/dist/katex.min.css";
+import { isImeComposing } from "../lib/ime";
+import { isTextEntryTarget, isNativeControlKey, isInModal } from "../lib/keyTarget";
+import { cardsApi, parseCloze, type CardDraft } from "../lib/cards";
+import { useSelectionActions } from "../lib/useSelectionActions";
+import { headingPathAt, tocPathByHref } from "../lib/reader/tocPath";
+import { paragraphContext } from "../lib/selectionContext";
+import type { OcclusionRect, OcclusionShape } from "../lib/occlusion";
+import { settingsStore } from "../lib/settings";
+import { sanitizeDomain, udcLabel, UDC_LEAVES, UDC_MAX, UDC_OTHER } from "../lib/udc";
+import { eventBus } from "../lib/eventbus";
+import { readingStats } from "../lib/stats";
+import Dropdown from "./Dropdown";
+import OcclusionShapes from "./OcclusionShapes";
+import OcclusionEditor from "./editor/OcclusionEditor";
+import { useCommandActions } from "../lib/useCommands";
+import ReaderEngine from "./reader/ReaderEngine";
+import SelectionMenu, { ANNOT_COLORS, type AnnotColor, type AnnotMarkForm } from "./SelectionMenu";
+import SelectionPanels from "./SelectionPanels";
+import AnnotationEditor from "./AnnotationEditor";
+import { useSelectionBarStyle } from "../lib/selectionBarSettings";
+import { useAnnotationSettings, writeAnnotationSetting } from "../lib/annotationSettings";
+import { useT } from "../lib/i18n";
+// D248（T7）：阅读会话行为上下文（打开/关闭、注意力、导航与外观埋点）
+import { track, newUuid7, getTrackConfig, setTrackContext } from "../lib/behavior/track";
+import { createAttention } from "../lib/behavior/attention";
+import { consumeOrigin } from "../lib/behavior/origin";
+import ReaderSidebar, { type ReaderTab } from "./reader/ReaderSidebar";
+import ReaderExtractsPanel from "./reader/ReaderExtractsPanel";
+import MindmapTab from "./reader/MindmapTab";
+import { captureFlowSnapshot, playFlowGhost } from "./reader/atlas/handoff";
+import type { AtlasEntry } from "./reader/atlas/AtlasStage";
+// 结构流（STRUCTURE-FLOW-PLAN §6.4 / §12.1）：结构图融进阅读界面，不再开独立窗口。
+// 本窗口只提供内核与「在完整图谱中打开」的落地。
+import StructureFlowHost from "./reader/flow/StructureFlowHost";
+import type { ReaderLocation } from "../lib/reader/kernel";
+import type { AnnotSort } from "./reader/AnnotationPanel";
+import { useDialogA11y } from "../lib/dialogA11y";
+import { IconChevronDown, IconChevronLeft, IconChevronRight, IconAlert, IconClose, IconSidebar, IconBookOpen, IconLayers, IconCheck } from "./icons";
+import {
+  CUSTOM_THEMES_MAX,
+  DEFAULT_READER_SETTINGS,
+  buildLocator,
+  normalizeReaderSettings,
+  normalizeTurnEffect,
+  readerThemeTone,
+  resolveAppearance,
+  type ContentPointerDownInfo,
+  type ContentPointerUpInfo,
+  type CustomThemeEntry,
+  type ImageLocateHit,
+  type ReaderAppearance,
+  type ReaderAppearanceEx,
+  type ReaderDocMark,
+  type ReaderImageRef,
+  type ReaderKernel,
+  type ReaderModeConfig,
+  type ReaderRect,
+  type ReaderSelection,
+  type ReaderSettings,
+  type ReaderTocItem,
+  type RelocateInfo,
+  type SourceAnchorGeometry
+} from "../lib/reader/service";
+// v48.24 批3（§4 文中留痕）：标记的数据面（哪些根摘录要画、浮层显示什么）——纯函数，零 DOM
+import { aggregateCardCounts, buildAnnotationItems, buildDocMarks } from "../lib/reader/marks";
+// v48.23（D61 §6.8-11）：多段选择的集合运算与修饰键——纯逻辑在 electron/annotationRange.js，
+// 渲染层经主进程算（resolveSpanSet），本层不复制任何 span 归并/装配逻辑。
+import {
+  modifierFlagOf,
+  readMultiSelectKey,
+  resolveSpanSet,
+  type ExtractSpan,
+  type MultiSelectKey
+} from "../lib/readingWorkflow";
+
+// D122：§K.4 的 ReaderSelActionsFloat（选区动作组悬浮形态）已退役——被 SelectionMenu（选区浮条）取代。
+
+// D130 R3：快捷菜单预设档（档位值即字段数值；设置页滑杆可取连续值，两者读写同一字段）
+const LINE_HEIGHT_PRESETS = [
+  { value: "1.5", label: "紧凑 1.5" },
+  { value: "1.7", label: "标准 1.7" },
+  { value: "2", label: "宽松 2.0" }
+];
+const MARGIN_PRESETS = [
+  { value: "24", label: "窄 24px" },
+  { value: "48", label: "标准 48px" },
+  { value: "80", label: "宽 80px" }
+];
+const MEASURE_PRESETS = [
+  { value: "600", label: "窄 600px" },
+  { value: "720", label: "标准 720px" },
+  { value: "860", label: "宽 860px" },
+  { value: "1200", label: "全宽 1200px" }
+];
+/** 下拉高亮/展示当前档＝数值上最接近的预设档（§4.2 行距口径；边距/版心同法） */
+function nearestPreset(v: number, presets: { value: string; label: string }[]) {
+  return presets.reduce(
+    (best, p) => (Math.abs(Number(p.value) - v) < Math.abs(Number(best.value) - v) ? p : best),
+    presets[0]
+  );
+}
+
+interface Props {
+  title: string;
+  markdown: string;
+  itemId?: string;
+  initialRatio?: number;  /** 上次进度的 CFI（文件书内核恢复定位用） */
+  initialCfi?: string | null;
+  /** v28 PDF 原生阅读：上次进度的页码（0 基），恢复时优先于 initialRatio */
+  initialPageIndex?: number | null;
+  contextLabel?: string;
+  contextRef?: { documentId?: string; extractId?: string; anchorText?: string; anchorRatio?: number } | null;
+  jumpAnchor?: {
+    anchorText: string;
+    anchorRatio?: number;
+    cfi?: string;
+    chapterIndex?: number;
+    pageIndex?: number;
+    /** v35 图片卡附带：原图定位线索 + 本卡区域（图内高亮/对照浮层） */
+    imageAnchor?: { alt?: string; contextText?: string };
+    occlusion?: { rects: { x: number; y: number; w: number; h: number; ord: number }[]; shapes?: unknown; regionScope?: string; cardOrd?: number; assetPath?: string };
+  } | null;
+  /** 原书文件字节（存在即走阅读内核；粘贴书/摘录 R1b 合流） */
+  book?: { bytes: Uint8Array; name: string; engine?: "foliate" | "pdf" } | null;
+  sourceTitle?: string;
+  /** D121 §1.3：书籍作者（制卡时写入 sourceRef.author） */
+  sourceAuthor?: string;
+  onBack: () => void;
+  onProgress?: (ratio: number, lastText: string, extra?: { cfi?: string; fraction?: number; pageIndex?: number }) => void;
+  /** 阅读主题联动整个软件（v20.1）：暗夜→软件夜间模式，纸白/羊皮→浅色 */
+  onSwitchAppTheme?: (mode: "light" | "dark") => void;
+  /** v48.13（P2）：由全局活动指示器「打开导图」进入时置位——挂载后自动打开导图工作区 */
+  openMindmapInitially?: boolean;
+  /** 消费后通知 App 清除标记（避免返回正文再进出时重复弹出） */
+  onMindmapOpened?: () => void;
+  /** v48.13（P2）：要展示的导图版本 id（候选版本——不激活但仍应被看到） */
+  openMindmapMapId?: string | null;
+  /** v48.13（P3）：以同一 run 续跑（应用重启后发现未跑完的运行） */
+  resumeRunId?: string | null;
+  /** v48.22（D58 §6.8-8）：集中复习本书的摘录 / 闪卡（按书范围会话） */
+  onReviewExtracts?: () => void;
+  onReviewCards?: () => void;
+  /** v48.47（D87）：点「已制卡 N 张」→ 宿主（App）跳卡片浏览器并按该摘录锚筛选 */
+  onOpenAnchorCards?: (extractId: string) => void;
+}
+
+/** v25：读取正文图片/选区图片的 dataURL（blob:/data:/bookasset: 同源可 fetch；超 12MB 拒绝） */
+async function loadImageDataUrl(src: string): Promise<string | null> {
+  try {
+    if (!src) return null;
+    if (src.startsWith("data:image/")) return src;
+    const res = await fetch(src);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    if (!blob.type.startsWith("image/") || blob.size > 12 * 1024 * 1024) return null;
+    return await new Promise<string>((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result));
+      fr.onerror = () => reject(new Error("读取失败"));
+      fr.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** v25：按选区包围盒裁剪（AI 需要「只看选区内容」的图片；坐标以原图百分比给出） */
+function cropImageDataUrl(dataUrl: string, bbox: OcclusionRect): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) {
+        reject(new Error("图片尺寸不可用"));
+        return;
+      }
+      const sx = Math.max(0, Math.floor((bbox.x / 100) * w));
+      const sy = Math.max(0, Math.floor((bbox.y / 100) * h));
+      const sw = Math.max(1, Math.min(w - sx, Math.round((bbox.w / 100) * w)));
+      const sh = Math.max(1, Math.min(h - sy, Math.round((bbox.h / 100) * h)));
+      const canvas = document.createElement("canvas");
+      canvas.width = sw;
+      canvas.height = sh;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("画布不可用"));
+        return;
+      }
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = () => reject(new Error("图片解码失败"));
+    img.src = dataUrl;
+  });
+}
+
+/** v25 手动制卡载荷（M5）：与 AI 制卡同构的字段集 + 图片选区 */
+
+/**
+ * 工具栏弹出组（D5-B）：按钮 + 面板。开合状态由宿主持有——两个组互斥、
+ * 点外部/Esc 收起（见 Reader 的 mousedown/keydown effect），故这里不做内部开关。
+ */
+function ReaderToolMenu({
+  id,
+  label,
+  open,
+  onToggle,
+  children
+}: {
+  id: "more" | "settings";
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="dd" data-reader-tool-menu={id}>
+      <button
+        type="button"
+        className="dd-btn"
+        data-tool-menu-btn={id}
+        aria-expanded={open}
+        aria-controls={`reader-tool-menu-${id}`}
+        onClick={onToggle}
+      >
+        {label}
+        <IconChevronDown size={12} className="dd-caret" />
+      </button>
+      {open && (
+        <div className="dd-menu reader-tool-menu" id={`reader-tool-menu-${id}`} data-tool-menu-panel={id}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * D130 R3（P1）：主题下拉——四个内置档 + 「── 我的主题 ──」分组 + 已存主题条目（12×12 色块预览＝该套 bgColor）。
+ * 共享 Dropdown 不支持条目色块与按条目的 data-* 探针（§4.1 GUI 探针面），故就地实现；
+ * 视觉与交互完全沿用 .dd / .dd-btn / .dd-menu / .dd-item 既有语言（零新控件形态、点外部收起同 Dropdown）。
+ */
+function ReaderThemeDropdown({
+  value,
+  savedThemes,
+  isSavedActive,
+  onSelect,
+  onManage
+}: {
+  value: ReaderAppearance["theme"];
+  savedThemes: CustomThemeEntry[];
+  isSavedActive: (t: CustomThemeEntry) => boolean;
+  onSelect: (t: ReaderAppearance["theme"] | CustomThemeEntry) => void;
+  onManage: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const T = useT();
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+  const builtIn: { key: ReaderAppearance["theme"]; label: string }[] = [
+    { key: "paper", label: T("纸白") },
+    { key: "sepia", label: T("羊皮") },
+    { key: "dark", label: T("暗夜") },
+    { key: "custom", label: T("自定义") }
+  ];
+  const activeSaved = savedThemes.find(isSavedActive);
+  const currentLabel =
+    value === "custom" && activeSaved ? activeSaved.name : builtIn.find((b) => b.key === value)?.label ?? T("自定义");
+  return (
+    <div className="dd" ref={ref} data-reader-theme-dd>
+      <button
+        type="button"
+        className="dd-btn"
+        title={T("阅读主题")}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {currentLabel}
+        <IconChevronDown size={12} className="dd-caret" />
+      </button>
+      {open && (
+        <div className="dd-menu" role="listbox">
+          {builtIn.map((b) => {
+            const on = value === b.key && !activeSaved;
+            return (
+              <button
+                key={b.key}
+                type="button"
+                role="option"
+                aria-selected={on}
+                className={`dd-item${on ? " dd-item-on" : ""}`}
+                onClick={() => {
+                  setOpen(false);
+                  onSelect(b.key);
+                }}
+              >
+                <span className="dd-item-label">{b.label}</span>
+                <IconCheck size={12} className="dd-check" />
+              </button>
+            );
+          })}
+          {savedThemes.length > 0 && (
+            <>
+              <div className="reader-theme-group-label">{T("── 我的主题 ──")}</div>
+              {savedThemes.map((t) => {
+                const on = isSavedActive(t);
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="option"
+                    aria-selected={on}
+                    className={`dd-item reader-theme-option${on ? " dd-item-on" : ""}`}
+                    data-reader-theme-option={t.id}
+                    title={t.name}
+                    onClick={() => {
+                      setOpen(false);
+                      onSelect(t);
+                    }}
+                  >
+                    <span className="reader-theme-swatch" style={{ background: t.bgColor }} aria-hidden="true" />
+                    <span className="reader-theme-option-name">{t.name}</span>
+                    <IconCheck size={12} className="dd-check" />
+                  </button>
+                );
+              })}
+            </>
+          )}
+          <button
+            type="button"
+            className="dd-item reader-theme-manage-item"
+            data-reader-theme-manage
+            title={T("重命名与删除在设置页的「阅读外观」区块")}
+            onClick={() => {
+              setOpen(false);
+              onManage();
+            }}
+          >
+            {T("管理主题…")}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** D242：阅读器挂载期间改指向阅读色派生值的应用 Token（[应用 Token, theme.css 中 --reader-surface-* 源名]） */
+const READER_SURFACE_TOKENS: ReadonlyArray<readonly [string, string]> = [
+  ["--paper", "paper"],
+  ["--ink", "ink"],
+  ["--grey-1", "grey-1"],
+  ["--grey-2", "grey-2"],
+  ["--grey-3", "grey-3"],
+  ["--text-primary", "ink"],
+  ["--text-secondary", "text-secondary"],
+  ["--text-helper", "grey-3"],
+  ["--text-placeholder", "text-placeholder"],
+  ["--border-subtle", "border-subtle"],
+  ["--border-strong", "border-strong"],
+  ["--band-line", "border-subtle"],
+  ["--border-card", "border-subtle"],
+  ["--border-input", "border-strong"],
+  ["--surface-canvas", "paper"],
+  ["--surface-chrome", "paper"],
+  ["--surface-card", "paper"],
+  ["--surface-card-fill", "grey-1"],
+  ["--surface-overlay", "overlay"],
+  ["--surface-input", "paper"]
+];
+
+export default function Reader({
+  title,
+  markdown,
+  itemId,
+  initialRatio = 0,
+  initialCfi,
+  initialPageIndex,
+  contextLabel,
+  contextRef,
+  jumpAnchor,
+  book,
+  sourceTitle,
+  sourceAuthor,
+  onBack,
+  onProgress,
+  onSwitchAppTheme,
+  openMindmapInitially,
+  onMindmapOpened,
+  openMindmapMapId,
+  resumeRunId,
+  onReviewExtracts,
+  onReviewCards,
+  onOpenAnchorCards
+}: Props) {
+  const T = useT();
+  // D248（T7）：本次阅读会话的 BDI 上下文——ctxId 每个挂载一次；注意力按 read 阈值计活跃
+  const bdiCtxIdRef = useRef<string>("");
+  if (!bdiCtxIdRef.current) bdiCtxIdRef.current = newUuid7();
+  const bdiAttentionRef = useRef<ReturnType<typeof createAttention> | null>(null);
+  const bdiLastPctRef = useRef<number>(initialRatio);
+  const bdiFinishedRef = useRef(false);
+  useEffect(() => {
+    const origin = itemId ? consumeOrigin({ window: "main", entityType: "library_item", entityId: itemId }) : "unknown";
+    const attn = createAttention({ cutoffHour: getTrackConfig().cutoffHour });
+    bdiAttentionRef.current = attn;
+    attn.start();
+    attn.setContext({
+      surface: "read",
+      entityType: itemId ? "library_item" : undefined,
+      entityId: itemId,
+      libraryItemId: itemId,
+      ctxId: bdiCtxIdRef.current,
+      origin: origin === "unknown" ? undefined : origin,
+    });
+    setTrackContext({
+      surface: "read",
+      entityType: itemId ? "library_item" : undefined,
+      entityId: itemId,
+      libraryItemId: itemId,
+      ctxId: bdiCtxIdRef.current,
+    });
+    if (itemId) {
+      track("library.opened", {
+        libraryItemId: itemId,
+        ctxId: bdiCtxIdRef.current,
+        origin: origin === "unknown" ? undefined : origin,
+      });
+    }
+    return () => {
+      attn.stop("unload");
+      bdiAttentionRef.current = null;
+      if (itemId) track("library.closed", { ctxId: bdiCtxIdRef.current, props: { progressPct: bdiLastPctRef.current } });
+      setTrackContext(null);
+    };
+  }, [itemId]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const restoredRef = useRef(false);
+  const saveTimerRef = useRef<number | null>(null);
+  /**
+   * v48.23（D61 §6.8-11）：选区菜单状态扩为携带 `spans`（多段不相邻选择的原始采集物）。
+   * `text` 恒为各段经主进程拼接后的文本——菜单与 5 个动作只读 text，故多段对所有动作自动生效。
+   */
+  const [selection, setSelection] = useState<{
+    x: number;
+    y: number;
+    text: string;
+    spans: ExtractSpan[];
+    /** 选区包围盒（视口坐标）——菜单定位的锚点（R22 判据 4：不再用 pointerup 点） */
+    rect: ReaderRect;
+  } | null>(null);
+  /** 多段选择集合（与主进程 updateSpanSet 同步的权威列表；DOM 顺序＝落库顺序） */
+  const multiSpansRef = useRef<ExtractSpan[]>([]);
+  /** 修饰键（settings.app.multiSelectKey；读侧归一，默认 Ctrl / macOS Meta） */
+  const multiKeyRef = useRef<MultiSelectKey>("Ctrl");
+  /**
+   * 本次拖选手势**起手**的修饰位（v48.39 / D79）：`contentPointerDown` 上采样。
+   * 加选/替换的判据＝起手或收尾（pointerup）任一时刻按住修饰键——真实用户收尾常先松修饰键
+   * 再松鼠标，只看 pointerup 会把这次加选误判成「替换」、把已累计的集合抹成只剩最后一段。
+   */
+  const gestureModRef = useRef<ContentPointerDownInfo>({ x: 0, y: 0 });
+  /** 选中态更新串行化：指针抬起是高频事件，主进程往返按序应用（避免两次拖选交错） */
+  const spanQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // D98/R1：图片聚焦层退役——正文图片点击直进挖空编辑器（会话态在 useSelectionActions.occlEditor）
+  /**
+   * v48.13（P3）：续跑意图要在**挂载时快照**。
+   * 原因：App 在 onMindmapOpened 里立刻清掉 view.resumeRunId（导航状态要干净），
+   * 而真正用到它的是图谱页签里 MindmapTab 的挂载流程（要等收集完原文才续跑）——
+   * 若直接读 prop，会读到已被清空的 null，续跑静默不发生。
+   * v48.44（D84）：「打开导图」落点＝侧栏图谱页签（全屏 Overlay 工作区退役）。
+   */
+  const [resumeOnce] = useState<string | null>(resumeRunId ?? null);
+  const [toast, setToast] = useState<string | null>(null);
+  // v25：showToast 上移到各交互回调之前（回调 deps 在渲染期求值，后置声明会触发 TDZ）
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), 1800);
+  }, []);
+
+  const sourceTextRef = useRef("");
+  const occlusionSourceRef = useRef<"engine" | "library">("engine");
+  // 需求2：制卡时记录选区锚点（文本 + 当时刻度），随 contextRef 落库，供复习卡「跳转原文」
+  const anchorRef = useRef<{ anchorText: string; anchorRatio: number } | null>(null);
+
+  // ---------- 选区动作编排（批 4 Task 7，R30）：实现全在 src/lib/useSelectionActions.ts，
+  // 这里只注入宿主能力（锚点/选区清理/图片聚焦）并接收状态与回调——Reader 不留动作实现副本。
+  // v49.99（D265）：侧栏「图片挖空」的内部截图源（截阅读区，不隐藏窗口）——函数体在
+  // occlEditor 会话态与内核 refs 就绪后定义，adapter 经 ref 读最新实现。
+  const captureWorkbenchRef = useRef<(() => Promise<{ dataUrl: string; alt: string } | null>) | null>(null);
+  const selActions = useSelectionActions({
+    selectionText: () => selection?.text ?? null,
+    selectionSpans: () => selection?.spans,
+    contextRef: () => enrichedContextRef(),
+    sourceContext: () => ({ documentId: contextRef?.documentId, extractId: contextRef?.extractId }),
+    labels: { title, sourceTitle, sourceAuthor, section: contextLabel },
+    // D121 §2.2：章节路径——引擎书走目录 DFS（tocItems/tocActiveHref 在后面才声明，故用函数在动作时求值），
+    // 自渲染 markdown 书走选区之前的 ATX 标题层级栈；都取不到 = []（labels.section 作兜底）
+    sectionPath: () => {
+      if (engineMode) return tocPathByHref(tocItems, tocActiveHref);
+      const t = selection?.text;
+      if (!t || !markdown) return [];
+      const at = markdown.indexOf(t);
+      return at >= 0 ? headingPathAt(markdown, at) : [];
+    },
+    // D121 §2.3：前后文——引擎书优先取内核（块级兄弟），否则对 markdown 正文做段落定位
+    selectionSurrounding: () => {
+      if (engineMode) {
+        const c = kernelRef.current?.getSelectionContext?.();
+        if (c && (c.before || c.after)) return c;
+      }
+      const t = selection?.text;
+      return t && markdown ? paragraphContext(markdown, t) : null;
+    },
+    ownerKey: () => itemId || contextRef?.documentId || "",
+    itemId,
+    sourceTextRef,
+    bodyText: markdown,
+    lookupLocator: () => ({
+      cfi: engineSelRef.current?.cfi ?? jumpAnchor?.cfi ?? null,
+      pageIndex: engineSelRef.current?.pageIndex ?? jumpAnchor?.pageIndex ?? null
+    }),
+    anchorText: () => engineSelRef.current?.anchorText || anchorRef.current?.anchorText || null,
+    rememberAnchor,
+    clearSelection,
+    clearAnchor: () => {
+      anchorRef.current = null;
+    },
+    clearKernelSelection: () => {
+      engineSelRef.current = null;
+    },
+    occlusionSourceRef,
+    showToast,
+    buildSourceAnchor,
+    onManualSettled: () => {
+      markCardRefOverrideRef.current = null;
+    },
+    focus: {
+      // D98/R1：图片聚焦层退役——本 adapter 槽位仅供退役链路（submitRegionCards/submitRegionManual）占位，
+      // 恒 null；编辑器走 occlEditor 会话态
+      get: () => null,
+      close: () => {},
+      setBusy: () => {}
+    },
+    // v49.99（D265）：侧栏制卡台「图片挖空」＝截阅读区（原工具栏截图链路），不隐藏窗口
+    captureWorkbenchImage: () => captureWorkbenchRef.current?.() ?? Promise.resolve(null)
+  });
+  const {
+    aiPanel,
+    setAiPanel,
+    manualOpen,
+    manualImage,
+    manualQuote,
+    dictPanel,
+    setDictPanel,
+    dictReading,
+    dictFields,
+    dictManualLang,
+    dockOpen,
+    acceptDraft,
+    acceptOcclusionDraft,
+    rejectAllDrafts,
+    runExplain,
+    runAICards,
+    runOcclusionCards,
+    searchAndRetry,
+    runFollowUpCards,
+    runExploration,
+    acceptVocabCards,
+    runLookup,
+    setDictManualLangBoth,
+    changeAiMode,
+    aiMode,
+    actions: selAct,
+    submitRegionCards,
+    submitRegionManual,
+    handleManualCard,
+    startManualWith,
+    closeManual,
+    createAnnotation,
+    saveAnnotationComment,
+    saveAnnotationColor,
+    saveAnnotationForm,
+    upgradeAnnotation,
+    // D98 手动图片挖空编辑器
+    occlEditor,
+    openOcclusionEditor,
+    closeOcclusionEditor,
+    submitOcclusionEditor,
+    runOcclusionSuggest
+  } = selActions;
+
+  // ---------- 阅读内核分支（v20：文件书走 foliate 内核；粘贴书/摘录 R1b 合流） ----------
+  const engineMode = Boolean(book);
+  /** v28 PDF 原生阅读：book.engine 决定内核实现（默认 foliate，存量书全走此分支） */
+  const engineKind: "foliate" | "pdf" = book?.engine === "pdf" ? "pdf" : "foliate";
+  // 引擎数据源必须按引用稳定（useMemo）：内联字面量会让 ReaderEngine 每次重渲染都销毁重建内核
+  const engineSource = useMemo(
+    () => (book ? { kind: "bytes" as const, bytes: book.bytes, name: book.name } : null),
+    [book]
+  );
+  const kernelRef = useRef<ReaderKernel | null>(null);
+  /** v48.14：引擎打开失败的可见错误态。此前 createKernel / k.open 抛出的异常
+   * 没人接（未处理的 Promise rejection），界面只剩一片空白正文区，
+   * 用户既不知道是书坏了还是软件挂了，也没有重试入口。 */
+  const [engineError, setEngineError] = useState<string | null>(null);
+  /** 重试计数：作为 ReaderEngine 的 key，改一次就重建一次内核 */
+  const [engineRetry, setEngineRetry] = useState(0);
+  // 换书（含换引擎格式）时清掉上一本的失败态，否则错误块会盖在新书上
+  useEffect(() => {
+    setEngineError(null);
+  }, [engineSource]);
+  // 引擎选区锚点：语义同 markdown 的 anchorRef——最后一次菜单动作的选区，保留到下一次覆盖
+  const engineSelRef = useRef<ReaderSelection | null>(null);
+  const engineChapterRef = useRef<number | undefined>(0);
+  /** v48.24 批3（§4 写入侧）：与选区同时采集的源锚几何（PDF 页内百分比矩形；EPUB 为 null，cfi 在选区里）。
+   *  必须在 `actXxx` 清选区**之前**采集——handleExtract 跑起来时选区已被 clearSelection 撤掉了 */
+  const engineAnchorGeomRef = useRef<SourceAnchorGeometry | null>(null);
+  // v35 正文图片锚点：点击正文图片时快照（当前 locator+章节+alt/周边文字），供图片卡 contextRef
+  const imageAnchorRef = useRef<{
+    locator: { cfi?: string; pageIndex?: number } | null;
+    chapterIndex?: number;
+    alt?: string;
+    contextText?: string;
+  } | null>(null);
+  // v35 图片制卡来源：engine=正文图片（记图片锚点可跳转）/ library=资源库选图（图不在书中，无定位锚）
+  const relocateTimerRef = useRef<number | null>(null);
+  // v35 跳转图片卡：图内区域高亮叠加（宿主视口坐标，短暂显示）/ 原图对照浮层（定位失败或 PDF 系）
+  const [imgOverlay, setImgOverlay] = useState<{ rect: ReaderRect; occlusion: NonNullable<Props["jumpAnchor"]>["occlusion"] } | null>(null);
+  const [sourcePeek, setSourcePeek] = useState<{ occlusion: NonNullable<Props["jumpAnchor"]>["occlusion"] } | null>(null);
+  // v48.24 批3（§4 文中留痕）：本文档的根摘录标记。
+  // v48.45（D85，用户指令③）：**悬停浮层退役**（markHover 不再弹 MarkPopover）——
+  // 点击标记＝唯一浮层入口（批注编辑浮层 AnnotationEditor，承接「已制卡 N 张」+「就此制卡」）。
+  /** 批 4 Task 17：点标记 → 批注编辑浮层（形态唯一，与摘录页共用 AnnotationEditor） */
+  const [markEditor, setMarkEditor] = useState<{
+    id: string;
+    kind: "highlight" | "extract";
+    comment: string | null;
+    color: string | null;
+    anchor: ReaderRect;
+  } | null>(null);
+  const marksRef = useRef<ReaderDocMark[]>([]);
+  /** 从浮层「就此制卡」进入时，本次制卡的 contextRef 覆盖值（挂到该摘录上——已制卡数按 extractId 派生） */
+  const markCardRefOverrideRef = useRef<Record<string, unknown> | null>(null);
+  /** 批注栏（D67 §3）：刚跳中的条目短时强调（不落库、不持久）＋导航有界失败的条目（中性态） */
+  const [annotFocus, setAnnotFocus] = useState<string | null>(null);
+  const [annotUnavailable, setAnnotUnavailable] = useState<Record<string, true>>({});
+  const annotFocusTimerRef = useRef<number | null>(null);
+  /** 内核标记文档序的版本号：安装/重画标记后 +1，侧栏注解栏据此重新取序 */
+  const [marksOrderKey, setMarksOrderKey] = useState(0);
+  /** D88 §5.3 文中标记入场：文档打开后**首批** marks 装载时置位（挂 reader-marks-enter），
+      1200ms 后摘除——一次性，此后增删的标记不做入场（armed 按文档复位）。 */
+  const [marksEnter, setMarksEnter] = useState(false);
+  const marksEnterArmedRef = useRef(false);
+  const marksEnterTimerRef = useRef<number | null>(null);
+  /** D88 §5.2 pageinfo：既有 onRelocate locator 里的页码（0 基，显示时 +1）；
+      foliate 引擎无页码＝null，只显示章节；两者皆无＝不渲染（禁造假）。 */
+  const [relocPage, setRelocPage] = useState<number | null>(null);
+  /** 本文档的根注解条数（侧栏「摘录」页签与入口可用性的依据；与注解栏同一个 VM 口径） */
+  const [docAnnotCount, setDocAnnotCount] = useState(0);
+  /** 侧栏两态（v49.105 / D271）：pinned＝始终展开（持久化 app.sidebarPinned）；
+   *  peek＝悬停临时展开（覆盖正文、不重排；默认态）。会话内展开态仍不持久化，持久化的是模式。 */
+  const [sidebarPinned, setSidebarPinned] = useState(false);
+  const [sidebarPeek, setSidebarPeek] = useState(false);
+  const sidebarOpen = sidebarPinned || sidebarPeek;
+  const sidebarPinnedRef = useRef(false);
+  sidebarPinnedRef.current = sidebarPinned;
+  const peekCloseTimerRef = useRef<number | null>(null);
+  const peekSuppressedRef = useRef(false);
+  const sidebarHoverRef = useRef(false);
+  const sidebarRailRef = useRef<HTMLDivElement | null>(null);
+  const sidebarToggleRef = useRef<HTMLButtonElement | null>(null);
+  const focusRestoreRef = useRef(false);
+  // v48.95（D139）：只有用户亲手点「收起/展开」之后才允许轨宽/工具行让位做滑动过渡；
+  // 挂载期自动展开（由右下角指示器进入导图 ⇒ openMindmapInitially 的 effect）一律瞬时落位——
+  // 与摘录批注轨 data-rail-anim 同一口径（2026-10-09 裁定「进入页面不左→右滑入」）。
+  // v49.105（D271）：悬停覆盖层的淡入/位移也走同一道门（用户首次悬停即视为手势）。
+  const [railAnimate, setRailAnimate] = useState(false);
+  /** 工具栏两个弹出组（更多 / 阅读设置）：同刻只开一个，点外部/Esc 收起（D5-B） */
+  const [toolMenu, setToolMenu] = useState<"more" | "settings" | null>(null);
+  /** D130 P1：主题命名就地表（false=未在命名；命名草稿单独存，确认/失焦写入 customThemes） */
+  const [themeNaming, setThemeNaming] = useState(false);
+  const [themeNameDraft, setThemeNameDraft] = useState("");
+  const themeNamingRef = useRef(false);
+  themeNamingRef.current = themeNaming;
+  /** 批 4 Task 15：侧栏页签（**会话内**视图偏好，不落设置键——与 §5.3 栏内排序同规） */
+  const [sidebarTab, setSidebarTab] = useState<ReaderTab>("toc");
+  // 结构透镜（2026-10-18）：内核就绪后才挂载；「在图谱中打开」经 focusRequest 让图谱页签聚焦节点
+  const [lensKernel, setLensKernel] = useState<ReaderKernel | null>(null);
+  /** 结构图（阅读透镜 v2）：工具栏开关。v49.28（D202）：独立窗口不跨会话记忆——每个阅读会话从「关」开始，
+   * 否则上次离开阅读时窗口开着的用户，下次点开任意书都会被自动弹出的置顶窗口打断 */
+  const [lensOpen, setLensOpen] = useState(false);
+  const lensSupported = !!lensKernel && typeof lensKernel.getReadingProbe === "function";
+  const lensDocId = contextRef?.documentId ?? null;
+  const lensTitle = title || sourceTitle || T("未命名材料");
+  // 结构全景（D254）：左上独立入口；进入不展开侧栏、不改 sidebarOpen
+  const [atlasOpen, setAtlasOpen] = useState(false);
+  const [atlasMounted, setAtlasMounted] = useState(false);
+  const [atlasEntry, setAtlasEntry] = useState<AtlasEntry | null>(null);
+  const [atlasLayerHost, setAtlasLayerHost] = useState<HTMLDivElement | null>(null);
+  const [atlasToolbarHost, setAtlasToolbarHost] = useState<HTMLDivElement | null>(null);
+  const [backChip, setBackChip] = useState<ReaderLocation | null>(null);
+  const backChipTimer = useRef<number | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const atlasBtnRef = useRef<HTMLButtonElement | null>(null);
+  const showBackChip = (loc: ReaderLocation) => {
+    setBackChip(loc);
+    if (backChipTimer.current) window.clearTimeout(backChipTimer.current);
+    backChipTimer.current = window.setTimeout(() => setBackChip(null), 20000);
+  };
+  useEffect(() => () => { if (backChipTimer.current) window.clearTimeout(backChipTimer.current); }, []);
+
+  // v49.105（D271）：固定模式跨重启记忆（只在挂载读一次；脏值按 false）
+  useEffect(() => {
+    let cancelled = false;
+    void settingsStore
+      .get<unknown>("app", "sidebarPinned", false)
+      .then((v) => {
+        if (!cancelled && v === true) setSidebarPinned(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const clearPeekTimer = useCallback(() => {
+    if (peekCloseTimerRef.current) {
+      window.clearTimeout(peekCloseTimerRef.current);
+      peekCloseTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => () => clearPeekTimer(), [clearPeekTimer]);
+
+  // 160ms 宽限只认「焦点在侧栏面板内」；开关钮自身的焦点不算（真实点击会聚焦按钮，
+  // 若把按钮也算作内部，取消固定后移出指针会永远不收起——2026-11-09 独立审查 P1）。
+  const sidebarFocusInside = useCallback(() => {
+    const ae = document.activeElement as Node | null;
+    if (!ae) return false;
+    return Boolean(sidebarRailRef.current?.contains(ae));
+  }, []);
+
+  const openSidebarPeek = useCallback(() => {
+    if (sidebarPinnedRef.current || peekSuppressedRef.current) return;
+    clearPeekTimer();
+    setRailAnimate(true); // 首次悬停即用户手势：允许 140/180ms 淡入
+    setSidebarPeek(true);
+  }, [clearPeekTimer]);
+
+  const scheduleSidebarPeekClose = useCallback(() => {
+    if (sidebarPinnedRef.current) return;
+    clearPeekTimer();
+    peekCloseTimerRef.current = window.setTimeout(() => {
+      peekCloseTimerRef.current = null;
+      if (sidebarPinnedRef.current || sidebarHoverRef.current || sidebarFocusInside()) return;
+      setSidebarPeek(false);
+    }, 160);
+  }, [clearPeekTimer, sidebarFocusInside]);
+
+  const closeSidebarPeek = useCallback(
+    (suppress: boolean) => {
+      clearPeekTimer();
+      setSidebarPeek(false);
+      // 抑制只在「指针仍停在开关/侧栏上」时成立——否则纯键盘关闭（Esc / 目录 Enter）
+      // 没有 pointerleave 来解除，键盘 focus 将再也打不开（独立审查 P3）。
+      if (suppress && (sidebarRailRef.current?.matches(":hover") || sidebarToggleRef.current?.matches(":hover"))) {
+        peekSuppressedRef.current = true;
+      }
+    },
+    [clearPeekTimer]
+  );
+
+  const handleSidebarPointerEnter = useCallback(() => {
+    sidebarHoverRef.current = true;
+    clearPeekTimer();
+    openSidebarPeek();
+  }, [clearPeekTimer, openSidebarPeek]);
+
+  const handleSidebarPointerLeave = useCallback(() => {
+    sidebarHoverRef.current = false;
+    // 指针离开＝解除「取消固定后不自动弹回」的抑制；本次离开不再展开
+    peekSuppressedRef.current = false;
+    scheduleSidebarPeekClose();
+  }, [scheduleSidebarPeekClose]);
+
+  const handleSidebarFocusCapture = useCallback(() => {
+    // 收起时把焦点送回开关钮（a11y）：这次程序化聚焦不得再次展开覆盖层
+    if (focusRestoreRef.current) {
+      focusRestoreRef.current = false;
+      return;
+    }
+    clearPeekTimer();
+    openSidebarPeek();
+  }, [clearPeekTimer, openSidebarPeek]);
+
+  const handleSidebarBlurCapture = useCallback(
+    (e: ReactFocusEvent<HTMLElement>) => {
+      const next = e.relatedTarget as Node | null;
+      if (!next) {
+        scheduleSidebarPeekClose();
+        return;
+      }
+      if (
+        e.currentTarget.contains(next) ||
+        sidebarRailRef.current?.contains(next) ||
+        sidebarToggleRef.current?.contains(next)
+      ) {
+        return;
+      }
+      scheduleSidebarPeekClose();
+    },
+    [scheduleSidebarPeekClose]
+  );
+
+  // 结构图（STRUCTURE-FLOW-PLAN §12.1）：打开自动收起侧栏，展开侧栏自动关闭结构图；
+  // 用户主动关闭结构图时恢复原来打开的侧栏。打开前等侧栏收起完成由宿主承担。
+  const sidebarBeforeLensRef = useRef<boolean | null>(null);
+  const lensClosedBySidebarRef = useRef(false);
+  // 打开结构图 → 记下侧栏原状态并收起（带滑动过渡）。v49.105（D271）：只跟固定态；
+  // 悬停覆盖层不进入布局、也不关闭结构图（两者左右分区，不冲突）。
+  useEffect(() => {
+    if (!lensOpen) return;
+    sidebarBeforeLensRef.current = sidebarPinned;
+    lensClosedBySidebarRef.current = false;
+    if (sidebarPinned) {
+      setRailAnimate(true);
+      setSidebarPinned(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lensOpen]);
+  // 结构图开着时侧栏被固定展开（用户点「固定」、或「在完整图谱中打开」等任何途径）→ 关闭结构图
+  useEffect(() => {
+    if (sidebarPinned && lensOpen) {
+      lensClosedBySidebarRef.current = true;
+      setLensOpen(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarPinned]);
+  // 结构图被用户关闭（按钮 / Esc）→ 侧栏原本固定就恢复
+  useEffect(() => {
+    if (lensOpen || sidebarBeforeLensRef.current == null) return;
+    const restore = sidebarBeforeLensRef.current && !lensClosedBySidebarRef.current;
+    sidebarBeforeLensRef.current = null;
+    if (restore) {
+      setRailAnimate(true);
+      setSidebarPeek(false);
+      setSidebarPinned(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lensOpen]);
+
+  const openAtlas = useCallback((origin: AtlasEntry["origin"], nodeId: string | null) => {
+    const snapshot = origin === "indicator" ? null : captureFlowSnapshot(document); // 必须在任何 setState 之前
+    if (snapshot) playFlowGhost(document, snapshot);
+    setToolMenu(null);
+    setAtlasEntry({ seq: Date.now(), origin, nodeId, snapshot });
+    setAtlasMounted(true);
+    setAtlasOpen(true);
+  }, []);
+  const closeAtlas = useCallback(() => setAtlasOpen(false), []);
+
+  /** 「在结构全景中查看」的执行体（随文结构动作触发；用 ref 逃开依赖抖动） */
+  const lensOpenInMapRef = useRef<(nodeId: string | null, region?: string[]) => void>(() => {});
+  lensOpenInMapRef.current = (nodeId) => openAtlas("flow", nodeId);
+
+  // 从右下角指示器进入：直接开全景（不再展开侧栏）；标记即刻回执给 App 清除
+  useEffect(() => {
+    if (!openMindmapInitially) return;
+    openAtlas("indicator", null);
+    onMindmapOpened?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openMindmapInitially, onMindmapOpened]);
+
+  // 左上按钮宽度变量：两态文字叠放，宽度取较宽者（换态不改位置与宽度）
+  useLayoutEffect(() => {
+    const btn = atlasBtnRef.current, wrap = wrapRef.current;
+    if (!wrap) return;
+    if (!btn) { wrap.style.removeProperty("--reader-atlas-btn-w"); return; }
+    const set = () => wrap.style.setProperty("--reader-atlas-btn-w", `${Math.ceil(btn.getBoundingClientRect().width) + 8}px`);
+    set();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(set) : null;
+    ro?.observe(btn);
+    return () => ro?.disconnect();
+  }, [lensKernel, contextRef?.documentId, atlasOpen]);
+
+  // 结构流所需的 DOM 元素（视口 / 平移目标 / 预留槽位）：挂载后取引用（ref 在首渲染时还是 null）
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const engineMainRef = useRef<HTMLDivElement | null>(null);
+  const flowGutterRef = useRef<HTMLDivElement | null>(null);
+  const [flowEls, setFlowEls] = useState<{ viewport: HTMLDivElement | null; main: HTMLDivElement | null; gutter: HTMLDivElement | null } | null>(null);
+  useEffect(() => {
+    setFlowEls({ viewport: viewportRef.current, main: engineMainRef.current, gutter: flowGutterRef.current });
+  }, [engineRetry, engineSource]);
+  /** v48.45（D85）：注解排序（位置/时间）——栏头段控的会话内视图偏好，自 AnnotationPanel 提升受控 */
+  const [annotSort, setAnnotSort] = useState<AnnotSort>("pos");
+  const [tocItems, setTocItems] = useState<ReaderTocItem[]>([]);
+  const [tocActiveHref, setTocActiveHref] = useState<string | undefined>(undefined);
+
+  /**
+   * v48.44（D84）：原「图谱目录载入」（mindmapAPI.mapTree → 侧栏树形目录）随页签改版退役——
+   * 图谱页签＝导图工作区面板（MindmapTab），节点跳转由画布选中/搜索承接；mapTree IPC 保留（仍有调用方）。
+   *
+   * 注解栏条目的「定位到该注解」（D67 §3）：只走内核 `goToMark(id)` 的精确锚
+   * （EPUB＝该条 CFI；PDF＝pageIndex + rects），**不**回退 anchorText 文本搜索。
+   * 成功＝栏内短时强调该条；有界失败＝该条显示中性「不可定位」，不假装跳转成功。
+   */
+  function jumpToMark(id: string) {
+    clearReflowGuard();
+    track("reader.jumped", { libraryItemId: itemId, origin: "reader_internal", props: { method: "annotation" } });
+    const k = kernelRef.current;
+    if (!k?.goToMark) {
+      setAnnotUnavailable((m) => ({ ...m, [id]: true }));
+      return;
+    }
+    void k.goToMark(id).then((ok) => {
+      if (!ok) {
+        setAnnotUnavailable((m) => ({ ...m, [id]: true }));
+        return;
+      }
+      setAnnotUnavailable((m) => {
+        if (!m[id]) return m;
+        const next = { ...m };
+        delete next[id];
+        return next;
+      });
+      setAnnotFocus(id);
+      if (annotFocusTimerRef.current) window.clearTimeout(annotFocusTimerRef.current);
+      annotFocusTimerRef.current = window.setTimeout(() => {
+        annotFocusTimerRef.current = null;
+        setAnnotFocus(null);
+      }, 2500);
+    });
+  }
+
+  const [readerSettings, setReaderSettings] = useState<ReaderSettings>(DEFAULT_READER_SETTINGS);
+  const readerSettingsRef = useRef(readerSettings);
+  readerSettingsRef.current = readerSettings;
+
+
+  // v29 选区菜单一击消失：菜单打开时，任何落在菜单/AI 面板/弹窗之外的 mousedown 立即关闭菜单。
+  // （此前关闭只挂各 surface 的 pointerup——首点落在菜单/控制条等未跟踪元素时，文本选中已消失而菜单残留）
+  // v48.23（D61 §6.8-11）：点菜单内不清空集合；点外面＝清空整组（高亮一并撤掉）。
+  useEffect(() => {
+    if (!selection) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && typeof t.closest === "function" &&
+        (t.closest(".selection-menu") || t.closest(".ai-panel") || t.closest(".modal-panel") || t.closest(".image-focus-layer") ||
+          // v48.24 批3（§4 文中留痕）：标记浮层是「就此制卡」的动作面，点它不算点外面
+          t.closest(".reader-mark-pop") ||
+          // v48.23（§6.8-11）：正文内容区（PDF 文本层就落在宿主 DOM 里）不算「外面」——
+          // 在那里按下鼠标常是「加选第二段」的起手，清集合会让多段选择在 PDF 上永远只剩最后一段。
+          // foliate 的章节在 iframe 里，事件根本不冒泡到宿主，本项只影响 PDF 与宿主侧正文。
+          t.closest(".reader-engine-host") ||
+          // v48.102（D147）：制卡台坞是选区动作面——「带入选区」要读 Reader 选区快照
+          //（EPUB 引擎选区在 iframe 里只有快照可读），点坞的 mousedown 不得清集合与选区
+          t.closest(".wb-root"))) return;
+      clearMultiSelect();
+      setSelection(null);
+      engineSelRef.current = null;
+    };
+    document.addEventListener("mousedown", onDocMouseDown, true);
+    return () => document.removeEventListener("mousedown", onDocMouseDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection]);
+
+  // 多段选择的修饰键：settings.app.multiSelectKey（读侧归一；设置页改动即时生效）
+  useEffect(() => {
+    let alive = true;
+    void readMultiSelectKey().then((k) => {
+      if (alive) multiKeyRef.current = k;
+    });
+    const off = eventBus.on("settings/changed", (p) => {
+      const payload = p as { scope?: string; key?: string } | undefined;
+      if (payload && payload.scope === "app" && payload.key === "multiSelectKey") {
+        void readMultiSelectKey().then((k) => {
+          if (alive) multiKeyRef.current = k;
+        });
+      }
+    });
+    return () => {
+      alive = false;
+      off();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!engineMode) return;
+    // D130 R3：读侧统一走 normalizeReaderSettings（DEFAULT 兜底 + 新增字段钳制 + customThemes 清洗）
+    settingsStore
+      .get<unknown>("app", "readerSettings", null)
+      .then((s) => setReaderSettings(normalizeReaderSettings(s)))
+      .catch(() => {});
+  }, [engineMode]);
+
+  // D130 R3：设置页对同一键的写入（主题管理/滑杆）经 settings/changed 广播回灌——双向即时一致
+  useEffect(() => {
+    if (!engineMode) return;
+    return eventBus.on("settings/changed", (p) => {
+      const payload = p as { scope?: string; key?: string } | undefined;
+      if (payload?.scope !== "app" || payload.key !== "readerSettings") return;
+      void settingsStore
+        .get<unknown>("app", "readerSettings", null)
+        .then((s) => setReaderSettings(normalizeReaderSettings(s)))
+        .catch(() => {});
+    });
+  }, [engineMode]);
+
+  const persistReaderSettings = (next: ReaderSettings) => {
+    setReaderSettings(next);
+    void settingsStore.set("app", "readerSettings", next);
+  };
+
+  const changeReaderMode = (mode: ReaderModeConfig) => {
+    const next = { ...readerSettingsRef.current, mode };
+    persistReaderSettings(next);
+    void kernelRef.current?.setMode(mode);
+  };
+  /** D242：应用明暗档跟随阅读主题（暗夜＝深；纸白/羊皮＝浅；自定义按背景亮度）。只在明暗档真变化时
+   *  切换——拖动自定义取色器不会反复触发整窗换档。 */
+  const syncAppTone = (next: ReaderSettings) => {
+    const tone = readerThemeTone(resolveAppearance(next));
+    const isDark = document.body.classList.contains("theme-dark");
+    if ((tone === "dark") !== isDark) onSwitchAppTheme?.(tone);
+  };
+  const changeReaderTheme = (theme: ReaderAppearance["theme"]) => {
+    track("reader.appearance", { libraryItemId: itemId, props: { key: "theme" } });
+    const next = { ...readerSettingsRef.current, appearance: { ...readerSettingsRef.current.appearance, theme } };
+    persistReaderSettings(next);
+    kernelRef.current?.applyAppearance(resolveAppearance(next));
+    // 整体换色（v20.1）：暗夜=软件夜间模式；纸白/羊皮=浅色。D242：自定义按背景亮度同样换档
+    // （此前「自定义不动软件主题」→ 深色自定义底配浅色档控件）。
+    if (theme === "dark") onSwitchAppTheme?.("dark");
+    else if (theme === "paper" || theme === "sepia") onSwitchAppTheme?.("light");
+    else syncAppTone(next);
+  };
+  // v29 PDF 专用缩放（foliate 引擎无此控件）
+  const changeReaderZoom = (zoom: NonNullable<ReaderAppearance["zoom"]>) => {
+    track("reader.appearance", { libraryItemId: itemId, props: { key: "zoom" } });
+    const next = { ...readerSettingsRef.current, appearance: { ...readerSettingsRef.current.appearance, zoom } };
+    persistReaderSettings(next);
+    kernelRef.current?.applyAppearance(resolveAppearance(next));
+  };
+
+  // ---------- D130 R3：个性化外观（行距/边距/版心/翻页过渡/自定义主题） ----------
+  /** 行距/边距/版心/动画过渡：与快捷菜单、设置页读写同一字段（appearance.*），双向即时一致 */
+  const changeReaderAppearance = (patch: Partial<ReaderAppearanceEx>) => {
+    track("reader.appearance", { libraryItemId: itemId, props: { key: Object.keys(patch).slice(0, 6).join(",") } });
+    const next = normalizeReaderSettings({
+      ...readerSettingsRef.current,
+      appearance: { ...readerSettingsRef.current.appearance, ...patch }
+    });
+    persistReaderSettings(next);
+    kernelRef.current?.applyAppearance(resolveAppearance(next));
+    if (next.appearance.theme === "custom" && (patch.bgColor !== undefined || patch.theme !== undefined)) syncAppTone(next);
+  };
+  /** P1 应用已存主题：写 custom 档 + 该套色值；**不回写**条目本身（重复「保存」才新增，避免别名漂移） */
+  const applySavedTheme = (t: CustomThemeEntry) => {
+    changeReaderAppearance({ theme: "custom", bgColor: t.bgColor, fgColor: t.fgColor });
+  };
+  /** P1 保存当前自定义配色为命名主题（id=ct-时间戳；上限 12 保新弃旧/清洗由 normalizeReaderSettings 统一钳制） */
+  const saveCustomTheme = (rawName: string) => {
+    const cur = readerSettingsRef.current;
+    const a = resolveAppearance(cur);
+    const themes = cur.customThemes ?? [];
+    const entry: CustomThemeEntry = {
+      id: `ct-${Date.now()}`,
+      name: rawName.trim().slice(0, 24) || T("我的主题 {n}", { n: themes.length + 1 }),
+      bgColor: a.bgColor ?? "#fafaf8",
+      fgColor: a.fgColor ?? "#1a1a1a",
+      createdAt: Date.now()
+    };
+    persistReaderSettings(normalizeReaderSettings({ ...cur, customThemes: [...themes, entry] }));
+  };
+  /** 命名确认（Enter / 确定 / 失焦三条路；ref 守卫保证只落一次） */
+  const confirmThemeName = () => {
+    if (!themeNamingRef.current) return;
+    themeNamingRef.current = false;
+    setThemeNaming(false);
+    saveCustomTheme(themeNameDraft);
+  };
+
+  // 外观变量上提到滚动容器：控件/目录/背景统一随 --reader-* 变化（iframe 内由内核注入）
+  useEffect(() => {
+    if (!engineMode) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const a = resolveAppearance(readerSettings);
+    el.style.setProperty("--reader-bg", a.bgColor ?? "transparent");
+    el.style.setProperty("--reader-fg", a.fgColor ?? "inherit");
+    el.style.background = a.bgColor ?? "transparent";
+  }, [engineMode, readerSettings]);
+
+  // D242：整个阅读界面随阅读主题同步——此前 --reader-bg/--reader-fg 只挂在滚动容器上，滚动容器之外
+  // （阅读页外框、顶栏、学习坞、浮层、按钮）仍取应用主题的纸白/灰阶 Token：暗夜下残留大片白、
+  // 羊皮下顶栏仍是白。阅读器挂载期间在 body 上发布阅读色，并把应用的表面/文字/描边 Token 改指向
+  // 由阅读色派生的一组值（派生算法在 theme.css 的 body.reader-surface 块；内联写在 body 上，
+  // 压过皮肤层的同名 Token）。离开阅读器即撤销，其它页面回到应用主题。
+  useLayoutEffect(() => {
+    if (!engineMode) return;
+    const body = document.body;
+    const a = resolveAppearance(readerSettings);
+    body.style.setProperty("--reader-bg", a.bgColor ?? "transparent");
+    body.style.setProperty("--reader-fg", a.fgColor ?? "inherit");
+    for (const [token, source] of READER_SURFACE_TOKENS) body.style.setProperty(token, `var(--reader-surface-${source})`);
+    body.classList.add("reader-surface");
+    body.dataset.readerTheme = a.theme;
+  }, [engineMode, readerSettings]);
+  useLayoutEffect(() => {
+    if (!engineMode) return;
+    return () => {
+      const body = document.body;
+      body.style.removeProperty("--reader-bg");
+      body.style.removeProperty("--reader-fg");
+      for (const [token] of READER_SURFACE_TOKENS) body.style.removeProperty(token);
+      body.classList.remove("reader-surface");
+      delete body.dataset.readerTheme;
+    };
+  }, [engineMode]);
+
+  // D241：已打开的书也即时响应系统/应用动效偏好，不必改阅读设置或重新打开。
+  useEffect(() => {
+    if (!engineMode || engineKind !== "foliate") return;
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let active = resolveAppearance(readerSettingsRef.current).turnAnimated;
+    const syncMotion = () => {
+      const a = resolveAppearance(readerSettingsRef.current);
+      if (a.turnAnimated === active) return;
+      active = a.turnAnimated;
+      kernelRef.current?.applyAppearance(a);
+    };
+    media.addEventListener("change", syncMotion);
+    const observer = new MutationObserver(syncMotion);
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    return () => {
+      media.removeEventListener("change", syncMotion);
+      observer.disconnect();
+    };
+  }, [engineMode, engineKind, readerSettings]);
+
+  /**
+   * D2/§7（Task 7）：侧栏开合＝**布局变更**，不是用户翻页。
+   * 布局引起的 relocate 不写进度（否则开一次侧栏就把进度挪一格）；PDF 数值缩放下还要把页内锚点
+   * 一并还原（fit 模式由 pdf.js 自适应重算 scale，按契约只保当前页）。
+   * 守卫是**瞬时**的（不落设置、不进数据库），三个确定性出口清除它：还原自己的 relocate 落地、
+   * 兜底时限、或用户的下一次导航动作（turnPage / 各类跳转）。
+   */
+  type ReflowGuard = {
+    restore?: () => void;
+    restoring: boolean;
+    clearTimer: number | null;
+    /** 用户手势的即时出口：布局窗口里一旦有真实输入，就不再压制它的 relocate */
+    endOnGesture: () => void;
+  };
+  const reflowGuardRef = useRef<ReflowGuard | null>(null);
+  const clearReflowGuard = useCallback(() => {
+    const g = reflowGuardRef.current;
+    if (!g) return;
+    if (g.clearTimer !== null) window.clearTimeout(g.clearTimer);
+    window.removeEventListener("wheel", g.endOnGesture);
+    window.removeEventListener("pointerdown", g.endOnGesture);
+    window.removeEventListener("keydown", g.endOnGesture);
+    reflowGuardRef.current = null;
+  }, []);
+
+  // 引擎进度：relocate 防抖落进度 + 阅读统计（charPos = fraction × 全书字符数近似，热力图口径不变）
+  const handleEngineRelocate = useCallback(
+    (info: RelocateInfo) => {
+      const prevChapter = engineChapterRef.current;
+      engineChapterRef.current = info.chapterIndex;
+      // v48.23（D61 §6.8-11）：换章＝阅读内容变了，旧 Range 全部失效——
+      // 先把多段集合与高亮清掉再收菜单（§6.8-11 的清理义务；滚动同章 relocate 不清）
+      if (prevChapter !== undefined && info.chapterIndex !== undefined && prevChapter !== info.chapterIndex) {
+        clearMultiSelect();
+        setSelection(null);
+      }
+      setTocActiveHref(info.chapterHref);
+      // D88 §5.2 pageinfo：页码随 relocate 更新（PDF 有 pageIndex；foliate 无＝null，只显章节）
+      setRelocPage(typeof info.location.pageIndex === "number" ? info.location.pageIndex : null);
+      setImgOverlay(null); // v35：翻页/滚动即清除图内高亮（坐标系随视口失效）
+      const guard = reflowGuardRef.current;
+      if (guard) {
+        // 布局变更期间的 relocate：撤掉可能已排队的进度写入，再决定是否做一次性还原
+        if (relocateTimerRef.current) {
+          window.clearTimeout(relocateTimerRef.current);
+          relocateTimerRef.current = null;
+        }
+        if (!guard.restoring && guard.restore) {
+          const run = guard.restore;
+          guard.restore = undefined;
+          guard.restoring = true;
+          run();
+        }
+        // 抑制一直持续到守卫的**确定性出口**（用户手势 / 有界兜底）：reflow 与还原自己的
+        // settle relocate 都属布局生成，一个都不写进度（早放行会让「开一次侧栏挪一格进度」漏进来）
+        return;
+      }
+      if (relocateTimerRef.current) window.clearTimeout(relocateTimerRef.current);
+      relocateTimerRef.current = window.setTimeout(() => {
+        relocateTimerRef.current = null;
+        if (itemId && onProgress) void readingStats.addEvent(itemId, Math.round(info.fraction * (markdown?.length || 0)));
+        // D248（T7）：到达末尾＝代理指标（一书一次）；progressPct 按本次会话最后位置记
+        bdiLastPctRef.current = info.fraction;
+        if (itemId && !bdiFinishedRef.current && info.fraction >= 0.999) {
+          bdiFinishedRef.current = true;
+          track("reader.finished", { libraryItemId: itemId, props: { progressPct: info.fraction } });
+        }
+        // v28 PDF 原生阅读：progress 携带页码锚点（pageIndex），foliate 系携带 cfi
+        onProgress?.(info.fraction, "", { cfi: info.location.cfi, fraction: info.fraction, pageIndex: info.location.pageIndex });
+      }, 700);
+    },
+    [itemId, markdown, onProgress, clearReflowGuard]
+  );
+
+  /** 侧栏开关（D5-B 入口；v49.105 / D271 两态）：未固定 → 固定展开并持久化；已固定 → 立即收起并抑制到指针离开。
+   *  先快照+布防，再改宽度——布局引起的 relocate 不写进度；悬停覆盖层不重排，不走本函数。 */
+  const toggleSidebar = useCallback(() => {
+    const k = kernelRef.current;
+    const zoom = readerSettingsRef.current.appearance.zoom;
+    const cfi = k?.getCurrentLocation?.()?.cfi ?? null;
+    // 数值缩放才需要页内锚点还原；fit 模式只保当前页（引擎自适应）
+    const point = typeof zoom === "number" ? k?.captureViewPoint?.() ?? null : null;
+    const restore = () => {
+      if (point) k?.restoreViewPoint?.(point);
+      else if (cfi) void k?.goTo?.({ cfi });
+    };
+    // 用户手势＝布局窗口结束（之后属于用户自己的导航，照常写进度）
+    const endOnGesture = () => clearReflowGuard();
+    const guard: ReflowGuard = { restore, restoring: false, clearTimer: null, endOnGesture };
+    clearReflowGuard();
+    reflowGuardRef.current = guard;
+    window.addEventListener("wheel", endOnGesture, { passive: true });
+    window.addEventListener("pointerdown", endOnGesture);
+    window.addEventListener("keydown", endOnGesture);
+    clearPeekTimer();
+    if (sidebarPinnedRef.current) {
+      // 取消固定＝立即收起（参考实现单帧切换）；指针仍在按钮上时抑制自动展开
+      const pointerOnToggle = sidebarToggleRef.current?.matches(":hover") ?? false;
+      setRailAnimate(false);
+      peekSuppressedRef.current = pointerOnToggle;
+      sidebarHoverRef.current = pointerOnToggle;
+      setSidebarPeek(false);
+      setSidebarPinned(false);
+      void settingsStore.set("app", "sidebarPinned", false)
+        .catch((err) => console.warn("[rail] 持久化 sidebarPinned=false 失败", err));
+    } else {
+      // 固定＝轨宽 280 占位（D139 的 240ms 轨宽过渡），悬停覆盖层并回布局
+      setRailAnimate(true);
+      peekSuppressedRef.current = false;
+      setSidebarPeek(false);
+      setSidebarPinned(true);
+      void settingsStore.set("app", "sidebarPinned", true)
+        .catch((err) => console.warn("[rail] 持久化 sidebarPinned=true 失败", err));
+    }
+    if (point) {
+      // PDF 数值缩放：宽度变化不产生 relocate（页码没变）⇒ 布局落地后自己还原（两帧足够）
+      window.requestAnimationFrame(() =>
+        window.requestAnimationFrame(() => {
+          if (reflowGuardRef.current !== guard || !guard.restore) return;
+          guard.restore = undefined;
+          guard.restoring = true;
+          restore();
+        })
+      );
+    }
+    // 兜底（有界）：还原的 relocate 迟迟不来（引擎无 relocate / 位置本就未变）时也要收掉守卫，
+    // 不让它长期压制用户后续的进度写入
+    guard.clearTimer = window.setTimeout(() => clearReflowGuard(), 3000);
+  }, [clearPeekTimer, clearReflowGuard]);
+
+  // 收起态让侧栏退出可聚焦树（淡出期间也不再接受键盘）；展开当帧解除。
+  // 若收起时焦点正在面板内，把焦点送回开关钮（否则 inert 会把焦点丢到 body，Tab 从头开始）。
+  useEffect(() => {
+    const el = sidebarRailRef.current;
+    if (!el) return;
+    if (sidebarOpen) {
+      el.removeAttribute("inert");
+      return;
+    }
+    const hadFocus = el.contains(document.activeElement);
+    el.setAttribute("inert", "");
+    if (hadFocus) {
+      focusRestoreRef.current = true;
+      sidebarToggleRef.current?.focus({ preventScroll: true });
+    }
+  }, [sidebarOpen]);
+
+  // D271：轨内 Esc 先让位于输入框 / 弹层 / 结构全景等更内层语义，再收起或取消固定；
+  // 与下方 document 监听同一守卫（批注 textarea 的 Esc 只 preventDefault，事件仍会冒泡到这里）。
+  const handleSidebarKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLElement>) => {
+      if (e.key !== "Escape" || e.defaultPrevented || isImeComposing(e)) return;
+      if (atlasOpen) return; // 结构全景有自己的 Esc 语义
+      if (isTextEntryTarget(e.target) || isInModal(e.target)) return;
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.('[role="menu"]')) return;
+      if (!sidebarPinnedRef.current && !sidebarPeek) return;
+      e.stopPropagation();
+      if (sidebarPinnedRef.current) toggleSidebar();
+      else closeSidebarPeek(false); // 键盘关闭不设指针抑制
+    },
+    [atlasOpen, closeSidebarPeek, sidebarPeek, toggleSidebar]
+  );
+
+  // D271：Escape 收起/取消固定——焦点不在面板/开关上时也要生效（设计稿 §3.1）。
+  // 只在本栏开启时挂载；被其他 UI 先处理（defaultPrevented / 输入框 / 弹层）则让行。
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+      if (atlasOpen) return; // 结构全景有自己的 Esc 语义
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], [aria-modal="true"]')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (sidebarPinnedRef.current) toggleSidebar();
+      else closeSidebarPeek(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [atlasOpen, closeSidebarPeek, sidebarOpen, toggleSidebar]);
+
+  // 引擎选区：pointerup 时取选区语义数据并弹出菜单（坐标为宿主视口坐标，菜单用 fixed）
+  // v48.23（D61 §6.8-11）：按住修饰键（app.multiSelectKey，默认 Ctrl）再选＝加选：
+  // 集合运算与拼接文本一律交主进程（resolveSpanSet → electron/annotationRange.js），
+  // 本层只负责采集「这一段」并画高亮；不带修饰键＝替换（普通拖选覆盖旧集合）。
+  // v48.39（D79）：修饰键按**手势全程**判定——起手（gestureModRef，contentPointerDown 上采样）
+  // 或收尾（pointerup）任一时刻按住＝加选。真实用户收尾常先松修饰键再松鼠标，只看 pointerup
+  // 会把这次加选误判成替换、把已累计的集合抹成只剩最后一段（用户实测：先普通选一段再 Ctrl 补选失败）。
+  const handleEnginePointerUp = useCallback((pos: ContentPointerUpInfo) => {
+    // D248（T7）：iframe 内的指针事件不冒泡到宿主文档——中继回调就是「正文里有真实输入」的挂点
+    bdiAttentionRef.current?.noteInput("pointer");
+    const k = kernelRef.current;
+    const sel = k?.getSelection() ?? null;
+    if (!sel || !sel.text.trim()) {
+      // 空白处点击/折叠选区：沿用旧语义收菜单，并把整组多段集合清掉（高亮一并撤）
+      clearMultiSelect();
+      engineAnchorGeomRef.current = null;
+      setSelection(null);
+      return;
+    }
+    engineSelRef.current = sel;
+    // 滑选＝离开批注浮层语境：先前点高亮弹出的浮层随之收起（用户 2026-10-17：
+    // 滑选只出操作选单；浮层唯一入口是 markClick，此处不关会一直挂着）
+    setMarkEditor(null);
+    // v48.24 批3（§4 写入侧）：源锚几何与选区同时采集（handleExtract 跑时选区已被清掉）
+    engineAnchorGeomRef.current = k?.getSourceAnchor?.() ?? null;
+    const geom = k?.getSelectionGeometry();
+    const incoming: ExtractSpan = {
+      text: sel.text,
+      rects: geom ? [{ x: geom.x, y: geom.y, w: geom.width, h: geom.height }] : []
+    };
+    // v48.39（D79）：起手与收尾任一按住修饰键＝加选（手势全程判定；语义域见函数头注释）
+    const withModifier =
+      modifierFlagOf(multiKeyRef.current, gestureModRef.current) || modifierFlagOf(multiKeyRef.current, pos);
+    // 串行化：两次拖选的往返按序应用，后者永远读到前者落定的集合
+    spanQueueRef.current = spanQueueRef.current
+      .then(async () => {
+        const r = await resolveSpanSet(multiSpansRef.current, incoming, withModifier);
+        if (r.action === "none") return; // 空白新选区：集合不动（内核 updateSpanSet 的语义）
+        multiSpansRef.current = r.spans;
+        kernelRef.current?.multiSelectHighlight?.(r.action);
+        (window as unknown as { __readerMultiSpans?: ExtractSpan[] }).__readerMultiSpans = r.spans;
+        setSelection({
+          x: pos.x,
+          y: pos.y,
+          text: r.text,
+          spans: r.spans,
+          // 选区几何（视口坐标）优先；内核未给几何时退化为 pointerup 点（宽高 0）
+          rect: geom ? { x: geom.x, y: geom.y, width: geom.width, height: geom.height } : { x: pos.x, y: pos.y, width: 0, height: 0 }
+        });
+      })
+      .catch(() => {
+        // 主进程往返失败（理论上不可达）：不静默改集合，避免菜单与库不一致
+        showToast(T("多段选择暂不可用"));
+      });
+  }, [showToast]);
+
+  // 首屏前应用已保存设置：settings 加载是异步的，这里直接等 store 读完再给内核，
+  // 避免 readerSettingsRef 仍是默认值，也避免 paginator 默认对开先画一帧。
+  const handleEngineBeforeOpen = useCallback(async (k: ReaderKernel) => {
+    const s = await settingsStore.get<unknown>("app", "readerSettings", null);
+    // D130 R3：读侧统一归一口（含新增字段钳制与 customThemes 清洗）
+    const merged = normalizeReaderSettings(s);
+    readerSettingsRef.current = merged;
+    setReaderSettings(merged);
+    await k.setMode(merged.mode);
+    k.applyAppearance(resolveAppearance(merged));
+  }, []);
+
+  const handleEngineReady = useCallback((k: ReaderKernel) => {
+    kernelRef.current = k;
+    setLensKernel(k);
+    setEngineError(null);
+    setTocItems(k.getTOC());
+    void k.setMode(readerSettingsRef.current.mode);
+    k.applyAppearance(resolveAppearance(readerSettingsRef.current));
+    // 调试/测试钩子（L2 e2e 经此访问章节文档；引擎 iframe 对宿主跨源，contentDocument 不可用）
+    (window as unknown as { __readerKernel?: ReaderKernel }).__readerKernel = k;
+    // v48.24 批3（§4 文中留痕）：点中标记 → 批注编辑浮层（v48.45/D85：唯一浮层——
+    // 悬停不再弹层；浮层内含聚合「已制卡 N 张」与「就此制卡」）。数据按 id 回查 marksRef。
+    k.on("markClick", (info) => {
+      if (!info.id || !info.rect) return;
+      const m = marksRef.current.find((x) => x.id === info.id);
+      if (m) {
+        setMarkEditor({
+          id: m.id,
+          kind: m.kind === "highlight" ? "highlight" : "extract",
+          comment: m.comment ?? null,
+          color: m.color ?? null,
+          anchor: info.rect
+        });
+      }
+    });
+    // 数据先到（marksRef 已填）而内核后到：这里补推一次；反之由标记 effect 自己推
+    if (marksRef.current.length) k.setDocumentMarks?.(marksRef.current);
+    // v48.39（D79）：多段选择按手势全程判定修饰键——拖选起手采样修饰位，pointerup 收尾时与之求或
+    k.on("contentPointerDown", (pos) => {
+      gestureModRef.current = pos;
+    });
+    // v35 图片卡跳转：跳转着陆后再找原图叠图内高亮；找不到/PDF 系 → 原图对照浮层
+    if (jumpAnchor?.occlusion) window.setTimeout(() => void tryLocateJumpImage(), 800);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // v35：从复习/浏览跳入的图片卡——内核 locateImage 找回正文原图（foliate 系），命中叠加本卡区域高亮
+  const tryLocateJumpImage = useCallback(async () => {
+    const occ = jumpAnchor?.occlusion;
+    if (!occ) return;
+    const k = kernelRef.current;
+    const ia = jumpAnchor?.imageAnchor;
+    let hit: ImageLocateHit | null = null;
+    if (k?.locateImage && ia && (ia.alt || ia.contextText)) {
+      try {
+        hit = await k.locateImage({ alt: ia.alt, contextText: ia.contextText });
+      } catch {
+        hit = null;
+      }
+    }
+    if (hit) setImgOverlay({ rect: hit.rect, occlusion: occ });
+    else if (occ.assetPath) setSourcePeek({ occlusion: occ });
+  }, [jumpAnchor]);
+
+  // v35 图内高亮短暂显示：超时自清（翻页/滚动由 relocate 清）
+  useEffect(() => {
+    if (!imgOverlay) return;
+    const t = window.setTimeout(() => setImgOverlay(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [imgOverlay]);
+
+  // v35 markdown 分支（无内核）图片定位：宿主 DOM 按 alt/周边文字找图
+  const locateMarkdownImage = useCallback(async (occ: NonNullable<Props["jumpAnchor"]>["occlusion"]) => {
+    if (!occ) return;
+    const el = scrollRef.current;
+    const ia = jumpAnchor?.imageAnchor;
+    const alt = (ia?.alt || "").replace(/\s+/g, " ").trim();
+    const ctxKey = (ia?.contextText || "").replace(/\s+/g, " ").trim().slice(0, 40);
+    let hit: HTMLImageElement | null = null;
+    if (el && (alt || ctxKey)) {
+      let bestScore = 0;
+      let best: HTMLImageElement | null = null;
+      for (const img of Array.from(el.querySelectorAll("img")) as HTMLImageElement[]) {
+        let score = 0;
+        const imgAlt = (img.getAttribute("alt") || "").replace(/\s+/g, " ").trim();
+        if (alt && imgAlt && (imgAlt === alt || imgAlt.includes(alt) || alt.includes(imgAlt))) score += 4;
+        if (ctxKey) {
+          const block = img.closest("p, li, figure, blockquote, div") || img.parentElement;
+          const around = (block?.textContent || "").replace(/\s+/g, " ");
+          if (around.includes(ctxKey)) score += 2;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          best = img;
+        }
+      }
+      hit = best;
+    }
+    if (!hit) {
+      if (occ.assetPath) setSourcePeek({ occlusion: occ });
+      return;
+    }
+    const imgEl: HTMLImageElement = hit;
+    imgEl.scrollIntoView({ block: "center" });
+    await new Promise((r) => window.setTimeout(r, 350));
+    const r = imgEl.getBoundingClientRect();
+    if (!r || (!r.width && !r.height)) {
+      if (occ.assetPath) setSourcePeek({ occlusion: occ });
+      return;
+    }
+    setImgOverlay({ rect: { x: r.left, y: r.top, width: r.width, height: r.height }, occlusion: occ });
+  }, [jumpAnchor]);
+
+  // v25 图片点选聚焦 → D98/R1 改直进挖空编辑器：正文图片点击 → 取字节为 dataURL → 编辑器（默认框遮罩，
+  // 裁剪/AI 在编辑器内）；v29：携带图片周边文字上下文（D26），供编辑器 AI 建议层结合上下文出题
+  const handleEngineImageClick = useCallback(
+    async (img: ReaderImageRef) => {
+      if (occlEditor || (manualOpen && manualImage)) return; // 挖空编辑器/弹窗在场时不重复进入（制卡台常驻不算）
+      track("reader.image_focused", { libraryItemId: itemId });
+      const dataUrl = await loadImageDataUrl(img.src);
+      if (!dataUrl) {
+        showToast(T("无法读取这张图片的内容（可能来自外部链接）"));
+        return;
+      }
+      setSelection(null);
+      engineSelRef.current = null;
+      // v35 图片锚点快照：此刻的 locator+章节+alt/周边文字——图片卡 contextRef 的定位来源
+      imageAnchorRef.current = {
+        locator: kernelRef.current?.getCurrentLocation() ?? null,
+        chapterIndex: engineChapterRef.current,
+        alt: img.alt || undefined,
+        contextText: img.contextText || undefined
+      };
+      openOcclusionEditor(
+        { dataUrl, alt: img.alt || "", contextText: img.contextText || undefined },
+        { x: img.rect.x, y: img.rect.y, width: img.rect.width, height: img.rect.height }
+      );
+    },
+    [manualOpen, manualImage, occlEditor, openOcclusionEditor, showToast]
+  );
+
+  /**
+   * D122 截图 / v49.99（D265）制卡台「图片挖空」内部截图源：
+   * 截取阅读区当前可见内容（主进程 webContents.capturePage，覆盖 foliate iframe / PDF canvas
+   * 等渲染层读不到像素的内核），**不隐藏软件窗口**。截前先清选区并等两帧重绘，浮条/选区高亮不入镜。
+   * 返回图片交 useSelectionActions.startWorkbenchCapture 打开图片挖空编辑器；守卫（编辑器/弹窗在场）
+   * 已收口到 hook，所有宿主一致。
+   */
+  const captureReaderForWorkbench = useCallback(async () => {
+    const override = (window as unknown as { __overrideCaptureRegion?: { left: number; top: number; width: number; height: number } }).__overrideCaptureRegion;
+    const box = override || scrollRef.current?.getBoundingClientRect();
+    const capture = window.assetsAPI?.captureRegion;
+    if (!box || box.width < 8 || box.height < 8 || !capture) {
+      showToast(T("当前环境无法截图"));
+      return null;
+    }
+    setSelection(null);
+    engineSelRef.current = null;
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    const dataUrl = await capture({ x: box.left, y: box.top, width: box.width, height: box.height });
+    if (!dataUrl) {
+      showToast(T("截图失败"));
+      return null;
+    }
+    imageAnchorRef.current = {
+      locator: kernelRef.current?.getCurrentLocation() ?? null,
+      chapterIndex: engineChapterRef.current,
+      alt: T("页面截图"),
+      contextText: undefined
+    };
+    return { dataUrl, alt: T("页面截图") };
+  }, [T, showToast]);
+  captureWorkbenchRef.current = captureReaderForWorkbench;
+
+  /** v25：选区提交前把整图落盘（assets 表）——卡片 occlusion_json 需要稳定的 assetPath */
+  const ensureImageAsset = useCallback(
+    async (dataUrl: string): Promise<string | null> => {
+      const ownerKey = itemId || contextRef?.documentId || "";
+      if (!ownerKey) {
+        showToast(T("无法确定图片归属的书籍"));
+        return null;
+      }
+      const m = /^data:image\/(\w+);base64,(.+)$/.exec(dataUrl);
+      if (!m) {
+        showToast(T("图片数据不可用"));
+        return null;
+      }
+      const ext = m[1] === "jpeg" ? "jpg" : m[1];
+      const saved = await window.assetsAPI?.saveImage(ownerKey, ext, m[2]);
+      if (!saved || (saved as { error?: string }).error || !saved.assetPath) {
+        showToast((saved as { error?: string } | null)?.error || T("图片保存失败"));
+        return null;
+      }
+      return saved.assetPath;
+    },
+    [itemId, contextRef, showToast]
+  );
+
+  const clearEngineSelection = () => {
+    kernelRef.current?.deselect();
+    setSelection(null);
+  };
+
+  // 翻页（v20.1）：内核 prev/next 自动跨章节；滚动/分页/对开三模式通用
+  const turnPage = useCallback(async (dir: 1 | -1) => {
+    const k = kernelRef.current;
+    if (!k) return;
+    // 用户主动翻页＝真实导航：先收掉布局守卫（否则紧接着的 relocate 会被当成布局变更而漏记进度）
+    clearReflowGuard();
+    if (dir === 1) await k.next();
+    else await k.prev();
+  }, []);
+
+  useEffect(() => {
+    if (!engineMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (manualOpen || aiPanel || occlEditor) return;
+      // D227：文本输入让路；滑块的 PageUp/PageDown、键盘聚焦按钮的空格归控件本身
+      if (isTextEntryTarget(e.target) || isNativeControlKey(e)) return;
+      // v48.90（D130 P4c）：←/→ 翻页迁入 CommandRegistry（reader.turnPrev/turnNext，可改键）；
+      // PageUp/PageDown/空格/Shift+空格保留壳层硬编码——不进命令表（滚动场景空格语义不冲突、
+      // 这四键不在「可自定义」诉求内，爆炸半径收敛）
+      if (e.key === "PageDown" || (e.key === " " && !e.shiftKey)) {
+        e.preventDefault();
+        void turnPage(1);
+      } else if (e.key === "PageUp" || (e.key === " " && e.shiftKey)) {
+        e.preventDefault();
+        void turnPage(-1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [engineMode, manualOpen, aiPanel, occlEditor, turnPage]);
+
+  useEffect(
+    () => () => {
+      if (relocateTimerRef.current) window.clearTimeout(relocateTimerRef.current);
+    },
+    []
+  );
+
+  // 需求2：制卡时记录选区锚点（文本 + 当时刻度），随 contextRef 落库，供复习卡「跳转原文」
+  // v34（M12）：本次制卡的完整源文本（短材料锚点键的长度门控输入，§4.16 item 5）
+  function rememberAnchor(text: string) {
+    sourceTextRef.current = text || "";
+    const el = scrollRef.current;
+    const denom = el ? el.scrollHeight - el.clientHeight : 0;
+    anchorRef.current = {
+      anchorText: text.slice(0, 60),
+      anchorRatio: denom > 0 && el ? Math.min(1, el.scrollTop / denom) : 0
+    };
+  }
+
+  function enrichedContextRef() {
+    // v48.24 批3（§4）：从标记浮层「就此制卡」进入时，contextRef 直接取该摘录（挂 extractId，
+    // 别串到「当前选区」——浮层出现时选区可能已经不在或换了地方）
+    if (markCardRefOverrideRef.current) return markCardRefOverrideRef.current;
+    // 引擎分支：可降级定位（foliate 系 cfi → chapterIndex → anchorText；PDF 系 pageIndex → anchorText），带引擎版本便于回归归因
+    if (engineMode) {
+      const sel = engineSelRef.current;
+      if (sel) {
+        return {
+          ...(contextRef || {}),
+          ...buildLocator({ cfi: sel.cfi, chapterIndex: engineChapterRef.current, pageIndex: sel.pageIndex, anchorText: sel.anchorText })
+        };
+      }
+      // v35 图片卡：无文本选区但有图片锚点快照 → 以图片所在位置定位（alt/周边文字供阅读器找回原图）
+      const imgA = imageAnchorRef.current;
+      if (imgA) {
+        const fallbackText = (imgA.contextText || imgA.alt || "").trim();
+        return {
+          ...(contextRef || {}),
+          ...buildLocator({
+            cfi: imgA.locator?.cfi,
+            chapterIndex: imgA.chapterIndex,
+            pageIndex: imgA.locator?.pageIndex,
+            anchorText: fallbackText || T("〔正文图片〕")
+          }),
+          imageSource: "engine" as const,
+          imageAnchor: { alt: imgA.alt, contextText: imgA.contextText }
+        };
+      }
+      return contextRef || null;
+    }
+    return anchorRef.current ? { ...(contextRef || {}), ...anchorRef.current } : contextRef || null;
+  }
+
+
+  // v48.23（D61 §6.8-11）：Esc 清空整个多段集合（含菜单与高亮；无集合时按旧行为只收菜单）
+  useEffect(() => {
+    if (!selection) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isImeComposing(e)) return; // 组字中的 Esc 属于输入法（取消组字），不清空选集
+      if (e.key !== "Escape") return;
+      if (manualOpen || aiPanel) return; // 弹层自己处理 Esc
+      clearMultiSelect();
+      clearSelection();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection, manualOpen, aiPanel]);
+
+
+  // AI 运行中每秒跳一次已等待秒数——让用户确信程序没有卡死（含补充制卡/询问 AI 期间）
+  const [nowTick, setNowTick] = useState(Date.now());
+  const anyFollowUp = (aiPanel?.followUpBusy?.length ?? 0) > 0;
+  const anyExploration = (aiPanel?.explorations ?? []).some((e) => e.running);
+  useEffect(() => {
+    if (!aiPanel?.running && !anyFollowUp && !anyExploration) return;
+    const t = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [aiPanel?.running, anyFollowUp, anyExploration]);
+  const elapsedSec = aiPanel?.running && aiPanel.startedAt ? Math.max(0, Math.round((nowTick - aiPanel.startedAt) / 1000)) : 0;
+
+  // 恢复上次阅读位置
+  useEffect(() => {
+    if (engineMode) return; // 引擎模式由内核 initLocation/CFI 恢复
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    const el = scrollRef.current;
+    if (!el) return;
+    // 优先锚点跳转（从复习卡「跳转原文」进入）：定位到含 anchorText 的块并高亮一下
+    const anchor = jumpAnchor?.anchorText || contextRef?.anchorText;
+    if (anchor) {
+      requestAnimationFrame(() => {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        let node: Node | null;
+        while ((node = walker.nextNode())) {
+          const idx = (node.textContent || "").indexOf(anchor.slice(0, 24));
+          if (idx >= 0) {
+            const range = document.createRange();
+            range.setStart(node, idx);
+            range.collapse(true);
+            const rect = range.getBoundingClientRect();
+            el.scrollTop += rect.top - el.getBoundingClientRect().top - el.clientHeight * 0.3;
+            // 短暂高亮锚点块，帮助定位视线
+            let block: HTMLElement | null = node.parentElement;
+            while (block && !/^P$|^(H[1-3])$|^LI$|^BLOCKQUOTE$/.test(block.tagName)) block = block.parentElement;
+            if (block) {
+              // 走 Token：原写死 rgba(0,47,167,.08) 是浅色 IKB 的 8%，
+              // 深色模式底色是 #101010，那点蓝几乎看不见（锚点定位提示失效）
+              block.style.background = "var(--accent-soft)";
+              window.setTimeout(() => (block!.style.background = ""), 1600);
+            }
+            return;
+          }
+        }
+        // 找不到锚点文本时退回比例定位（v35：优先本卡制卡时的滚动比例，而非上次阅读进度）
+        const fallback = jumpAnchor?.anchorRatio ?? initialRatio;
+        if (fallback > 0) el.scrollTop = fallback * (el.scrollHeight - el.clientHeight);
+        // v35：图片卡跳转（markdown 分支无内核）——正文 img 按 alt/周边文字找回，命中叠加图内高亮
+        if (jumpAnchor?.occlusion) void locateMarkdownImage(jumpAnchor.occlusion);
+      });
+      return;
+    }
+    if (initialRatio <= 0) return;
+    requestAnimationFrame(() => {
+      el.scrollTop = initialRatio * (el.scrollHeight - el.clientHeight);
+    });
+  }, [initialRatio, markdown]);
+
+  const saveProgress = useCallback(() => {
+    if (engineMode) return; // 引擎模式进度由 kernel relocate 事件驱动，滚动比例无意义
+    const el = scrollRef.current;
+    if (!el || !onProgress) return;
+    const denom = el.scrollHeight - el.clientHeight;
+    const ratio = denom > 0 ? Math.min(1, el.scrollTop / denom) : 0;
+    // 阅读字数统计：滚动停止时按"视口顶部对齐块"在 DOM 中的累计字符偏移记事件，
+    // 当日字数 = 相邻事件正增量之和（往回滚不计；跳回重读不产生负增量）
+    if (itemId) {
+      const all = Array.from(el.querySelectorAll<HTMLElement>("h1, h2, h3, p, li, blockquote"));
+      let charPos = 0;
+      for (let i = 0; i < all.length; i++) {
+        const rect = all[i].getBoundingClientRect();
+        if (rect.top >= -rect.height && rect.top < window.innerHeight * 0.4 && all[i].textContent?.trim()) {
+          charPos = all.slice(0, i).reduce((acc, b) => acc + (b.textContent?.length || 0), 0);
+          break;
+        }
+      }
+      void readingStats.addEvent(itemId, charPos);
+    }
+    let lastText = "";
+    const blocks2 = el.querySelectorAll<HTMLElement>("h1, h2, h3, p, li, blockquote");
+    for (const b of blocks2) {
+      const rect = b.getBoundingClientRect();
+      if (rect.top >= 0 && rect.top < window.innerHeight * 0.4 && b.textContent?.trim()) {
+        lastText = b.textContent.trim().slice(0, 140);
+        break;
+      }
+    }
+    onProgress(ratio, lastText);
+  }, [onProgress, itemId]);
+
+  const saveProgressRef = useRef(saveProgress);
+  useEffect(() => {
+    saveProgressRef.current = saveProgress;
+  }, [saveProgress]);
+
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      saveProgressRef.current();
+    };
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    setSelection(null);
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(saveProgress, 700);
+  }, [saveProgress]);
+
+  function handleMouseUp() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const sel = window.getSelection();
+    const text = sel?.toString().trim() ?? "";
+    if (!sel || !sel.rangeCount || text.length === 0 || !el.contains(sel.anchorNode)) {
+      setSelection(null);
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    const containerRect = el.getBoundingClientRect();
+    // 菜单必须留在滚动容器内部：钳制上/下边界，避免浮到顶栏拖动区
+    const menuW = 320;
+    const x = Math.max(menuW / 2 + 8, Math.min(containerRect.width - menuW / 2 - 8, rect.left - containerRect.left + rect.width / 2));
+    const y = Math.max(8, Math.min(containerRect.height - 96, rect.top - containerRect.top - 48));
+    setSelection({
+      x,
+      y,
+      text,
+      // 粘贴书/摘录的 markdown 分支没有内核（不会走到多段选择），恒为单段
+      spans: [{ text }],
+      rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }
+    });
+  }
+
+  /**
+   * v48.23（D61 §6.8-11）：清空多段选择集合——权威列表、内核高亮、测试钩子三处一起清。
+   * 调用点：点菜单外 / Esc / 菜单动作完成 / 换章（阅读内容变化）/ 空选区 pointerup。
+   */
+  function clearMultiSelect() {
+    multiSpansRef.current = [];
+    (window as unknown as { __readerMultiSpans?: ExtractSpan[] }).__readerMultiSpans = [];
+    kernelRef.current?.clearMultiSelectHighlight?.();
+  }
+
+  function clearSelection() {
+    if (engineMode) {
+      kernelRef.current?.deselect();
+      clearMultiSelect();
+      setSelection(null);
+      return;
+    }
+    window.getSelection()?.removeAllRanges();
+    setSelection(null);
+  }
+
+  // ---------- v48.24 批3（§4 文中留痕）：数据结构与绘制 ----------
+
+  /**
+   * 本文档要画的标记：数据面＝buildDocMarks（纯函数，吃 workflowAPI.listAll() 与按 extractId 派生的
+   * 已制卡数），绘制面＝内核 setDocumentMarks（PDF 矩形层 / EPUB cfi→Range 高亮）。
+   * 只在**真文档**上画：摘录阅读视图（contextRef.extractId）读的是合成 EPUB，画上去会张冠李戴。
+   * 摘录/制卡一变就重算（workflow/changed、cards/changed），于是「刚摘完就出现留痕、刚制完卡计数+1」。
+   */
+  useEffect(() => {
+    const documentId = contextRef?.documentId;
+    // D88 §5.3：armed/容器类按文档复位（换书/换引擎格式后新文档的首次装载重新算「首批」）
+    marksEnterArmedRef.current = false;
+    setMarksEnter(false);
+    if (!engineMode || !documentId || contextRef?.extractId) {
+      marksRef.current = [];
+      kernelRef.current?.setDocumentMarks?.([]);
+      setDocAnnotCount(0);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const [rows, counts] = await Promise.all([
+          window.workflowAPI?.listAll?.() ?? Promise.resolve([]),
+          // C-18c：直卡计数改走主进程 SQL 聚合（cards:countByExtract）——10 万卡不再全量取卡到渲染层
+          cardsApi.countByExtract().catch(() => ({}) as Record<string, number>)
+        ]);
+        if (cancelled) return;
+        // v48.45（D85）：已制卡数＝**聚合口径**——该条摘录及其全部子孙摘录上的卡之和（用户点名：
+        // 子摘录、子子摘录以及更下层的摘录产生的制卡都算进去）。直卡计数已由主进程聚合（C-18c），
+        // 这里只沿父→子邻接表聚合。
+        const parentToChildren = new Map<string, string[]>();
+        for (const r of rows as Array<{ id?: string; contextRef?: { parentExtractId?: string | null } | null }>) {
+          const pid = r?.contextRef?.parentExtractId;
+          if (pid && r?.id) {
+            const list = parentToChildren.get(String(pid)) ?? [];
+            list.push(String(r.id));
+            parentToChildren.set(String(pid), list);
+          }
+        }
+        const aggCounts = aggregateCardCounts(counts, parentToChildren);
+        const marks = buildDocMarks(rows, documentId, engineKind, aggCounts);
+        marksRef.current = marks;
+        kernelRef.current?.setDocumentMarks?.(marks);
+        // D88 §5.3：首批 marks 的「划笔」入场——容器类一次性置位、1200ms 后摘除；
+        // 只认真实装载事件（marks 非空），此后增删（workflow/changed 重算）不再入场
+        if (!marksEnterArmedRef.current && marks.length > 0) {
+          marksEnterArmedRef.current = true;
+          setMarksEnter(true);
+          if (marksEnterTimerRef.current !== null) window.clearTimeout(marksEnterTimerRef.current);
+          marksEnterTimerRef.current = window.setTimeout(() => {
+            marksEnterTimerRef.current = null;
+            setMarksEnter(false);
+          }, 1200);
+        }
+        // 文档序只能问内核（EPUB 的 CFI 只有引擎 resolve 得动）——装完标记通知侧栏重取
+        setMarksOrderKey((v) => v + 1);
+        // 侧栏「摘录」页签与入口可用性用同一个 VM 口径（含无锚老数据——它们也在栏里）
+        setDocAnnotCount(buildAnnotationItems(rows, documentId, engineKind).length);
+      } catch {
+        /* 标记是增强信息：取不到就不画，阅读/制卡链路不受影响 */
+      }
+    };
+    void load();
+    const offWorkflow = eventBus.on("workflow/changed", () => void load());
+    const offCards = eventBus.on("cards/changed", () => void load());
+    // 主题/强调色一变，注入 iframe 的高亮字面值要重算——但**必须在主题真正落地之后**：
+    // changeReaderTheme 是先 applyAppearance 再 onSwitchAppTheme，此刻 body 还是旧档，
+    // 在 applyAppearance 里重算会拿到旧色（实测：切回纸白后 iframe 里仍是深色档的蓝）。
+    // 统一挂到 theme/changed（App 在 setTheme 落定后发出）与 accentColor 变更上，重推一次标记。
+    const offTheme = eventBus.on("theme/changed", () => kernelRef.current?.setDocumentMarks?.(marksRef.current));
+    const offAccent = eventBus.on("settings/changed", (p) => {
+      const payload = p as { scope?: string; key?: string } | undefined;
+      if (payload?.key === "accentColor") kernelRef.current?.setDocumentMarks?.(marksRef.current);
+    });
+    return () => {
+      cancelled = true;
+      if (marksEnterTimerRef.current !== null) window.clearTimeout(marksEnterTimerRef.current);
+      offWorkflow();
+      offCards();
+      offTheme();
+      offAccent();
+    };
+  }, [engineMode, engineKind, contextRef?.documentId, contextRef?.extractId]);
+
+  /**
+   * 源锚装配（§6.8-11 三条腿的容器形态，批3 写入侧）：摘录落 `contextRef.sourceAnchor`，
+   * 文中留痕据此重画。rects 是**页内百分比**（内核在选区还活着时采集），cfi 表达 EPUB 位置；
+   * anchorText + anchorRatio 是位置只记录不重找的兜底（与 Zotero 一致：不做模糊重锚定）。
+   */
+  function buildSourceAnchor(text: string): Record<string, unknown> | null {
+    const documentId = contextRef?.documentId;
+    if (!documentId) return null;
+    const sel = engineSelRef.current;
+    const geom = engineAnchorGeomRef.current;
+    const loc = buildLocator({
+      cfi: sel?.cfi,
+      chapterIndex: sel ? engineChapterRef.current : undefined,
+      pageIndex: geom?.pageIndex ?? sel?.pageIndex,
+      anchorText: sel?.anchorText || text.slice(0, 60)
+    });
+    const el = scrollRef.current;
+    const denom = el ? el.scrollHeight - el.clientHeight : 0;
+    return {
+      documentId,
+      ...loc,
+      ...(geom?.rects?.length ? { rects: geom.rects } : {}),
+      anchorRatio: denom > 0 && el ? Math.min(1, el.scrollTop / denom) : 0,
+      capturedAt: Date.now()
+    };
+  }
+
+  /** 浮层「就此制卡」（§4）：复用既有手动制卡链（ManualCardEditor → createSingleCard），
+   *  contextRef 挂到该摘录上（extractId）——「已制卡数」就是按它派生的。 */
+  function startMarkCard(mark: ReaderDocMark) {
+    const documentId = contextRef?.documentId;
+    if (!documentId) return;
+    markCardRefOverrideRef.current = {
+      documentId,
+      extractId: mark.id,
+      ...buildLocator({ cfi: mark.cfi, pageIndex: mark.pageIndex, anchorText: mark.text.slice(0, 60) })
+    };
+    sourceTextRef.current = mark.text;
+    const el = scrollRef.current;
+    const denom = el ? el.scrollHeight - el.clientHeight : 0;
+    anchorRef.current = {
+      anchorText: mark.text.slice(0, 60),
+      anchorRatio: denom > 0 && el ? Math.min(1, el.scrollTop / denom) : 0
+    };
+    startManualWith(mark.text);
+  }
+
+  // 批 4 Task 12 / D266：形式与色板取自设置键（app.annotateForm / annotatePalette）；
+  // D267：批注浮层不再消费 annotateCustomEnabled（面板内无自定义取色入口）
+  // ——形式（底色/下划线）持久记忆；改设置有 settings/changed 即时生效。annotateMode 已随 D266 退役。
+  const annotSettings = useAnnotationSettings();
+  const annotForm = annotSettings.annotateForm;
+  const setAnnotForm = (f: AnnotMarkForm) => void writeAnnotationSetting("annotateForm", f);
+  const ANNOT_PALETTE: readonly AnnotColor[] = annotSettings.annotatePalette as readonly AnnotColor[];
+
+  /**
+   * 多段选择修饰键按住期（规格 §6.8-11 与 R22 的冲突调和）：菜单**让路**不接管指针。
+   * 实测因果：两行菜单高 79px，按 R22 落在选区下方时会盖住下一行的拖选线
+   * （multiselect.gui：菜单 y 195–274 盖住第二段 y=267）→ 不给让路则该套件 6 条判据全红；
+   * 差分确认（把菜单临时改成 prefer="above" 复跑即 20/20）后定为「按住修饰键期间菜单不接指针」。
+   */
+  const [multiKeyHeld, setMultiKeyHeld] = useState(false);
+  useEffect(() => {
+    // 修饰键状态一律从**指针事件**取（与内核 modifierFlagOf 同一信号源）：
+    // foliate 章节在 iframe 里，其 keyup 不转发到宿主（adapter 已注明），靠宿主 keydown/keyup
+    // 跟踪会在「拖完松手」时卡在按住态——实测该残留态会让菜单永久不接指针、点不动「摘录」。
+    // 指针事件则两处都有：宿主正文直接冒泡，iframe 内的由 adapter 中继。
+    const sync = (e: PointerEvent) => setMultiKeyHeld(modifierFlagOf(multiKeyRef.current, e));
+    const reset = () => setMultiKeyHeld(false);
+    document.addEventListener("pointerdown", sync, true);
+    document.addEventListener("pointermove", sync, true);
+    document.addEventListener("pointerup", sync, true);
+    window.addEventListener("blur", reset);
+    return () => {
+      document.removeEventListener("pointerdown", sync, true);
+      document.removeEventListener("pointermove", sync, true);
+      document.removeEventListener("pointerup", sync, true);
+      window.removeEventListener("blur", reset);
+    };
+  }, []);
+
+  /**
+   * D266：浮条内首次落库。点色＝kind=highlight；点「摘录」＝kind=extract。
+   * 落库后**不清选区**——浮条留在原地，继续改色 / 改形式 / 写批注 / 升级摘录。
+   * 返回 id 供浮条维护「同一条」草稿；失败返回 null（浮条不升级，用户可重试）。
+   */
+  async function createMenuAnnotation(
+    color: AnnotColor,
+    form: AnnotMarkForm,
+    comment: string,
+    kind: "highlight" | "extract"
+  ): Promise<string | null> {
+    if (!selection) return null;
+    const id = await createAnnotation(selection.text, selection.spans, color, kind, form, comment || null);
+    // 直接建摘录（无既有条目可升级）时保留 Alt+X 既有提示；点色建高亮不弹 toast（文中标记即反馈）
+    if (id && kind === "extract") showToast(T("已摘录进学习队列"));
+    return id;
+  }
+
+  // 阅读场景快捷键（制卡 Alt+Z / AI 制卡 Alt+C / AI 解释 Alt+E / 摘录 Alt+X / 查词 Alt+D；v49.36 / D207）：
+  // 仅当存在活动选区且无手动制卡弹窗、无 AI 面板时可用（弹层开着不触发新动作）
+  const readerShortcutReady = !!selection && !manualOpen && !aiPanel && !dictPanel;
+  useCommandActions("reader", {
+    "reader.makeCard": { when: () => readerShortcutReady, run: () => selAct.manual() },
+    "reader.aiCards": { when: () => readerShortcutReady, run: () => selAct.aiCards() },
+    "reader.aiExplain": { when: () => readerShortcutReady, run: () => selAct.explain() },
+    "reader.extract": {
+      when: () => readerShortcutReady,
+      run: () => {
+        // D266：浮条把这次选区落库后选区仍在，Alt+X 若走 selAct.extract() 会再建一条
+        // 与高亮重叠的摘录。浮条在场时点它自己的「摘录」——已落库走同一条升级，
+        // 落库往返中则由 SelectionMenu 排队补升级（pendingRef）。
+        const menuBtn = document.querySelector<HTMLButtonElement>(".selection-menu [data-annot-extract]");
+        if (menuBtn && document.querySelector(".selection-menu .swatch")) {
+          menuBtn.click();
+          return;
+        }
+        selAct.extract();
+      }
+    },
+    "reader.lookupWord": { when: () => readerShortcutReady, run: () => selAct.lookup() },
+    // D130 P4c：翻页键入命令条（←/→ 从壳层 keydown 迁入；焦点/模态守卫由 dispatchKey 统一承担，
+    // 与既有 reader.extract 等命令同一条链；弹层在场的让路语义与迁移前壳层守卫一致）
+    "reader.turnPrev": { when: () => engineMode && !manualOpen && !aiPanel && !occlEditor, run: () => void turnPage(-1) },
+    "reader.turnNext": { when: () => engineMode && !manualOpen && !aiPanel && !occlEditor, run: () => void turnPage(1) }
+  });
+
+  // D88 §5.2 pageinfo 文案：页码（PDF 的 pageIndex+1）与当前章节名（TOC 按 chapterHref 匹配），
+  // 有页码显页码、有章节显章节，两者皆无＝整个元素不渲染（数据来自既有 relocate，禁造假）。
+  // D121 §2.2：目录可嵌套，旧实现只查顶层 → 子章节恒无章节名；改取路径末项
+  const chapterLabel = tocPathByHref(tocItems, tocActiveHref).slice(-1)[0];
+  const readerPageInfoText = [
+    relocPage != null ? T("第 {n} 页", { n: relocPage + 1 }) : null,
+    chapterLabel ?? null
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  // ---------- D130 R3：快捷菜单派生值 ----------
+  const savedThemes = readerSettings.customThemes ?? [];
+  const resolvedAppearance = resolveAppearance(readerSettings);
+  const pagedLike = readerSettings.mode.flow === "paged"; // 对开（spread）也是 flow=paged
+  // P4a：动画过渡开关——D241 起 foliate 引擎三种模式都生效（分页/对开＝章内滑行 + 跨章淡入；
+  // 滚动＝PageDown/空格整屏缓动 + 跨章淡入）；PDF 为连续滚动容器不适用 → 禁用态
+  const turnAnimatedEnabled = engineKind === "foliate";
+  const turnAnimatedDisabledTitle = T("PDF 为连续滚动容器，不适用翻页过渡");
+  const turnEffectOn = normalizeTurnEffect(readerSettings.appearance.turnEffect) === "glide";
+  // D122：与选区相关的动作（批注/制卡/AI 制卡/AI 解释/查词）与「摘录/形式」标注选项全部迁入
+  // 选区浮条（SelectionMenu，随选区出现在鼠标旁）。
+  // v48.97（D141，用户指令）：原「制卡」钮（免选区自由制卡，D92 §3.4）删除——与顶栏制卡台入口重复。
+  // v49.99（D265，用户指令）：工具栏「截图」钮退役——截取阅读区并进入图片挖空制卡的功能
+  // 由侧栏制卡台的「图片挖空」继承（Reader 经 adapter.captureWorkbenchImage 提供同一个截图链路）；
+  // 工具栏不再渲染 `data-sel-actions` 动作组，markdown 分支的 .reader-md-actions 一并删除。
+  const selBarStyle = useSelectionBarStyle();
+
+  /**
+   * 侧栏可用性（v48.44/D84）：**恒可用**——三页签恒可点（空数据＝页签内空态），
+   * 入口不再按「目录/注解/图谱任一在场」收缩（D2 口径作废）。
+   */
+  /** 工具栏弹出组：点外部（含正文/侧栏）或 Esc 收起；组内点击不算外部 */
+  useEffect(() => {
+    if (!toolMenu) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && typeof t.closest === "function" && t.closest("[data-reader-tool-menu]")) return;
+      setToolMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (isImeComposing(e)) return; // 组字中的 Esc 属于输入法（取消组字），不收工具菜单
+      if (e.key === "Escape") setToolMenu(null);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [toolMenu]);
+
+  return (
+    <div
+      className="reader-wrap"
+      ref={wrapRef}
+      data-sidebar-open={sidebarPinned ? "1" : undefined}
+      data-sidebar-pinned={sidebarPinned ? "1" : undefined}
+      data-sidebar-peek={sidebarPeek && !sidebarPinned ? "1" : undefined}
+      data-rail-anim={railAnimate ? "1" : undefined}
+    >
+      {/* v48.52（D92 §3.3）：右侧学习坞常驻（首次唤起后挂载）——展开时正文让位（既有
+          .reader-body-shifted，flex-basis calc(100% - 400px)），收起时取消（把手 ~40px 不进正文版心）；
+          图片挖空 modal 不占坞、不让位。 */}
+      <div className="reader-body" data-ui="reader-surface">
+        <div
+          ref={scrollRef}
+          className={`reader-scroll${engineMode ? " reader-scroll-engine" : ""}`}
+          onMouseUp={engineMode ? undefined : handleMouseUp}
+          onScroll={engineMode ? undefined : handleScroll}
+        >
+          {engineSource ? (
+            <>
+              {/* v49.105（D271）：32×32 图标钮（左 8 / 顶 48+4=52）＝两态开关——
+                  悬停/聚焦覆盖展开（默认），单击固定为始终展开；固定态单击立即收起并抑制到指针离开。 */}
+              <button
+                ref={sidebarToggleRef}
+                type="button"
+                className="annot-toggle bar-btn"
+                data-reader-sidebar-toggle
+                aria-expanded={sidebarOpen}
+                aria-pressed={sidebarPinned}
+                aria-controls="reader-sidebar"
+                aria-label={sidebarPinned ? T("取消固定侧栏") : T("固定侧栏")}
+                title={sidebarPinned ? T("取消固定侧栏") : T("固定侧栏（始终展开）")}
+                onClick={toggleSidebar}
+                onPointerEnter={handleSidebarPointerEnter}
+                onPointerLeave={handleSidebarPointerLeave}
+                onFocus={handleSidebarFocusCapture}
+                onBlur={handleSidebarBlurCapture}
+                onKeyDown={handleSidebarKeyDown}
+              >
+                <IconSidebar size={20} />
+              </button>
+              {lensKernel && contextRef?.documentId ? (
+                <button
+                  ref={atlasBtnRef}
+                  type="button"
+                  className="bar-btn reader-atlas-toggle"
+                  data-reader-atlas-toggle
+                  aria-pressed={atlasOpen}
+                  title={atlasOpen ? T("返回阅读（Esc）") : T("结构全景：整本材料的结构，以正在读的位置为中心展开")}
+                  onClick={() => (atlasOpen ? closeAtlas() : openAtlas("button", null))}
+                >
+                  <span key={atlasOpen ? "on" : "off"} className="reader-atlas-toggle-label">
+                    {atlasOpen ? T("返回阅读") : T("结构全景")}
+                  </span>
+                  <span aria-hidden="true">{atlasOpen ? T("结构全景") : T("返回阅读")}</span>
+                </button>
+              ) : null}
+              {/* v48.45（D85）：侧栏升级**全高左轨**——一行两格（轨 + 右列），与摘录批注轨同一形态：
+                  贯通到顶、280↔0 滑动动画、展开时工具栏随右列整体右移。
+                  v48.95（D139）：data-rail-anim＝用户点过开关才挂 ⇒ 开合过渡只在用户手势后生效
+                  （与摘录批注轨 [`data-rail-anim`] 同一门；挂载期自动展开瞬时落位）。 */}
+              <div className="reader-engine-layout" data-rail-anim={railAnimate ? "1" : undefined}>
+                <div
+                  ref={sidebarRailRef}
+                  className={`reader-side-rail${sidebarPinned ? "" : " is-closed"}${sidebarPeek && !sidebarPinned ? " is-peek" : ""}`}
+                  data-reader-side-rail
+                  aria-hidden={!sidebarOpen}
+                  onPointerEnter={handleSidebarPointerEnter}
+                  onPointerLeave={handleSidebarPointerLeave}
+                  onFocusCapture={handleSidebarFocusCapture}
+                  onBlurCapture={handleSidebarBlurCapture}
+                  onKeyDown={handleSidebarKeyDown}
+                >
+                  <ReaderSidebar
+                    tocItems={tocItems}
+                    activeHref={tocActiveHref}
+                    onNavigate={(item) => {
+                      track("reader.jumped", { libraryItemId: itemId, origin: "reader_toc", props: { method: "toc" } });
+                      if (atlasOpen) closeAtlas();
+                      void kernelRef.current?.goTo({ href: item.href });
+                      // v49.105（D271）：固定是模式，不因跳转消失；悬停态跳转后收起并抑制到指针离开
+                      if (!sidebarPinned) closeSidebarPeek(true);
+                    }}
+                    tab={sidebarTab}
+                    onTabChange={(t) => { track("reader.sidebar_tab", { libraryItemId: itemId, props: { tab: t } }); setSidebarTab(t); }}
+                    filter={annotSettings.annotationFilter}
+                    onFilter={(f) => void writeAnnotationSetting("annotationFilter", f)}
+                    sort={annotSort}
+                    onSort={setAnnotSort}
+                    extractsPanel={
+                      /* 本文档没有注解＝页签内空态文案（页签仍可点，D84） */
+                      docAnnotCount > 0 ? (
+                      <ReaderExtractsPanel
+                        documentId={contextRef?.documentId ?? null}
+                        engine={engineKind}
+                        orderKey={marksOrderKey}
+                        getMarkOrder={() => kernelRef.current?.getMarkOrder?.() ?? []}
+                        filter={annotSettings.annotationFilter}
+                        onFilter={(f) => void writeAnnotationSetting("annotationFilter", f)}
+                        sort={annotSort}
+                        onSort={setAnnotSort}
+                        palette={annotSettings.annotatePalette}
+                        currentId={annotFocus}
+                        unavailableIds={Object.keys(annotUnavailable)}
+                        onJump={jumpToMark}
+                        onEdit={(id, comment) => void selActions.saveAnnotationComment(id, comment)}
+                        onColor={(id, color) => void selActions.saveAnnotationColor(id, color)}
+                        onDelete={(id) => void selActions.removeAnnotation(id)}
+                      />
+                      ) : null
+                    }
+                  />
+                </div>
+                <div className="reader-engine-col">
+              <div className="reader-engine-controls" data-atlas={atlasOpen ? "1" : undefined}>
+                <div className="reader-engine-controls-group reader-engine-controls-right">
+                  {/* v48.44（D84）：翻页钮移到「更多」左侧。
+                      v49.99（D265）：左侧选区动作组退役，组间分隔线随之删除（右列控件贴右缘）。 */}
+                  {backChip ? (
+                    <button type="button" className="btn btn-outline btn-sm reader-back-chip" data-reader-back-chip onClick={() => { const l = backChip; setBackChip(null); if (l) void kernelRef.current?.goTo(l); }}>
+                      {T("↩ 回到刚才的位置")}
+                    </button>
+                  ) : null}
+                  {lensSupported && (
+                    <button
+                      type="button"
+                      className={`btn btn-outline btn-sm reader-lens-btn${lensOpen ? " is-on" : ""}`}
+                      data-reader-lens-toggle
+                      aria-pressed={lensOpen}
+                      title={lensOpen ? T("收起随文结构") : T("随文结构：在正文右侧显示正在读的这一段所在的结构")}
+                      onClick={() => setLensOpen(!lensOpen)}
+                    >
+                      <span>{T("随文结构")}</span>
+                    </button>
+                  )}
+                  <button className="btn btn-outline btn-sm reader-nav-btn" title={T("上一页（←）")} aria-label={T("上一页")} onClick={() => void turnPage(-1)}>
+                    <IconChevronLeft />
+                  </button>
+                  <button className="btn btn-outline btn-sm reader-nav-btn" title={T("下一页（→ / 空格）")} aria-label={T("下一页")} onClick={() => void turnPage(1)}>
+                    <IconChevronRight />
+                  </button>
+                  <ReaderToolMenu
+                    id="more"
+                    label={T("更多")}
+                    open={toolMenu === "more"}
+                    onToggle={() => setToolMenu((v) => (v === "more" ? null : "more"))}
+                  >
+                    {/* v48.22（D58 §6.8-8）：集中复习本书的摘录 / 闪卡——按书范围会话，遵循共享每日预算 */}
+                    <button
+                      type="button"
+                      className="dd-item"
+                      data-review-extracts
+                      disabled={!itemId || !onReviewExtracts}
+                      title={T("开始复习本书的摘录（遵循每日上限）")}
+                      onClick={() => {
+                        setToolMenu(null);
+                        onReviewExtracts?.();
+                      }}
+                    >
+                      <span className="reader-menu-item-icon"><IconBookOpen size={16} /></span>
+                      {T("复习摘录")}
+                    </button>
+                    <button
+                      type="button"
+                      className="dd-item"
+                      data-review-cards
+                      disabled={!itemId || !onReviewCards}
+                      title={T("开始复习本书的闪卡（遵循每日上限）")}
+                      onClick={() => {
+                        setToolMenu(null);
+                        onReviewCards?.();
+                      }}
+                    >
+                      <span className="reader-menu-item-icon"><IconLayers size={16} /></span>
+                      {T("复习闪卡")}
+                    </button>
+                  </ReaderToolMenu>
+                  <ReaderToolMenu
+                    id="settings"
+                    label={T("阅读设置")}
+                    open={toolMenu === "settings"}
+                    onToggle={() => setToolMenu((v) => (v === "settings" ? null : "settings"))}
+                  >
+                    {/* D130 R3 §5.1：分组 IA——排版（最高频）→ 外观 → 翻页/缩放（低频）；
+                        组间空间先行（margin-block sp-2 ≥ 2× 组内行距），hairline 仅作视觉断点。 */}
+                    <div className="reader-tool-menu-group">
+                      <div className="reader-tool-menu-group-label">{T("排版")}</div>
+                      <div className="reader-tool-menu-row" data-reader-row="mode">
+                        <span className="reader-tool-menu-label">{T("模式")}</span>
+                        <Dropdown
+                          title={T("阅读模式")}
+                          showSelectedCheck
+                          value={readerSettings.mode.flow === "scrolled" ? "scrolled" : readerSettings.mode.spread ? "spread" : "paged"}
+                          options={[
+                            { value: "scrolled", label: T("滚动") },
+                            { value: "paged", label: T("分页") },
+                            { value: "spread", label: T("对开") }
+                          ]}
+                          onChange={(v) =>
+                            changeReaderMode(
+                              v === "scrolled" ? { flow: "scrolled" } : v === "spread" ? { flow: "paged", spread: true } : { flow: "paged" }
+                            )
+                          }
+                        />
+                      </div>
+                      <div className="reader-tool-menu-row" data-reader-row="lineHeight">
+                        <span className="reader-tool-menu-label">{T("行距")}</span>
+                        {/* P2：字段与生效链既有（iframe 注入 line-height），本行只是接 UI；PDF 固定版式不适用 → 禁用态 */}
+                        {engineKind === "pdf" ? (
+                          <button type="button" className="dd-btn" disabled title={T("PDF 为固定版式，不适用行距")}>
+                            {T(nearestPreset(resolvedAppearance.lineHeight ?? 1.7, LINE_HEIGHT_PRESETS).label)}
+                          </button>
+                        ) : (
+                          <Dropdown
+                            title={T("行距")}
+                            showSelectedCheck
+                            value={nearestPreset(resolvedAppearance.lineHeight ?? 1.7, LINE_HEIGHT_PRESETS).value}
+                            options={LINE_HEIGHT_PRESETS.map((p) => ({ ...p, label: T(p.label) }))}
+                            onChange={(v) => changeReaderAppearance({ lineHeight: Number(v) })}
+                          />
+                        )}
+                      </div>
+                      <div className="reader-tool-menu-row" data-reader-row="ignorePublisherFont">
+                        <span className="reader-tool-menu-label">{T("忽略出版方字体")}</span>
+                        {engineKind === "pdf" ? (
+                          <button type="button" className="dd-btn" disabled title={T("PDF 为固定版式，不适用字体覆盖")}>
+                            {readerSettings.appearance.ignorePublisherFont === true ? T("开") : T("关")}
+                          </button>
+                        ) : (
+                          <Dropdown
+                            title={T("开启后正文使用应用字体与常规字重；出版方内嵌字体与字重不再生效，标题、强调与代码保留语义样式。")}
+                            showSelectedCheck
+                            value={readerSettings.appearance.ignorePublisherFont === true ? "on" : "off"}
+                            options={[
+                              { value: "off", label: T("关") },
+                              { value: "on", label: T("开") }
+                            ]}
+                            onChange={(v) => changeReaderAppearance({ ignorePublisherFont: v === "on" })}
+                          />
+                        )}
+                      </div>
+                      {/* P3a：页边距（分页/对开的上下边带）——滚动模式不生效、PDF 不适用；
+                          禁止「看着能调、调了没反应」（R3），禁用态必须带 title 说明 */}
+                      {engineKind !== "pdf" && (
+                        <div className="reader-tool-menu-row" data-reader-row="margin">
+                          <span className="reader-tool-menu-label">{T("边距")}</span>
+                          {pagedLike ? (
+                            <Dropdown
+                              title={T("页边距")}
+                              showSelectedCheck
+                              value={nearestPreset(resolvedAppearance.margin ?? 48, MARGIN_PRESETS).value}
+                              options={MARGIN_PRESETS.map((p) => ({ ...p, label: T(p.label) }))}
+                              onChange={(v) => changeReaderAppearance({ margin: Number(v) })}
+                            />
+                          ) : (
+                            <button type="button" className="dd-btn" disabled title={T("页边距在分页/对开模式下生效")}>
+                              {T(nearestPreset(resolvedAppearance.margin ?? 48, MARGIN_PRESETS).label)}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {/* P3b：版心宽度（滚动模式的排版余白＝「页边距」的滚动对应物，新增解释）；
+                          分页列宽实际由容器宽÷列数决定（此值只是上限），分页下不暴露 */}
+                      {engineKind !== "pdf" && (
+                        <div className="reader-tool-menu-row" data-reader-row="measure">
+                          <span className="reader-tool-menu-label">{T("版心")}</span>
+                          {readerSettings.mode.flow === "scrolled" ? (
+                            <Dropdown
+                              title={T("版心宽度")}
+                              showSelectedCheck
+                              value={nearestPreset(resolvedAppearance.maxInlineSize ?? 720, MEASURE_PRESETS).value}
+                              options={MEASURE_PRESETS.map((p) => ({ ...p, label: T(p.label) }))}
+                              onChange={(v) => changeReaderAppearance({ maxInlineSize: Number(v) })}
+                            />
+                          ) : (
+                            <button type="button" className="dd-btn" disabled title={T("版心宽度在滚动模式下生效")}>
+                              {T(nearestPreset(resolvedAppearance.maxInlineSize ?? 720, MEASURE_PRESETS).label)}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="reader-tool-menu-group">
+                      <div className="reader-tool-menu-group-label">{T("外观")}</div>
+                      <div className="reader-tool-menu-row" data-reader-row="theme">
+                        <span className="reader-tool-menu-label">{T("主题")}</span>
+                        <ReaderThemeDropdown
+                          value={readerSettings.appearance.theme}
+                          savedThemes={savedThemes}
+                          isSavedActive={(t) =>
+                            readerSettings.appearance.theme === "custom" &&
+                            resolvedAppearance.bgColor === t.bgColor &&
+                            resolvedAppearance.fgColor === t.fgColor
+                          }
+                          onSelect={(t) => (typeof t === "string" ? changeReaderTheme(t) : applySavedTheme(t))}
+                          onManage={() => {
+                            setToolMenu(null);
+                            showToast(T("在「设置 → 阅读 → 阅读外观」重命名或删除已存主题"));
+                          }}
+                        />
+                      </div>
+                      {readerSettings.appearance.theme === "custom" && (
+                        <div className="reader-tool-menu-row" data-reader-row="customColors">
+                          <span className="reader-tool-menu-label">{T("自定义色")}</span>
+                          <span className="reader-custom-color-group">
+                            <input
+                              type="color"
+                              className="reader-color-input"
+                              title={T("背景色")}
+                              value={readerSettings.appearance.bgColor || "#fafaf8"}
+                              onChange={(e) => changeReaderAppearance({ bgColor: e.target.value })}
+                            />
+                            <input
+                              type="color"
+                              className="reader-color-input"
+                              title={T("文字色")}
+                              value={readerSettings.appearance.fgColor || "#1a1a1a"}
+                              onChange={(e) => changeReaderAppearance({ fgColor: e.target.value })}
+                            />
+                            {themeNaming ? (
+                              <span className="reader-theme-naming">
+                                <input
+                                  className="reader-theme-name-input"
+                                  data-reader-theme-name-input
+                                  autoFocus
+                                  maxLength={24}
+                                  placeholder={T("我的主题 {n}", { n: savedThemes.length + 1 })}
+                                  value={themeNameDraft}
+                                  onChange={(e) => setThemeNameDraft(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (isImeComposing(e)) return; // 组字中的 Enter/Esc 属于输入法（确认/取消候选词）
+                                    if (e.key === "Enter") confirmThemeName();
+                                    else if (e.key === "Escape") setThemeNaming(false);
+                                  }}
+                                  onBlur={confirmThemeName}
+                                />
+                                <button type="button" className="reader-theme-save-btn" onClick={confirmThemeName}>
+                                  {T("确定")}
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="reader-theme-save-btn"
+                                data-reader-theme-save
+                                disabled={savedThemes.length >= CUSTOM_THEMES_MAX}
+                                title={savedThemes.length >= CUSTOM_THEMES_MAX ? T("最多保存 12 套，请先在设置页删除") : T("把当前自定义配色另存为命名主题")}
+                                onClick={() => {
+                                  setThemeNameDraft("");
+                                  setThemeNaming(true);
+                                }}
+                              >
+                                {T("保存主题")}
+                              </button>
+                            )}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="reader-tool-menu-group">
+                      <div className="reader-tool-menu-group-label">{T("翻页")}</div>
+                      <div className="reader-tool-menu-row" data-reader-row="turnAnimated">
+                        <span className="reader-tool-menu-label">{T("动画过渡")}</span>
+                        {turnAnimatedEnabled ? (
+                          <Dropdown
+                            title={T("翻页滑动过渡")}
+                            showSelectedCheck
+                            value={turnEffectOn ? "on" : "off"}
+                            options={[
+                              { value: "off", label: T("关") },
+                              { value: "on", label: T("开") }
+                            ]}
+                            onChange={(v) => changeReaderAppearance({ turnEffect: v === "on" ? "glide" : "none" })}
+                          />
+                        ) : (
+                          <button type="button" className="dd-btn" disabled title={turnAnimatedDisabledTitle}>
+                            {turnEffectOn ? T("开") : T("关")}
+                          </button>
+                        )}
+                      </div>
+                      {engineKind === "pdf" && (
+                        <div className="reader-tool-menu-row" data-reader-row="zoom">
+                          <span className="reader-tool-menu-label">{T("缩放")}</span>
+                          <Dropdown
+                            title={T("缩放")}
+                            showSelectedCheck
+                            value={String(readerSettings.appearance.zoom ?? "page-width")}
+                            options={[
+                              { value: "page-width", label: T("适应宽度") },
+                              { value: "page-fit", label: T("适应页面") },
+                              { value: "50", label: "50%" },
+                              { value: "75", label: "75%" },
+                              { value: "100", label: "100%" },
+                              { value: "125", label: "125%" },
+                              { value: "150", label: "150%" },
+                              { value: "200", label: "200%" }
+                            ]}
+                            onChange={(v) => changeReaderZoom(v === "page-width" || v === "page-fit" ? v : Number(v))}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </ReaderToolMenu>
+                </div>
+                {/* D88 §5.2：页码/章节位（meta 档 mono）——工具栏右端新增；无数据不渲染 */}
+                {readerPageInfoText ? <span className="reader-pageinfo mono">{readerPageInfoText}</span> : null}
+                <div className="atlas-toolbar-host" data-atlas-toolbar-host ref={setAtlasToolbarHost} />
+              </div>
+              <div className="reader-engine-viewport" ref={viewportRef}>
+                {/* v48.45（D85）：侧栏已升为全高左轨（.reader-side-rail，在 layout 层），视口里只剩正文区；
+                    翻页热区只覆盖正文区（.reader-engine-main）。 */}
+                {/* v48.45（D85）：侧栏已升为全高左轨（.reader-side-rail，在 layout 层），视口里只剩正文区；
+                    翻页热区只覆盖正文区（.reader-engine-main）。
+                    D88 §5.3：marksEnter＝首批标记装载的「划笔」入场容器类（1200ms 后摘除）。 */}
+                <div className={`reader-engine-main flow-shift-target${marksEnter ? " reader-marks-enter" : ""}`} ref={engineMainRef}>
+                {engineError ? (
+                  <div className="reader-engine-error" role="alert">
+                    <p className="reader-engine-error-title">
+                      {T("这本书没能打开")}
+                    </p>
+                    <p className="reader-engine-error-msg mono">{engineError}</p>
+                    <div className="reader-engine-error-actions">
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={() => {
+                          setEngineError(null);
+                          setEngineRetry((n) => n + 1);
+                        }}
+                      >
+                        {T("重试")}
+                      </button>
+                      <button className="btn btn-outline btn-sm" onClick={() => setEngineError(null)}>
+                        {T("关闭提示")}
+                      </button>
+                    </div>
+                    <p className="reader-engine-error-hint">
+                      {T("常见原因：文件格式不受支持、文件本身损坏，或导出时缺失资源。")}
+                    </p>
+                  </div>
+                ) : (
+                <ReaderEngine
+                  key={engineRetry}
+                  source={engineSource}
+                  engine={engineKind}
+                  initLocation={initialCfi ? { cfi: initialCfi } : initialPageIndex != null ? { pageIndex: initialPageIndex } : initialRatio > 0 ? { fraction: initialRatio } : null}
+                  jump={jumpAnchor ? { cfi: jumpAnchor.cfi, pageIndex: jumpAnchor.pageIndex, chapterIndex: jumpAnchor.chapterIndex, anchorText: jumpAnchor.anchorText } : null}
+                  onRelocate={handleEngineRelocate}
+                  onLink={(info) => {
+                    // D248（T7）：内链＝正文内跳转（method=link）；外链交系统浏览器、不算阅读导航
+                    if (info.internal) track("reader.jumped", { libraryItemId: itemId, origin: "reader_internal", props: { method: "link" } });
+                    // 外链：adapter 已拦截默认行为，这里交系统浏览器；内链由内核自行精确跳转
+                    if (!info.internal) void window.windowAPI?.openExternal(info.href);
+                  }}
+                  onContentPointerUp={handleEnginePointerUp}
+                  onImageClick={(img) => void handleEngineImageClick(img)}
+                  onReady={handleEngineReady}
+                  beforeOpen={handleEngineBeforeOpen}
+                  onError={(msg) => setEngineError(msg)}
+                />
+                )}
+                {readerSettings.mode.flow === "paged" && (
+                  <>
+                    {/* D130 P4b：热区 hover chevron 提示（零布局变化：热区几何不动、翻页行为不变，
+                        提示浮在其上 pointer-events:none，opacity 0→1 过渡在 theme.css no-preference 作用域） */}
+                    <div className="reader-tap-zone reader-tap-left" title={T("上一页")} onClick={() => void turnPage(-1)}>
+                      <span className="reader-tap-hint" data-reader-tap-hint="left" aria-hidden="true">
+                        <IconChevronLeft size={16} />
+                      </span>
+                    </div>
+                    <div className="reader-tap-zone reader-tap-right" title={T("下一页")} onClick={() => void turnPage(1)}>
+                      <span className="reader-tap-hint" data-reader-tap-hint="right" aria-hidden="true">
+                        <IconChevronRight size={16} />
+                      </span>
+                    </div>
+                  </>
+                )}
+                </div>
+                {/* 结构流预留槽位（§6.4）：放在视口内、正文区之后；槽宽由宿主一步到位设置，淡出遮住重排 */}
+                <div className="reader-flow-gutter" data-reader-flow-gutter aria-hidden="true" ref={flowGutterRef} />
+                {/* 结构全景画布宿主（D254）：铺满正文视口，空时 display:none 不遮正文 */}
+                <div className="reader-atlas-layer" data-reader-atlas-layer ref={setAtlasLayerHost} />
+              </div>
+              {/* 结构全景（D254）：portal 出工具栏 + 画布；放在随文结构宿主之前 */}
+              {atlasMounted && contextRef?.documentId && lensKernel ? (
+                <MindmapTab
+                  kernel={kernelRef.current!}
+                  documentId={contextRef.documentId}
+                  title={title || sourceTitle || T("未命名材料")}
+                  stageHost={atlasLayerHost}
+                  toolbarHost={atlasToolbarHost}
+                  open={atlasOpen}
+                  entry={atlasEntry}
+                  onExit={closeAtlas}
+                  onExited={() => { setAtlasMounted(false); setAtlasEntry(null); }}
+                  onJumpToText={(back) => {
+                    track("reader.jumped", { libraryItemId: itemId, origin: "mindmap", props: { method: "mindmap" } });
+                    closeAtlas();
+                    if (back) showBackChip(back);
+                  }}
+                  initialMapId={openMindmapMapId || null}
+                  initialResumeRunId={resumeOnce}
+                  onMakeCardsFromNode={(payload) => {
+                    void runAICards(payload.section, undefined, "card-structure", { focus: payload.focus, mindmapNodeId: payload.nodeId });
+                  }}
+                />
+              ) : null}
+              {/* 结构流宿主：渲染层 portal 到 body；不新增窗口 / preload / IPC */}
+              <StructureFlowHost
+                kernel={lensKernel}
+                documentId={lensDocId}
+                title={lensTitle}
+                open={lensOpen && lensSupported}
+                covered={atlasMounted}
+                coverMode={atlasEntry?.snapshot ? "handoff" : "fade"}
+                scrolled={readerSettings.mode.flow !== "paged"}
+                viewportEl={flowEls?.viewport ?? null}
+                shiftEl={flowEls?.main ?? null}
+                gutterEl={flowEls?.gutter ?? null}
+                onClose={() => setLensOpen(false)}
+                onOpenInMap={(id, region) => lensOpenInMapRef.current(id, region)}
+              />
+              </div>
+              </div>
+            </>
+          ) : (
+            <>
+            {/* v49.99（D265）：markdown 分支工具栏截图钮退役，.reader-md-actions 容器一并删除；
+                图片挖空入口＝侧栏制卡台「图片挖空」 */}
+            <article className="reader-markdown">
+              <h1 className="reader-title">{title}</h1>
+              {contextLabel && <p className="reader-context">{contextLabel}</p>}
+              {/* C-34a：粘贴书 markdown 读态统一走 ReadMarkdown（GFM/软换行/HTML 净化） */}
+              <ReadMarkdown text={markdown} />
+            </article>
+            </>
+          )}
+
+          {/* v35 图片卡跳转：图内区域高亮（宿主视口坐标，5 秒或翻页自清）+ 未命中时的原图对照浮层 */}
+          {imgOverlay && imgOverlay.occlusion && (
+            <div
+              className="img-region-overlay"
+              style={{ left: imgOverlay.rect.x, top: imgOverlay.rect.y, width: imgOverlay.rect.width, height: imgOverlay.rect.height }}
+            >
+              <OcclusionShapes
+                occlusion={{
+                  rects: imgOverlay.occlusion.rects,
+                  shapes: (imgOverlay.occlusion.shapes as OcclusionShape[] | null | undefined) ?? null,
+                  regionScope: imgOverlay.occlusion.regionScope
+                }}
+                cardOrd={imgOverlay.occlusion.cardOrd ?? 0}
+              />
+            </div>
+          )}
+          {sourcePeek && sourcePeek.occlusion?.assetPath && (
+            <div className="source-peek">
+              <div className="source-peek-head">
+                <span>{T("原图对照（未在正文中定位到该图）")}</span>
+                <button className="source-peek-close" onClick={() => setSourcePeek(null)} title={T("关闭")} aria-label={T("关闭")}><IconClose size={16} /></button>
+              </div>
+              <div className="occlusion-stage source-peek-stage">
+                <img src={sourcePeek.occlusion.assetPath} alt="" className="occlusion-img" />
+                <OcclusionShapes
+                  occlusion={{
+                    rects: sourcePeek.occlusion.rects,
+                    shapes: (sourcePeek.occlusion.shapes as OcclusionShape[] | null | undefined) ?? null,
+                    regionScope: sourcePeek.occlusion.regionScope
+                  }}
+                  cardOrd={sourcePeek.occlusion.cardOrd ?? 0}
+                />
+              </div>
+            </div>
+          )}
+
+          {selection && (
+            <SelectionMenu
+              anchor={selection.rect}
+              container={scrollRef.current?.getBoundingClientRect() ?? null}
+              colors={ANNOT_PALETTE}
+              onCreate={createMenuAnnotation}
+              onUpdateColor={saveAnnotationColor}
+              onUpdateForm={saveAnnotationForm}
+              onUpgrade={async (id) => {
+                await upgradeAnnotation(id);
+                showToast(T("已升级为摘录 · 同一条记录"));
+              }}
+              onSaveComment={saveAnnotationComment}
+              onAlreadyExtracted={() => showToast(T("已在学习队列"))}
+              byLocked={multiKeyHeld}
+              form={annotForm}
+              onFormChange={setAnnotForm}
+              barStyle={selBarStyle}
+              actions={{ manual: selAct.manual, aiCards: selAct.aiCards, explain: selAct.explain, lookup: selAct.lookup }}
+            />
+          )}
+        </div>
+
+        {/* D88 §8：右侧制卡面板（手动态/AI 态经 SelectionPanels 换容器）；dock 头 meta＝材料名（§8.2） */}
+        <SelectionPanels
+          sel={selActions}
+          selectionText={selection?.text ?? null}
+          nowTick={nowTick}
+          elapsedSec={elapsedSec}
+          dockMeta={title || sourceTitle || undefined}
+        />
+      </div>
+
+      {/* D98/R1 手动图片挖空编辑器：点击正文图片直进（图片聚焦层退役），多遮罩批量落库后由编排面关闭 */}
+      {occlEditor && !occlEditor.workbench && (
+        <OcclusionEditor
+          image={occlEditor.image}
+          origin={occlEditor.origin}
+          onAISuggest={runOcclusionSuggest}
+          onClose={closeOcclusionEditor}
+          onSubmit={submitOcclusionEditor}
+        />
+      )}
+
+      {/* 批 4 Task 17 / v48.45（D85）：标记的批注编辑浮层＝**唯一浮层**（悬停浮层已退役）——
+          批注改/删 + 聚合「已制卡 N 张」+「就此制卡」（走既有手动制卡链）；无保存/取消，失焦即落库。 */}
+      {markEditor && (() => {
+        const m = marksRef.current.find((x) => x.id === markEditor.id);
+        if (!m) return null;
+        return (
+          <AnnotationEditor
+            extractId={markEditor.id}
+            kind={markEditor.kind}
+            comment={markEditor.comment}
+            color={markEditor.color}
+            anchor={markEditor.anchor}
+            palette={annotSettings.annotatePalette}
+            cardCount={m.cardCount}
+            onMakeCard={() => startMarkCard(m)}
+            onOpenCards={onOpenAnchorCards ? () => onOpenAnchorCards(markEditor.id) : undefined}
+            onSaveComment={(c) => selActions.saveAnnotationComment(markEditor.id, c)}
+            onSaveColor={async (c) => {
+              await selActions.saveAnnotationColor(markEditor.id, c);
+              setMarkEditor((prev) => (prev ? { ...prev, color: c } : prev));
+            }}
+            onDelete={async () => {
+              await selActions.removeAnnotation(markEditor.id);
+              setMarkEditor(null);
+            }}
+            onClose={() => setMarkEditor(null)}
+          />
+        );
+      })()}
+
+      {/* D254：完整图谱改为左上「结构全景」独立入口（MindmapTab，见上方 portal 宿主）；侧栏图谱页签已退役。 */}
+
+      {toast && <div className="reader-toast">{toast}</div>}
+    </div>
+  );
+}

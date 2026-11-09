@@ -1,0 +1,460 @@
+// 快速记录（v36，M8-A，§4.2-21 / §6.5 / 决策 D34）——第二输入通道的写入面。
+//
+// 本模块独占四件事：
+//  ① **全局快捷键组**：快速记录（Windows/Linux `Ctrl+Alt+Space` / mac `Cmd+Shift+Space` 缺省，C-26/D-03）
+//     + 添加学习材料（Ctrl+Alt+N 缺省）——注册失败必须可见
+//     （`globalShortcut.register` 返回 false = 被系统或其它软件占用，静默失效会让用户以为软件坏了）。
+//  ② **捕获窗口单例**：无框小窗常驻复用，关闭=隐藏；渲染层就绪（capture:ready）后才 show（杜绝白闪）；
+//     每次呼出按**鼠标所在屏幕**水平居中、顶部 18%。
+//  ③ **草稿-发送状态机**：输入即落库（防抖）→ 「发送」定格为日记里的一条；不发送则失焦只隐藏、草稿保留可续写。
+//  ④ **持久化节流**：日记自动保存是本项目「每次落库即落盘」（§7.2）的**首个已登记例外**（D34；行为不变＝防抖持久化）。
+//     better-sqlite3（D137）下草稿写入即时事务提交（WAL + `synchronous=FULL`，提交即持久），节流的是 `persist()`
+//     （现义＝`wal_checkpoint(TRUNCATE)`：WAL 合并回主文件 + 截断 + fsync）——按输入停顿每 1.2s 全量 checkpoint 的
+//     磁盘写放大不可接受（sql.js 时代则是每次 persist 整库导出 + fsync + rename，同理写放大）。故库内即时写、
+//     persist() 尾随 4s / 上限 20s，隐藏·发送·退出强制 flush；代价＝间隔内主文件非自足（数据在 WAL、不丢），
+//     见 D34 与 §6.5.4。
+const { app, BrowserWindow, globalShortcut, screen, nativeTheme } = require("electron");
+const path = require("path");
+const fs = require("fs");
+const { loadAppPage } = require("./devServer"); // D239：载入顺序 + dev server 地址唯一来源
+const os = require("os");
+
+// 审计 C-26 步骤 4（D-03=B）：快速记录默认键——Windows/Linux 保持 Ctrl+Alt+Space；
+// macOS 系统默认把 Control+Option+Space 用于「选择下一个输入源」，多输入法用户必冲突，改 Cmd+Shift+Space。
+// 启动器类工具可能占用 Cmd+Shift+Space——注册失败经 tryRegister → status.error 在设置页提示用户改键（纪律①）。
+const DEFAULT_ACCEL_CAPTURE = process.platform === "darwin" ? "Cmd+Shift+Space" : "Ctrl+Alt+Space";
+const DEFAULT_ACCEL_ADD_MATERIAL = "Ctrl+Alt+N";
+// D123：独立制卡台窗口（手动制卡 / AI 制卡 / AI 解释）
+const DEFAULT_ACCEL_WORKBENCH = "Ctrl+Alt+K";
+const PERSIST_TRAILING_MS = 4000;
+const PERSIST_MAX_MS = 20000;
+
+// 修饰键别名 → 规范名（Electron accelerator 合法修饰键；渲染层 eventToCombo 产出 Ctrl/Alt/Shift/Meta）
+
+// v48.114（D159）：日记与快速记录暂时移除（代码保留待重新实装，契约见 GUIDE §6.5）。
+// 闸＝本常量：置 false 即整体恢复（快捷键注册 + 捕获窗口 + 托盘项）。
+// 「添加学习材料 Ctrl+Alt+N」「制卡台 Ctrl+Alt+K」两快捷键与 init 注册链**不受本闸影响**，保持可用。
+const CAPTURE_DISABLED = true;
+const MOD_CANON = {
+  ctrl: "Ctrl",
+  control: "Ctrl",
+  cmd: "Cmd",
+  command: "Cmd",
+  commandorcontrol: "CommandOrControl",
+  cmdorctrl: "CommandOrControl",
+  alt: "Alt",
+  option: "Alt",
+  altgr: "AltGr",
+  shift: "Shift",
+  super: "Super",
+  meta: "Super",
+  windows: "Super"
+};
+const MOD_ORDER = ["Ctrl", "CommandOrControl", "Cmd", "Alt", "AltGr", "Shift", "Super"];
+const KEY_CANON = {
+  space: "Space",
+  tab: "Tab",
+  enter: "Enter",
+  return: "Return",
+  esc: "Escape",
+  escape: "Escape",
+  backspace: "Backspace",
+  delete: "Delete",
+  insert: "Insert",
+  home: "Home",
+  end: "End",
+  pageup: "PageUp",
+  pagedown: "PageDown",
+  up: "Up",
+  down: "Down",
+  left: "Left",
+  right: "Right",
+  plus: "Plus"
+};
+
+function normalizeKey(raw) {
+  const k = String(raw || "").trim();
+  if (!k) return null;
+  if (k.length === 1) return /[a-z]/i.test(k) ? k.toUpperCase() : k; // 单字符键：字母大写、符号原样
+  const lower = k.toLowerCase();
+  if (KEY_CANON[lower]) return KEY_CANON[lower];
+  if (/^f([1-9]|1[0-9]|2[0-4])$/.test(lower)) return lower.toUpperCase();
+  return null;
+}
+
+// 规范化组合键（非法返回 null）。规则：修饰键别名归一 + 固定顺序；无修饰键时**只允许功能键**
+// （单字母/F 以外的单键做全局快捷键会吞掉用户正常输入，且极难发现）。
+function normalizeAccelerator(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const parts = s.split("+").map((p) => p.trim()).filter((p) => p.length > 0);
+  if (!parts.length) return null;
+  const key = normalizeKey(parts[parts.length - 1]);
+  if (!key) return null;
+  const mods = [];
+  for (const p of parts.slice(0, -1)) {
+    const canon = MOD_CANON[String(p).toLowerCase()];
+    if (!canon) return null;
+    if (!mods.includes(canon)) mods.push(canon);
+  }
+  if (!mods.length) return /^F([1-9]|1[0-9]|2[0-4])$/.test(key) ? key : null;
+  mods.sort((a, b) => MOD_ORDER.indexOf(a) - MOD_ORDER.indexOf(b));
+  return [...mods, key].join("+");
+}
+
+let ctx = null; // { db, readSettings, writeSettings, sendToMain }
+let captureWin = null;
+let captureReady = false;
+let pendingShow = false;
+let quitting = false;
+let persistTimer = null;
+let persistMaxTimer = null;
+let status = {
+  quickCapture: { enabled: true, accelerator: DEFAULT_ACCEL_CAPTURE, registered: false, error: null },
+  addMaterial: { enabled: true, accelerator: DEFAULT_ACCEL_ADD_MATERIAL, registered: false, error: null },
+  workbench: { enabled: true, accelerator: DEFAULT_ACCEL_WORKBENCH, registered: false, error: null },
+  hideOnBlur: true,
+  autoLaunch: false
+};
+
+// ---------- 配置读取与归一化（非法值一律回落默认，不让坏设置把功能打死） ----------
+
+function readShortcutConfig() {
+  const raw = (ctx?.readSettings?.()?.app || {}).globalShortcuts || {};
+  const qc = raw.quickCapture || {};
+  const am = raw.addMaterial || {};
+  const wb = raw.workbench || {};
+  const accelCapture = normalizeAccelerator(qc.accelerator) || DEFAULT_ACCEL_CAPTURE;
+  const accelAdd = normalizeAccelerator(am.accelerator) || DEFAULT_ACCEL_ADD_MATERIAL;
+  const accelWbRaw = normalizeAccelerator(wb.accelerator) || DEFAULT_ACCEL_WORKBENCH;
+  // 与前两键相同则回落默认（同「两键相同」的处理口径）
+  const wbConflict = accelWbRaw === accelCapture || accelWbRaw === accelAdd;
+  const accelWb = wbConflict ? DEFAULT_ACCEL_WORKBENCH : accelWbRaw;
+  // 两键相同：后注册的必然抢不到，直接判为非法并回落默认（避免用户看到「被占用」却找不到原因）
+  const sameAccel = accelCapture === accelAdd;
+  return {
+    quickCapture: {
+      // D159：闸下强制视为关闭（status 显示「已关闭」、快捷键不注册；置 CAPTURE_DISABLED=false 即恢复）
+      enabled: !CAPTURE_DISABLED && qc.enabled !== false,
+      accelerator: sameAccel ? DEFAULT_ACCEL_CAPTURE : accelCapture,
+      hideOnBlur: qc.hideOnBlur !== false
+    },
+    addMaterial: {
+      enabled: am.enabled !== false,
+      accelerator: sameAccel ? DEFAULT_ACCEL_ADD_MATERIAL : accelAdd,
+      conflictWithCapture: sameAccel
+    },
+    workbench: {
+      enabled: wb.enabled !== false,
+      accelerator: accelWb,
+      conflict: wbConflict
+    },
+    autoLaunch: raw.autoLaunch === true
+  };
+}
+
+// 审计 C-29：app.setLoginItemSettings/getLoginItemSettings 只支持 Windows/macOS（Electron 官方文档），
+// Linux 上是 no-op——开关打开后读回恒 false，设置页开关会自己弹回。Linux 改按 XDG autostart 规范
+// 写 `$XDG_CONFIG_HOME/autostart`（未设置时 `~/.config/autostart`）下的 nutation.desktop；
+// Windows/macOS 分支保持 app API 不变。
+function linuxAutostartFile() {
+  const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  return path.join(base, "autostart", "nutation.desktop");
+}
+
+function isAutoLaunchOn() {
+  if (process.platform === "linux") return fs.existsSync(linuxAutostartFile());
+  try {
+    return !!app.getLoginItemSettings().openAtLogin;
+  } catch {
+    return false;
+  }
+}
+
+function applyAutoLaunch(enabled) {
+  if (process.platform === "linux") {
+    const f = linuxAutostartFile();
+    try {
+      if (!enabled) { fs.rmSync(f, { force: true }); return; }
+      const exec = process.env.APPIMAGE || process.execPath;           // AppImage 必须指向 .AppImage 文件本身
+      const args = app.isPackaged ? "" : ` "${path.resolve(__dirname, "..")}"`;
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, `[Desktop Entry]\nType=Application\nName=Nutation\nExec="${exec}"${args}\nX-GNOME-Autostart-enabled=true\n`);
+    } catch (err) { console.error("[quickCapture] 随系统启动设置失败：", err); }
+    return;
+  }
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: !!enabled,
+      path: process.execPath,
+      // 开发态（npx electron .）需要显式带上应用目录，打包态不带
+      args: app.isPackaged ? [] : [path.resolve(__dirname, "..")]
+    });
+  } catch (err) {
+    console.error("[quickCapture] 随系统启动设置失败：", err);
+  }
+}
+
+// ---------- 全局快捷键注册（失败可见） ----------
+
+function applyGlobalShortcuts() {
+  const cfg = readShortcutConfig();
+  try {
+    globalShortcut.unregisterAll(); // 全局快捷键全部由本模块持有
+  } catch { /* 无注册 */ }
+
+  const tryRegister = (accelerator, handler, label) => {
+    const out = { registered: false, error: null };
+    try {
+      const ok = globalShortcut.register(accelerator, handler);
+      out.registered = !!ok;
+      if (!ok) out.error = "该组合已被系统或其它软件占用，请换一个";
+    } catch (err) {
+      out.error = `注册失败：${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (out.error) console.error(`[quickCapture] ${label} 全局快捷键不可用：${out.error}（${accelerator}）`);
+    return out;
+  };
+
+  const capture = cfg.quickCapture.enabled
+    ? tryRegister(cfg.quickCapture.accelerator, () => toggleCapture(), "快速记录")
+    : { registered: false, error: null };
+  const addMaterial = cfg.addMaterial.enabled
+    ? tryRegister(cfg.addMaterial.accelerator, () => ctx?.sendToMain?.("library:openAddMaterial"), "添加学习材料")
+    : { registered: false, error: null };
+
+  const workbench = cfg.workbench.enabled
+    ? tryRegister(cfg.workbench.accelerator, () => ctx?.toggleWorkbench?.(), "制卡台")
+    : { registered: false, error: null };
+
+  if (cfg.autoLaunch !== isAutoLaunchOn()) applyAutoLaunch(cfg.autoLaunch);
+
+  status = {
+    quickCapture: { enabled: cfg.quickCapture.enabled, accelerator: cfg.quickCapture.accelerator, ...capture },
+    addMaterial: {
+      enabled: cfg.addMaterial.enabled,
+      accelerator: cfg.addMaterial.accelerator,
+      ...addMaterial,
+      error: addMaterial.error || (cfg.addMaterial.conflictWithCapture ? "两个快捷键不能相同" : null)
+    },
+    workbench: {
+      enabled: cfg.workbench.enabled,
+      accelerator: cfg.workbench.accelerator,
+      ...workbench,
+      error: workbench.error || (cfg.workbench.conflict ? "与另一个全局快捷键相同，已回落默认" : null)
+    },
+    hideOnBlur: cfg.quickCapture.hideOnBlur,
+    autoLaunch: cfg.autoLaunch
+  };
+  return status;
+}
+
+function getStatus() {
+  return { ...status, autoLaunch: status.autoLaunch || isAutoLaunchOn() };
+}
+
+// ---------- 捕获窗口（单例 + 就绪后显示） ----------
+
+function themeBackground() {
+  try {
+    const mode = ctx?.readSettings?.()?.theme?.mode;
+    // C-37："system" 档按主进程 nativeTheme 解析（新开捕获窗口底色与解析后主题一致、无白闪）；
+    // 未知值维持既有回落浅色（渲染层 resolveThemeMode 对未知值按系统解析，主进程读不到设置时保守回落）。
+    const dark = mode === "dark" || (mode === "system" && nativeTheme.shouldUseDarkColors);
+    return dark ? "#111111" : "#ffffff";
+  } catch {
+    return "#ffffff";
+  }
+}
+
+function createCaptureWindow() {
+  if (captureWin && !captureWin.isDestroyed()) return captureWin;
+  captureWin = new BrowserWindow({
+    width: 560,
+    height: 380,
+    frame: false,
+    show: false,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    backgroundColor: themeBackground(),
+    title: "快速记录",
+    webPreferences: {
+      preload: path.join(__dirname, "preload-capture.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      additionalArguments: ["--bdi-role=capture"] // D248：BDI 桥按窗口角色裁剪（T5）
+    }
+  });
+  const win = captureWin;
+  // 关闭 = 隐藏（单例复用；真正退出应用时才销毁）
+  win.on("close", (e) => {
+    if (quitting) return;
+    e.preventDefault();
+    hideCapture();
+  });
+  win.on("blur", () => {
+    if (readShortcutConfig().quickCapture.hideOnBlur) hideCapture();
+  });
+  win.on("closed", () => {
+    captureWin = null;
+    captureReady = false;
+    pendingShow = false;
+  });
+  // 导航防护（与主窗口同规则）：任何页面级跳转一律拦截，外链交系统浏览器
+  win.webContents.on("will-navigate", (event, url) => {
+    if (url.split("#")[0] === win.webContents.getURL().split("#")[0]) return;
+    event.preventDefault();
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+
+  // D239：载入顺序与主窗口同规（D192 修订）；地址不再写死，统一在 devServer.js
+  loadAppPage(win, { app, fs, distFile: path.join(__dirname, "../dist/capture.html"), page: "capture.html" });
+  return win;
+}
+
+function positionCapture(win) {
+  try {
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const area = display.workArea;
+    const [w] = win.getSize();
+    const [, h] = win.getSize();
+    const x = Math.round(area.x + (area.width - w) / 2);
+    const y = Math.round(area.y + Math.max(24, area.height * 0.18));
+    win.setPosition(x, Math.min(y, area.y + area.height - h - 24));
+  } catch { /* 定位失败不阻塞显示 */ }
+}
+
+function showCapture() {
+  if (CAPTURE_DISABLED) return; // D159：日记与快速记录暂时移除——窗口不再唤起（代码保留）
+  const win = createCaptureWindow();
+  if (!win) return;
+  if (!captureReady || win.webContents.isLoading()) {
+    pendingShow = true;
+    return;
+  }
+  positionCapture(win);
+  win.setBackgroundColor?.(themeBackground());
+  win.show();
+  win.focus();
+  win.webContents.send("capture:shown");
+}
+
+function hideCapture() {
+  flushJournal(); // 隐藏即强制落盘（D34）
+  if (captureWin && !captureWin.isDestroyed() && captureWin.isVisible()) captureWin.hide();
+}
+
+function toggleCapture() {
+  const win = captureWin && !captureWin.isDestroyed() ? captureWin : null;
+  if (win && win.isVisible() && win.isFocused()) hideCapture();
+  else showCapture();
+}
+
+function onRendererReady() {
+  captureReady = true;
+  if (pendingShow) {
+    pendingShow = false;
+    showCapture();
+  }
+}
+
+// ---------- 日记写入编排（草稿节流 / 发送定格 / 广播） ----------
+
+function broadcastJournalChanged(payload, excludeWebContents) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (w.isDestroyed()) continue;
+    if (excludeWebContents && w.webContents === excludeWebContents) continue;
+    w.webContents.send("journal:changed", payload);
+  }
+}
+
+function scheduleJournalPersist() {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    flushJournal();
+  }, PERSIST_TRAILING_MS);
+  if (!persistMaxTimer) {
+    persistMaxTimer = setTimeout(() => {
+      persistMaxTimer = null;
+      flushJournal();
+    }, PERSIST_MAX_MS);
+  }
+}
+
+function flushJournal() {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  if (persistMaxTimer) {
+    clearTimeout(persistMaxTimer);
+    persistMaxTimer = null;
+  }
+  try {
+    return ctx?.db?.flushJournalPersist?.() === true;
+  } catch (err) {
+    console.error("[journal] 日记落盘失败：", err);
+    return false;
+  }
+}
+
+// 草稿续写（输入中，防抖调用）：库内即时写（事务提交）+ persist() 节流
+function saveDraft(content, sender) {
+  const entry = ctx.db.saveJournalDraft(content, { deferPersist: true });
+  scheduleJournalPersist();
+  broadcastJournalChanged({ kind: "draft", entryId: entry?.id || null }, sender);
+  return entry;
+}
+
+// 发送：草稿定格为日记里的一条（db 内部即时落盘），并通知所有窗口刷新
+function sendDraft(content, sender) {
+  const entry = ctx.db.sendJournalDraft(content);
+  flushJournal();
+  broadcastJournalChanged({ kind: "sent", entryId: entry?.id || null, entryDate: entry?.entryDate || null }, sender);
+  return entry;
+}
+
+function notifyJournalChanged(payload, sender) {
+  broadcastJournalChanged(payload, sender);
+}
+
+function prepareQuit() {
+  quitting = true;
+  flushJournal();
+  try {
+    globalShortcut.unregisterAll();
+  } catch { /* 忽略 */ }
+}
+
+function init(options) {
+  ctx = options;
+  applyGlobalShortcuts();
+  return getStatus();
+}
+
+module.exports = {
+  init,
+  normalizeAccelerator,
+  readConfig: readShortcutConfig,
+  applyGlobalShortcuts,
+  getStatus,
+  isAutoLaunchOn,
+  applyAutoLaunch,
+  themeBackground, // 导出仅供测试（tests/window-skin.test.cjs 的 electron 桩单测；C-29 isAutoLaunchOn 同先例）
+  toggleCapture,
+  showCapture,
+  hideCapture,
+  onRendererReady,
+  saveDraft,
+  sendDraft,
+  flushJournal,
+  scheduleJournalPersist,
+  notifyJournalChanged,
+  prepareQuit
+};

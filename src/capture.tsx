@@ -1,0 +1,52 @@
+// 快速记录窗口入口（v36，M8-A，§5.4 / §6.5.2）
+// 独立窗口（560×380 无框置顶）：主题跟随主应用 → 渲染编辑器 → 通知主进程「就绪」后才 show（防白闪）。
+import "./lib/roWatch"; // D260：RO 自激循环看守（必须早于任何组件创建 ResizeObserver）
+import "./lib/cspReport";
+import React from "react";
+import { createRoot } from "react-dom/client";
+import CaptureEditor, { applyCaptureAppearance } from "./components/CaptureEditor";
+import { WindowSkin } from "./skins/WindowSkin"; // C-31：独立窗口外观挂载点（settings:changed 即时同步换肤 / 动效 / 强调色）
+// v48.89（D132 §6.4）：捕获窗跟随主题插件（最小子集桥：getActive/onChanged）
+import { installThemePluginBridge } from "./lib/themePlugins";
+import { ensureLocaleResources, getLocale } from "./lib/i18n";
+import "./styles/layers.css"; // v49.0 / D170：层序预注册，先于 theme.css
+import "./theme.css";
+
+declare global {
+  interface Window {
+    captureAPI?: {
+      ready(): void;
+      hide(): Promise<boolean>;
+      onShown(callback: () => void): () => void;
+      day(date?: string): Promise<{
+        date: string;
+        count: number;
+        entries: unknown[];
+        draft: import("./lib/journal").JournalEntry | null;
+      }>;
+      draft(): Promise<import("./lib/journal").JournalEntry | null>;
+      draftSave(contentMarkdown: string): Promise<{ ok: boolean; entry: import("./lib/journal").JournalEntry | null }>;
+      draftSend(contentMarkdown: string): Promise<{ ok: boolean; entry: import("./lib/journal").JournalEntry }>;
+      discardDraft(id: string): Promise<boolean>;
+    };
+  }
+}
+
+try {
+  installThemePluginBridge(); // v48.89（D132）：主题插件跟随（桥内自带 try/catch，失败仅告警回落）
+  // v49.66（D237）：语言资源按需装载——缓存语言（localStorage ir.locale）的词典/转换器就绪后再首绘
+  void applyCaptureAppearance()
+    .then(() => ensureLocaleResources(getLocale()))
+    .then(() => {
+      createRoot(document.getElementById("root")!).render(
+        <React.StrictMode>
+          {/* C-31：独立窗口外观挂载点（皮肤 CSS / html[data-skin] / 动效三态与主窗口同步） */}
+          <WindowSkin />
+          <CaptureEditor />
+        </React.StrictMode>
+      );
+    });
+} catch (err) {
+  document.body.textContent = `快速记录启动失败：${err instanceof Error ? err.message : String(err)}`;
+  window.captureAPI?.ready();
+}
