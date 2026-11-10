@@ -179,7 +179,7 @@ Nutation adopts the modern **FSRS 6.0 algorithm** (via the `ts-fsrs` 5.4.2 engin
 
 ### Installation
 - **Windows 10 / Windows 11 64-bit (x64 / ARM64)**.
-- Download the installer (`.exe`) from [GitHub Releases](https://github.com/xiongdy54/Nutation/releases). Upgrades and uninstalls will never delete your local library databases.
+- Download the installer (`.exe`) matching your CPU architecture from [GitHub Releases](https://github.com/xiongdy54/Nutation/releases): `...-win-x64-setup.exe` for Intel/AMD, `...-win-arm64-setup.exe` for Windows on ARM. In-app updates pick the right package automatically. Upgrades and uninstalls will never delete your local library databases.
 
 ### Building from Source
 ```bash

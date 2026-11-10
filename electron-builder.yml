@@ -25,6 +25,45 @@ files:
   - dist/**/*
   - electron/**/*
   - vendor/**/*
+  # v49.108 / D274 依赖裁剪（测量见 docs/design/PACKAGING-SLIMMING-D274.md）：
+  # 负向模式只删不增；node_modules 收集会叠加这些规则，故保留项必须落在未命中的路径。
+  # - @napi-rs/canvas 是 pdfjs-dist 的 optional Node canvas；主进程只做文本抽取，
+  #   实测屏蔽后 PDF 夹具抽取结果逐字节一致（未来若加主进程栅格化需恢复）。
+  - "!node_modules/@napi-rs/**"
+  # - pdfjs-dist：主进程用 legacy/build/pdf(.worker).mjs + cmaps + standard_fonts；
+  #   现代 build/ 与 web/ 已被 Vite 构建期打进 dist/assets，wasm/iccs 由 dist/pdfjs 提供。
+  - "!node_modules/pdfjs-dist/build/**"
+  - "!node_modules/pdfjs-dist/web/**"
+  - "!node_modules/pdfjs-dist/wasm/**"
+  - "!node_modules/pdfjs-dist/iccs/**"
+  - "!node_modules/pdfjs-dist/image_decoders/**"
+  - "!node_modules/pdfjs-dist/legacy/web/**"
+  - "!node_modules/pdfjs-dist/legacy/image_decoders/**"
+  - "!node_modules/pdfjs-dist/legacy/build/*.min.mjs"
+  - "!node_modules/pdfjs-dist/legacy/build/pdf.sandbox.mjs"
+  # - sql.js：词典导入只 require 包入口 dist/sql-wasm.js，并由它 locateFile 同目录 sql-wasm.wasm。
+  - "!node_modules/sql.js/dist/sql-asm*.js"
+  - "!node_modules/sql.js/dist/worker.sql-asm*.js"
+  - "!node_modules/sql.js/dist/*debug*"
+  - "!node_modules/sql.js/dist/*.zip"
+  - "!node_modules/sql.js/dist/sql-wasm-browser*"
+  - "!node_modules/sql.js/dist/worker.sql-wasm.js"
+  # - better-sqlite3：deps/src/build 均为编译期文件；运行时只按 platform/arch 选 prebuilds 中的一个。
+  - "!node_modules/better-sqlite3/deps/**"
+  - "!node_modules/better-sqlite3/src/**"
+  - "!node_modules/better-sqlite3/build/**"
+  # - opencc-js：包入口只落 dist/umd/full.js（require）与 dist/esm/full.js（import），其余变体为死代码。
+  - "!node_modules/opencc-js/dist/esm-lib/**"
+  - "!node_modules/opencc-js/dist/esm/cn2t.js"
+  - "!node_modules/opencc-js/dist/esm/t2cn.js"
+  - "!node_modules/opencc-js/dist/umd/cn2t.js"
+  - "!node_modules/opencc-js/dist/umd/t2cn.js"
+  # - 编译期头文件与全仓 source map 不参与运行时。
+  - "!node_modules/node-addon-api/**"
+  - "!**/*.map"
+  # - jszip 的 .jekyll-metadata 是仓库元数据（二进制、无扩展名）；electron-builder 的
+  #   smartUnpack 会因它把整个 jszip 包解到 asar 外（实测 748 KB）。排除后 jszip 回 asar。
+  - "!node_modules/jszip/.jekyll-metadata"
 asar: true
 asarUnpack:
   # fsrs-rs-nodejs（NAPI 预编译）等原生绑定不能从 asar 内 dlopen
@@ -43,6 +82,10 @@ asarUnpack:
 # 源码编译：本机 win-arm64 与 CI linux-arm64 交叉编译都会因缺少对应工具链失败（dist:win 实测）。
 npmRebuild: false
 compression: normal
+# v49.108 / D274：按目标平台/架构裁掉 better-sqlite3 的非目标 prebuilds 与
+# 非目标 fsrs-rs-nodejs 平台包（CI 为跨架构出包会同时装两套）。平台级 files 会破坏
+# 顶层白名单（见 win 段注释），所以用 afterPack 钩子。
+afterPack: scripts/after-pack-prune-native.cjs
 win:
   target:
     - target: nsis
@@ -50,7 +93,20 @@ win:
         - x64
         - arm64 # D-01（2026-10-24 用户拍板）：放弃 ia32，Windows 出 x64 + arm64
   icon: build/icon.ico
+  # v49.108 / D274：应用只提供简/繁/英/日四语，Chromium 其余 51 个 locale 不打包。
+  electronLanguages:
+    - en-US
+    - zh-CN
+    - zh-TW
+    - ja
+  # 平台级 prebuilds 的裁剪放在 afterPack（scripts/after-pack-prune-native.cjs）：
+  # electron-builder 26 把平台级 `files` 字符串并入 defaultMatcher，当顶层 files 是
+  # FileSet 对象时会顶掉顶层白名单（实测把整个仓库打进 asar），故不在此处写 files。
 nsis:
+  # v49.108 / D274：不再生成 x64+ARM64 二合一安装包（v0.0.1 实测 315,999,038 B，
+  # 约等于两个单架构包之和）。artifactName 已含 ${arch}，关闭后仍产 x64 / arm64 两个包；
+  # electron-updater 6.8.9 按 process.arch 从 latest.yml files[] 选对应架构，用户下载量减半。
+  buildUniversalInstaller: false
   # 向导式安装：允许自选安装目录、允许用户决定是否创建快捷方式（已确认决策）
   oneClick: false
   perMachine: false
@@ -85,6 +141,15 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   notarize: true # 读取 APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID；为空时自动跳过
+  # v49.108 / D274：macOS 的 locale 目录名是 <lang>.lproj（zh_CN / zh_TW / en），
+  # 与 Windows/Linux 的 zh-CN.pak / en-US.pak 命名不同；electron-builder 按
+  # 小写全等或 `<lang>[-_]` 前缀匹配，写 zh-CN 会匹配不到 zh_CN.lproj。
+  electronLanguages:
+    - en-US
+    - en
+    - zh_CN
+    - zh_TW
+    - ja
 # C-24（2026-10-24）：executableArgs 写进 .desktop 启动项（Exec 行跟 --ozone-platform=x11），
 # 与 electron/main.js 顶部的运行期开关双保险（报告 C-24 第 6 步；appendSwitch 是否足够早生效、
 # 两者是否都需要，待 Wayland 实机验证 U-03）。
@@ -104,3 +169,8 @@ linux:
         - arm64
   executableArgs:
     - --ozone-platform=x11
+  electronLanguages:
+    - en-US
+    - zh-CN
+    - zh-TW
+    - ja
