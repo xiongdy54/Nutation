@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/xiongdy54/Nutation",
   "repository": "github:xiongdy54/Nutation",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "main": "electron/main.js",
   "engines": {
