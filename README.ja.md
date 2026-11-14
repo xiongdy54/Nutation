@@ -62,7 +62,7 @@ flowchart LR
 ### 1. 構造マップ：木を見る前に森を見る
 
 <div align="center">
-<video src="docs/assets/readme/structure-ja.mp4" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/24aa81e7-4e09-4212-bc8f-a54c21f105ec" controls width="100%"></video>
 <p><sub>本文追従構造 → 構造全景 → 本文へ復帰。巨視的構造と微視的論述を自由に行き来。</sub></p>
 </div>
 
@@ -121,7 +121,7 @@ SuperMemo 創始者 Piotr Woźniak の「インクリメンタルリーディン
 - **専門用語の抽出**：重要な術語を専用の用語リストとして単離。原文の主張や不確実性を曲げることなく、本質的な意味を提示します。
 
 <div align="center">
-<video src="docs/assets/readme/ai-explain-ja.mp4" controls width="560"></video>
+<video src="https://github.com/user-attachments/assets/63566228-7ab6-468b-8dba-6562748133f2" controls width="560"></video>
 <p><sub>簡潔解釈：あいまいさの指摘、一文一意への分解、用語抽出。</sub></p>
 </div>
 
@@ -132,7 +132,7 @@ SuperMemo 創始者 Piotr Woźniak の「インクリメンタルリーディン
 短時間で得た情報は急速に忘却されます（エビングハウスの忘却曲線）。作業記憶を長期記憶へ転換するには、**適切な間隔を空けた能動想起（Active Recall）**が不可欠です。
 
 <div align="center">
-<video src="docs/assets/readme/fsrs-ja.mp4" controls width="760"></video>
+<video src="https://github.com/user-attachments/assets/5cd89d54-8d54-4f7f-acd2-11d066d0b4a1" controls width="760"></video>
 <p><sub>FSRS 復習画面：問題提示 → 3D 反転で解答確認 → 4段階の評価。</sub></p>
 </div>
 
@@ -143,7 +143,7 @@ SuperMemo 創始者 Piotr Woźniak の「インクリメンタルリーディン
 - **CardLint 品質チェック**：AI 作問と手動作問の双方を対象とした、完全ローカルの静的品質検証エンジン。Piotr Wozniak の知識定式化原則に基づき、最小情報原則の徹底（過剰な解答長、過長な問題文、過剰な穴埋めの検知）にとどまらず、認知の罠の防止（正誤判定・Yes/No 形式の排除、過度な列挙の抑制、自由想起の合格基準明記の強制）、文脈プレフィックスによるネタバレ防止、見解の帰属元や人名・正式名称の厳格性検証、変動しやすい情報のタイムスタンプ確認、そしてローカル類似検索と連動した重複・競合の検知まで多面的に検証します。
 
 <div align="center">
-<video src="docs/assets/readme/occlusion-ja.mp4" controls width="760"></video>
+<video src="https://github.com/user-attachments/assets/078b363d-3f3d-4271-905e-0d7a9736aec9" controls width="760"></video>
 <p><sub>画面キャプチャ＆画像穴埋め作問の完全ループ：グローバルショートカットで起動 → ドラッグで画面領域（本格麻婆豆腐レシピ・材料一覧）をキャプチャ → 矩形・楕円ツールで重要材料を精密に遮蔽 → カード作成から復習画面での出題・答え表示・FSRS評価までの一貫した閉環。</sub></p>
 </div>
 

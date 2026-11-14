@@ -62,7 +62,7 @@ Cognitive science proves that without a high-level cognitive schema, working mem
 ### 1. Structure Maps: Forest Before Trees
 
 <div align="center">
-<video src="docs/assets/readme/structure-en.mp4" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/4f29e920-8e15-48a2-8d33-95ecf17624fc" controls width="100%"></video>
 <p><sub>Inline structure → panoramic overview → back to reader. Seamless transition between macro structure and micro detail.</sub></p>
 </div>
 
@@ -121,7 +121,7 @@ Academic and technical literature is frequently obscured by convoluted clauses, 
 - **Glossary Isolation**: Isolates domain terminology into clear definitions while preserving original nuances and uncertainties without patronizing over-summarization.
 
 <div align="center">
-<video src="docs/assets/readme/ai-explain-en.mp4" controls width="560"></video>
+<video src="https://github.com/user-attachments/assets/93746063-7d09-4bf2-80cf-6d5b8d38dc1a" controls width="560"></video>
 <p><sub>Structured explanation: linguistic disambiguation, decomposed sentences, and isolated terminology.</sub></p>
 </div>
 
@@ -132,7 +132,7 @@ Academic and technical literature is frequently obscured by convoluted clauses, 
 Short-term memory decays exponentially (the Ebbinghaus Forgetting Curve). Transitioning short-term working memory into long-term retention requires **deliberate active recall scheduled across increasing intervals**.
 
 <div align="center">
-<video src="docs/assets/readme/fsrs-en.mp4" controls width="760"></video>
+<video src="https://github.com/user-attachments/assets/7286a6f4-9343-4184-8d6e-9265b940564e" controls width="760"></video>
 <p><sub>FSRS review session: active recall prompt → 3D card reveal → 4-grade rating feedback.</sub></p>
 </div>
 
@@ -143,7 +143,7 @@ Summoned in place (`Ctrl+K`) or as an independent, always-on-top window (`Ctrl+A
 - **CardLint Quality Engine**: A strictly local, static validation engine applied equally to AI-generated and manually authored cards. Grounded in Piotr Wozniak's knowledge formulation principles, it extends far beyond the Minimum Information Principle (intercepting overloaded answers, overlong prompts, and excessive cloze deletions): it systematically intercepts cognitive pitfalls (preventing yes/no questions and broad enumerations, enforcing explicit recall thresholds for collection questions), guards against clue leakage in context prefixes, enforces academic rigour (requiring view attributions and full entity names), prompts for date stamps on volatile facts, and coordinates with local similarity search to prevent redundant or conflicting cards.
 
 <div align="center">
-<video src="docs/assets/readme/occlusion-en.mp4" controls width="760"></video>
+<video src="https://github.com/user-attachments/assets/615481d4-82aa-429b-822c-0466a9e8e22f" controls width="760"></video>
 <p><sub>Cross-app screen capture & image occlusion full-loop: global shortcut summons workbench → drag-to-crop screen region (authentic Mapo Tofu recipe) → precise rectangle & ellipse occlusion on key ingredient targets → one-click card creation & seamless review loop with question prompt, answer reveal, and FSRS grading.</sub></p>
 </div>
 

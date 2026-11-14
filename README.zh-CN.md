@@ -62,7 +62,7 @@ flowchart LR
 ### 1. 结构导图：先见森林，再见树木
 
 <div align="center">
-<video src="docs/assets/readme/structure-zh.mp4" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/d30cd3c6-c554-4761-b95a-25fd6708eff3" controls width="100%"></video>
 <p><sub>随文结构 → 结构全景 → 返回阅读。宏观结构与微观论述自由切换。</sub></p>
 </div>
 
@@ -126,7 +126,7 @@ flowchart LR
 - **术语独立定义**：将核心术语抽离在专用术语表中，保持原文主张与不确定性，不增不减、不作过度低幼化的摘要，直达文字背后的真实含义。
 
 <div align="center">
-<video src="docs/assets/readme/ai-explain-zh.mp4" controls width="560"></video>
+<video src="https://github.com/user-attachments/assets/5884b34a-633b-49ae-88f3-bc54e763add8" controls width="560"></video>
 <p><sub>简明解释：提取歧义、逐句拆解单意图短句、提取专业术语。</sub></p>
 </div>
 
@@ -137,7 +137,7 @@ flowchart LR
 大脑对单次输入的信息具有极高的遗忘倾向（艾宾浩斯遗忘曲线）。要把短期工作记忆固化为长期记忆，必须依赖**定时的主动提取（Active Recall）与间隔重复（Spaced Repetition）**。
 
 <div align="center">
-<video src="docs/assets/readme/fsrs-zh.mp4" controls width="760"></video>
+<video src="https://github.com/user-attachments/assets/0b05398e-941e-4a1e-9fc6-9babc49b7c71" controls width="760"></video>
 <p><sub>FSRS 复习会话：呈现问题 → 3D 翻面核对 → 四档评分反馈。</sub></p>
 </div>
 
@@ -150,7 +150,7 @@ flowchart LR
 - **CardLint 质量检查**：纯本地静态质检引擎（对 AI 与手动制卡一视同仁）。基于 Piotr Wozniak 知识表述原则，不仅严格把关原子化与最小信息原则（拦截答案过载、正面过长与挖空过多），更深度检查认知陷阱（拦截是否判断题、宽泛集合题，强制集合问答标注合格线）、严防前缀泄题（检查上下文前缀并拦截答案泄露）、核查学术严谨性（观点归属与实体全名规范）、提示易变内容时间戳，并协同本地相似检索防范重复与冲突。
 
 <div align="center">
-<video src="docs/assets/readme/occlusion-zh.mp4" controls width="760"></video>
+<video src="https://github.com/user-attachments/assets/bd8af67d-1ad3-40c3-a34e-36a44b890179" controls width="760"></video>
 <p><sub>跨应用截图与图片遮挡制卡全闭环：全局快捷键呼出制卡台 → 拖拽框选屏幕插图（经典麻婆豆腐菜谱配方） → 矩形/椭圆精确遮蔽关键配料考点 → 一键制卡并跳转复习页面完成正面遮挡、背面揭示与 FSRS 评分全闭环。</sub></p>
 </div>
 
