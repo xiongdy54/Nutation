@@ -7,6 +7,7 @@ const path = require("path");
 const fs = require("fs");
 const { loadAppPage } = require("./devServer"); // D239：载入顺序 + dev server 地址唯一来源
 const appLog = require("./appLog"); // D260：载入失败/渲染进程消失落到主日志（否则只剩一片白窗，无迹可查）
+const { tMain } = require("./i18n"); // 审计 #66：窗口标题走主进程 i18n（D182 同一自然键制）
 
 let win = null;
 let ctx = null;
@@ -71,7 +72,7 @@ function createWindow() {
     minHeight: 520,
     frame: false,
     show: false,
-    title: "制卡台",
+    title: tMain("制卡台"),
     icon: process.platform === "win32" ? path.join(__dirname, "icon.ico") : path.join(__dirname, "icons", "icon-light.png"), // C-28：非 Windows 用 PNG（ico 只有 Windows 认；与主窗口 icons/ PNG 同目录）
     alwaysOnTop: pinned,
     backgroundColor: themeBackground(),
@@ -83,6 +84,8 @@ function createWindow() {
       additionalArguments: ["--bdi-role=workbench"] // D248：BDI 桥按窗口角色裁剪（T5）
     }
   });
+  // 审计 F-13（D285）：窗口标题由主进程 tMain 决定，不让页面写死的中文 <title> 覆盖；语言切换经 retitle() 更新。
+  win.on("page-title-updated", (e) => e.preventDefault());
   const w = win;
   w.on("close", (e) => {
     if (quitting) return;
@@ -413,4 +416,9 @@ function init(options) {
 }
 
 // themeBackground 导出仅供测试（tests/window-skin.test.cjs 的 electron 桩单测；C-29 isAutoLaunchOn 同先例）
-module.exports = { init, control, show, hide, toggle, prepareQuit, themeBackground, resize, whenResizeIdle };
+/** 审计 F-13：界面语言变更后更新已创建窗口的标题（main.js settings:set 钩子调用） */
+function retitle() {
+  if (win && !win.isDestroyed()) win.setTitle(tMain("制卡台"));
+}
+
+module.exports = { init, retitle, control, show, hide, toggle, prepareQuit, themeBackground, resize, whenResizeIdle };

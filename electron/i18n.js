@@ -5,6 +5,7 @@
 "use strict";
 
 const { readJsonObject } = require("./jsonFile");
+const zhTwOverrides = require("./zhTwOverrides.json");
 
 const LANGS = ["zh-CN", "zh-TW", "en", "ja"];
 const DEFAULT_LANG = "zh-CN";
@@ -28,7 +29,18 @@ const EN = {
   "图片": "Images",
   "选择备份保存位置": "Choose where to save the backup",
   "选择备份文件": "Choose a backup file",
-  "备份文件": "Backup files"
+  "备份文件": "Backup files",
+  // 审计 #66：DB_TOO_NEW 对话框（main.js）与快速记录窗口标题（quickCapture.js）
+  "数据版本过新": "Data version is too new",
+  "数据文件夹：": "Data folder: ",
+  "本程序不会修改这份数据。": "This app will not modify this data.",
+  "快速记录": "Quick capture",
+  // D290（F43 F1-5）：恢复换入成功但备份缺图的启动告警（main.js）
+  "恢复完成，但部分图片缺失": "Restore complete, but some images are missing",
+  "备份恢复成功，但有 {n} 个图片文件在备份包里缺失。": "Restore succeeded, but {n} image file(s) are missing from the backup.",
+  "这些图片对应的卡片仍会显示，但图片本身已丢失。建议从原始备份重新恢复。缺失清单：":
+    "Cards that use these images will still appear, but the images themselves are lost. Consider restoring again from the original backup. Missing files:",
+  "知道了": "Got it"
 };
 
 const JA = {
@@ -48,7 +60,18 @@ const JA = {
   "图片": "画像",
   "选择备份保存位置": "バックアップの保存先を選択",
   "选择备份文件": "バックアップファイルを選択",
-  "备份文件": "バックアップファイル"
+  "备份文件": "バックアップファイル",
+  // 审计 #66：DB_TOO_NEW 对话框（main.js）与快速记录窗口标题（quickCapture.js）
+  "数据版本过新": "データバージョンが新しすぎます",
+  "数据文件夹：": "データフォルダー：",
+  "本程序不会修改这份数据。": "このアプリはこのデータを変更しません。",
+  "快速记录": "クイックメモ",
+  // D290（F43 F1-5）：恢复换入成功但备份缺图的启动告警（main.js）
+  "恢复完成，但部分图片缺失": "復元完了、ただし一部の画像がありません",
+  "备份恢复成功，但有 {n} 个图片文件在备份包里缺失。": "復元は成功しましたが、バックアップに {n} 個の画像ファイルがありません。",
+  "这些图片对应的卡片仍会显示，但图片本身已丢失。建议从原始备份重新恢复。缺失清单：":
+    "これらの画像を使うカードは表示されますが、画像自体は失われています。元のバックアップから再度復元することをお勧めします。不足ファイル：",
+  "知道了": "了解"
 };
 
 // ---------- 状态 ----------
@@ -62,12 +85,10 @@ let twConvert = null;
 let twFailed = false;
 let openccPromise = null;
 const twCache = new Map();
-const TW_OVERRIDES = [
-  ["材料导图", "材料心智圖"],
-  ["导图", "心智圖"],
-  ["制卡", "製卡"],
-  ["批注", "註解"]
-];
+// F-9：与渲染层共用 electron/zhTwOverrides.json（最长优先，保持原有覆盖方式）
+const TW_OVERRIDES = Object.keys(zhTwOverrides)
+  .sort((a, b) => b.length - a.length)
+  .map((k) => [k, zhTwOverrides[k]]);
 
 function ensureTwConvert() {
   if (twConvert || twFailed) return twConvert;
@@ -76,26 +97,32 @@ function ensureTwConvert() {
       .then((mod) => {
         const conv = (mod.default || mod).Converter({ from: "cn", to: "twp" });
         twConvert = conv;
+        // D237 同规（渲染层 src/lib/i18n.ts）：装载完成即作废旧结果——此前只经覆盖表的取词不得留存
+        twCache.clear();
         return conv;
       })
       .catch(() => {
         twFailed = true;
+        twCache.clear();
         return null;
       });
   }
   // 同步语境（托盘/对话框都是同步取词）——首帧 zh-TW 若转换器未就绪则回落原文，
-  // 转换器就绪后（毫秒级）由 rebuildTray 触发的新一轮取词即为繁体
+  // 该结果**不入缓存**（见 toZhTw），故转换器就绪后由 rebuildTray 触发的新一轮取词即为完整繁体
   return twConvert;
 }
 
 function toZhTw(s) {
   const cached = twCache.get(s);
   if (cached !== undefined) return cached;
+  const conv = ensureTwConvert();
+  // 首帧转换器仍在装载：直接返回原文（不套覆盖表），且不入缓存——
+  // 与 ensureTwConvert 的注释一致；就绪后 rebuildTray 的新一轮取词才拿完整繁体。
+  if (!conv && !twFailed) return s;
   let out = s;
   for (const [k, v] of TW_OVERRIDES) {
     if (out.includes(k)) out = out.split(k).join(v);
   }
-  const conv = ensureTwConvert();
   if (conv) {
     try {
       out = conv(out);
@@ -103,7 +130,8 @@ function toZhTw(s) {
       /* 转换失败回落覆盖后文本 */
     }
   }
-  twCache.set(s, out);
+  // D237：未就绪路径已提前返回且不缓存；这里只缓存「转换器就绪」或「转换器失败（降级终态）」的结果。
+  if (conv || twFailed) twCache.set(s, out);
   return out;
 }
 

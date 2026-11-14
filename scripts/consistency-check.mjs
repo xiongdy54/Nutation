@@ -2,12 +2,13 @@
 // 一致性机器闸门（C-35b，报告 C-35 修复步骤 2）。纯 Node、无依赖、亚秒级。
 // 失败时退出码 1，并逐条打印「文件:行 规则 修法」。
 //
-// 8 条规则（报告 C-35 规则表）：
+// 9 条规则（报告 C-35 规则表 + 审计 F-11）：
 //   1. src CSS 无未定义 Token（同 F09 E1 + setProperty 豁免；CSS 注释先剥离——注释里的
 //      示例代码不算引用，报告快照后新出现的注释假阳性不据此放宽基线）。
 //   2. 业务代码不写颜色字面量（#hex / rgb(a)( / hsl(a)(，跳过注释行）；
 //      COLOR_ALLOW 豁免写在脚本顶部；其余文件按「文件 → 次数」棘轮。
-//   3. !important 与内联 <svg> 只许变少（棘轮）。
+//   3. !important 与内联 <svg> 只许变少（棘轮）。计数前剥注释——注释里提到 !important / <svg>
+//      是文档措辞不是声明（CSS 走 stripCssComments；TS/TSX 走 stripJsComments 单遍扫描）。
 //   4. 动效时长不写死在 JS/TS（C-32 已完成 → 目标 0）。
 //   5. 编辑器白名单（docs/EDIT-CONTRACT.md：textarea 白名单 / contentEditable=0 /
 //      ReactMarkdown 仅 ReadMarkdown.tsx；C-34 已完成 → 硬检查）。
@@ -20,6 +21,10 @@
 //      豁免写在脚本顶部（每条附证据）；其余新增一律改用 .reveal-on-hover 工具类
 //      （src/theme.css「悬停显形工具类」节，约定 docs/UI-CONVENTIONS.md）。
 //   8. 子进程调用 skin-audit 与 i18n-check，任一退出码非 0 即失败。
+//   9. CSS 颜色字面量（F-11 闸门）：src/**/*.css 中，除「只定义自定义属性的 Token 块」、
+//      `var(--x, fallback)` 回落位置、以及行内 consistency-allow: mask 注释豁免外，
+//      #hex / rgb(a)() / hsl(a)() 一律计数；总数按棘轮只许变小（基线 0）。
+//      传 `--css-color-check <file>` 可对单个文件独立扫描（供 tests/css-hygiene.test.cjs 使用）。
 //
 // 基线 scripts/consistency-baseline.json 只允许变小：
 //   当前值 < 基线 → 提示 `node scripts/consistency-check.mjs --update-baseline` 收紧；
@@ -33,6 +38,15 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BASELINE_FILE = path.join(ROOT, "scripts", "consistency-baseline.json");
 const UPDATE = process.argv.includes("--update-baseline");
+// 被 tests/css-hygiene.test.cjs 动态 import 时只取函数，不执行闸门主体 / 不退出进程
+const IS_MAIN = (() => {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
 
 // —— 规则 2 豁免：本来就「应该」含颜色值的文件（报告 C-35 证据 3）——
 const COLOR_ALLOW = [
@@ -135,6 +149,165 @@ const isCommentLine = (line) => {
   return s.startsWith("//") || s.startsWith("/*") || s.startsWith("*");
 };
 
+// —— 规则 9 辅助（F-11）：CSS 颜色字面量 ——
+/** 把注释替换成等长空白（保留换行），使索引/行号与原文一致 */
+function blankCssComments(t) {
+  return t.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+}
+
+const CSS_COLOR_RE = /#[0-9a-fA-F]{3,8}\b|\brgba?\([^)]*\)|\bhsla?\([^)]*\)/g;
+
+/** `var(--x, fallback)` 的回落段（相对 value 的区间；嵌套 var() 一并覆盖） */
+function varFallbackRanges(value) {
+  const ranges = [];
+  const re = /\bvar\(/g;
+  let m;
+  while ((m = re.exec(value))) {
+    const open = m.index + 3;
+    let depth = 0;
+    let comma = -1;
+    for (let i = open; i < value.length; i++) {
+      const c = value[i];
+      if (c === "(") depth++;
+      else if (c === ")") {
+        depth--;
+        if (depth === 0) {
+          if (comma >= 0) ranges.push([comma + 1, i]);
+          break;
+        }
+      } else if (c === "," && depth === 1 && comma < 0) comma = i;
+    }
+  }
+  return ranges;
+}
+
+/** 解析 CSS 规则块与声明（注释须先 blankCssComments；prelude 用于识别 Token 块） */
+function parseCssDecls(text) {
+  const blocks = [];
+  const stack = [];
+  let segStart = 0;
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      continue;
+    }
+    if (c === "{") {
+      const block = { prelude: text.slice(segStart, i).trim(), decls: [] };
+      blocks.push(block);
+      stack.push(block);
+      segStart = i + 1;
+      continue;
+    }
+    if (c === "}" || c === ";") {
+      if (stack.length) {
+        const raw = text.slice(segStart, i);
+        const lead = raw.search(/\S/);
+        if (lead >= 0) {
+          const decl = raw.slice(lead);
+          const colon = decl.indexOf(":");
+          if (colon > 0) {
+            const prop = decl.slice(0, colon).trim();
+            if (/^(--[\w-]+|[a-zA-Z-]+)$/.test(prop)) {
+              stack[stack.length - 1].decls.push({
+                prop,
+                value: decl.slice(colon + 1),
+                valueStart: segStart + lead + colon + 1,
+              });
+            }
+          }
+        }
+      }
+      if (c === "}") stack.pop();
+      segStart = i + 1;
+      continue;
+    }
+  }
+  return blocks;
+}
+
+/** 收集非豁免的 CSS 颜色字面量：跳过只有自定义属性的 Token 块、var() 回落、allow 行 */
+function collectCssColorLiterals(text) {
+  const bare = blankCssComments(text);
+  const lines = text.split("\n");
+  const hits = [];
+  for (const block of parseCssDecls(bare)) {
+    if (block.decls.length && block.decls.every((d) => d.prop.startsWith("--"))) continue;
+    for (const d of block.decls) {
+      const ranges = varFallbackRanges(d.value);
+      CSS_COLOR_RE.lastIndex = 0;
+      let m;
+      while ((m = CSS_COLOR_RE.exec(d.value))) {
+        if (ranges.some(([a, z]) => m.index >= a && m.index < z)) continue;
+        const ln = lineAt(bare, d.valueStart + m.index);
+        if ((lines[ln - 1] || "").includes("consistency-allow")) continue;
+        hits.push({ line: ln, value: m[0], selector: block.prelude });
+      }
+    }
+  }
+  return hits;
+}
+
+// 单文件扫描模式（供 tests/css-hygiene.test.cjs 注入样例）：退出码＝是否仍有违规
+const CSS_COLOR_CHECK = (() => {
+  const i = process.argv.indexOf("--css-color-check");
+  return i >= 0 ? process.argv[i + 1] : null;
+})();
+if (CSS_COLOR_CHECK) {
+  const file = path.resolve(CSS_COLOR_CHECK);
+  const hits = collectCssColorLiterals(fs.readFileSync(file, "utf8"));
+  for (const h of hits) console.log(`${file}:${h.line} ${h.value}`);
+  console.log(`[consistency] CSS 颜色字面量 ${hits.length} 处`);
+  process.exit(hits.length ? 1 : 0);
+}
+/** 剥 JS/TS 注释（规则 3 专用，逐行扫描）。
+ *  为什么不能直接套 stripCssComments：本仓有 9 处 `//` 注释里含块注释开符（skins 目录通配、
+ *  `ui/` 事件名通配、foliate 豁免目录通配），块注释正则会把它们当开注释符、一路吞掉后面的
+ *  **真实代码**，从而漏计真违规。为什么不用全文件单遍扫描：正则字面量里的引号
+ *  （如 `.replace(/"/g, …)`、字符类白名单正则）会让引号状态失步并级联吞掉后续整段代码。
+ *  折中＝块注释与模板字面量状态跨行传递，单/双引号状态**每行重置**——失步最多毁一行。
+ *  字面量内容原样保留（模板里的真实 `<svg>` 照计），块注释换成一个空格、行注释保留换行，
+ *  行号不变。棘轮口径：宁可多计（当场报错）不可少计（静默放行）。 */
+function stripJsComments(t) {
+  let inBlock = false;
+  let inTemplate = false;
+  const out = [];
+  for (const line of t.split("\n")) {
+    let s = "";
+    let i = 0;
+    let quote = inTemplate ? "`" : null;
+    while (i < line.length) {
+      const c = line[i];
+      const d = line[i + 1];
+      if (inBlock) {
+        if (c === "*" && d === "/") { inBlock = false; i += 2; s += " "; } else i++;
+        continue;
+      }
+      if (quote) {
+        if (c === "\\") { s += line.slice(i, i + 2); i += 2; continue; }
+        s += c;
+        if (c === quote) quote = null;
+        i++;
+        continue;
+      }
+      if (c === "/" && d === "/") break;
+      if (c === "/" && d === "*") { inBlock = true; i += 2; continue; }
+      if (c === '"' || c === "'" || c === "`") { quote = c; s += c; i++; continue; }
+      s += c;
+      i++;
+    }
+    inTemplate = quote === "`";
+    out.push(s);
+  }
+  return out.join("\n");
+}
+
 const tsFiles = walk(path.join(ROOT, "src"), (n) => /\.(ts|tsx)$/.test(n)).sort();
 const cssFiles = walk(path.join(ROOT, "src"), (n) => n.endsWith(".css")).sort();
 const tsx = tsFiles.map((p) => ({ p: relOf(p), t: fs.readFileSync(p, "utf8") }));
@@ -178,9 +351,16 @@ const colorPerFile = {};
 }
 const colorCounts = Object.fromEntries(Object.entries(colorPerFile).map(([k, v]) => [k, v.length]));
 
-// ---------- 规则 3：!important 与内联 <svg> 只许变少 ----------
-const importantCount = (css.map((c) => c.t).join("\n").match(/!important/g) || []).length;
-const inlineSvgCount = (tsx.map((f) => f.t).join("\n").match(/<svg[\s>]/g) || []).length;
+// ---------- 规则 9：CSS 颜色字面量（F-11；Token 块 / var() 回落 / allow 豁免后计数） ----------
+const cssColorHits = [];
+for (const c of css) {
+  for (const h of collectCssColorLiterals(c.t)) cssColorHits.push({ ...h, file: c.p });
+}
+const cssColorLiteralCount = cssColorHits.length;
+
+// ---------- 规则 3：!important 与内联 <svg> 只许变少（计数前剥注释，注释里的提及不算声明） ----------
+const importantCount = (css.map((c) => stripCssComments(c.t)).join("\n").match(/!important/g) || []).length;
+const inlineSvgCount = (tsx.map((f) => stripJsComments(f.t)).join("\n").match(/<svg[\s>]/g) || []).length;
 
 // ---------- 规则 4：动效时长不写死（C-32 后目标 0） ----------
 {
@@ -300,11 +480,32 @@ for (const [file, base] of Object.entries(baseline.colorLiterals || {})) {
   }
 }
 
+// 规则 9：CSS 颜色字面量（单一总数棘轮，只许变小）
+{
+  const base = baseline.cssColorLiterals;
+  if (base === undefined || typeof base !== "number") {
+    if (!UPDATE) {
+      if (cssColorHits.length) {
+        for (const h of cssColorHits) {
+          fail(`${h.file}:${h.line}`, "规则9 CSS颜色字面量(新基线)", `改用设计 Token（或 var() 回落）；功能性色彩按行加 /* consistency-allow: mask */；当前 ${h.value}`);
+        }
+      } else {
+        fail("scripts/consistency-baseline.json:cssColorLiterals", "规则基线缺失", "用 node scripts/consistency-check.mjs --update-baseline 建立基线（当前 0）");
+      }
+    }
+  } else if (cssColorLiteralCount > base) {
+    for (const h of cssColorHits) {
+      fail(`${h.file}:${h.line}`, "规则9 CSS颜色字面量", `改用设计 Token（或 var() 回落）；当前总数 ${cssColorLiteralCount} > 基线 ${base}（${h.value}）`);
+    }
+  }
+}
+
 // ---------- 收紧提示 ----------
 const tighten = [];
 if (importantCount < (baseline.importantCount ?? Infinity)) tighten.push(`importantCount ${baseline.importantCount} → ${importantCount}`);
 if (inlineSvgCount < (baseline.inlineSvgCount ?? Infinity)) tighten.push(`inlineSvgCount ${baseline.inlineSvgCount} → ${inlineSvgCount}`);
 if (hoverOpacityCount < (baseline.hoverOpacityCount ?? Infinity)) tighten.push(`hoverOpacityCount ${baseline.hoverOpacityCount} → ${hoverOpacityCount}`);
+if (cssColorLiteralCount < (baseline.cssColorLiterals ?? Infinity)) tighten.push(`cssColorLiterals ${baseline.cssColorLiterals} → ${cssColorLiteralCount}`);
 for (const [file, base] of Object.entries(baseline.colorLiterals || {})) {
   const cur = colorCounts[file] ?? 0;
   if (cur < base) tighten.push(`colorLiterals[${file}] ${base} → ${cur}`);
@@ -317,6 +518,7 @@ if (UPDATE) {
     importantCount,
     inlineSvgCount,
     hoverOpacityCount,
+    cssColorLiterals: cssColorLiteralCount,
     colorLiterals: colorCounts,
   };
   // 只许变小：与现有基线逐键比较，任何变大都拒绝
@@ -328,6 +530,7 @@ if (UPDATE) {
   cmp("importantCount", importantCount);
   cmp("inlineSvgCount", inlineSvgCount);
   cmp("hoverOpacityCount", hoverOpacityCount);
+  cmp("cssColorLiterals", cssColorLiteralCount);
   // 基线已存在时，新出现的非零颜色文件不得写入基线（那是放宽——去修代码或走 COLOR_ALLOW）
   if (baseline.colorLiterals) {
     for (const [file, cur] of Object.entries(colorCounts)) {
@@ -348,24 +551,28 @@ if (UPDATE) {
 }
 
 // ---------- 输出 ----------
-const subOk = subAudits.every((s) => s.ok);
-console.log(`[consistency] 规则1 未定义Token = ${violations.filter((v) => v.rule.startsWith("规则1")).length}`);
-console.log(`[consistency] 规则2 颜色字面量文件数 = ${Object.keys(colorCounts).length}（豁免口径外）`);
-console.log(`[consistency] 规则3 !important = ${importantCount} / 内联<svg> = ${inlineSvgCount}`);
-console.log(`[consistency] 规则4 动效时长写死 = ${violations.filter((v) => v.rule.startsWith("规则4")).length}`);
-console.log(`[consistency] 规则5 编辑器白名单违规 = ${violations.filter((v) => v.rule.startsWith("规则5")).length}`);
-console.log(`[consistency] 规则6 IME守卫缺失 = ${violations.filter((v) => v.rule.startsWith("规则6")).length}`);
-console.log(`[consistency] 规则7 hover-opacity = ${hoverOpacityCount}（须为 0：显形走 .reveal-on-hover 或 REVEAL_ALLOW 豁免）`);
-console.log(`[consistency] 规则8 子审计 skin-audit=${subAudits[0].ok ? "OK" : "FAIL"} / i18n-check=${subAudits[1].ok ? "OK" : "FAIL"}`);
+if (IS_MAIN) {
+  console.log(`[consistency] 规则1 未定义Token = ${violations.filter((v) => v.rule.startsWith("规则1")).length}`);
+  console.log(`[consistency] 规则2 颜色字面量文件数 = ${Object.keys(colorCounts).length}（豁免口径外）`);
+  console.log(`[consistency] 规则3 !important = ${importantCount} / 内联<svg> = ${inlineSvgCount}`);
+  console.log(`[consistency] 规则4 动效时长写死 = ${violations.filter((v) => v.rule.startsWith("规则4")).length}`);
+  console.log(`[consistency] 规则5 编辑器白名单违规 = ${violations.filter((v) => v.rule.startsWith("规则5")).length}`);
+  console.log(`[consistency] 规则6 IME守卫缺失 = ${violations.filter((v) => v.rule.startsWith("规则6")).length}`);
+  console.log(`[consistency] 规则7 hover-opacity = ${hoverOpacityCount}（须为 0：显形走 .reveal-on-hover 或 REVEAL_ALLOW 豁免）`);
+  console.log(`[consistency] 规则8 子审计 skin-audit=${subAudits[0].ok ? "OK" : "FAIL"} / i18n-check=${subAudits[1].ok ? "OK" : "FAIL"}`);
+  console.log(`[consistency] 规则9 CSS颜色字面量 = ${cssColorLiteralCount}（Token 块 / var() 回落 / consistency-allow 豁免后）`);
 
-if (violations.length) {
-  console.error(`\n[consistency] ${violations.length} 处违规：`);
-  for (const v of violations) console.error(`  ${v.loc} ${v.rule} —— ${v.fix}`);
-  process.exit(1);
+  if (violations.length) {
+    console.error(`\n[consistency] ${violations.length} 处违规：`);
+    for (const v of violations) console.error(`  ${v.loc} ${v.rule} —— ${v.fix}`);
+    process.exit(1);
+  }
+  if (tighten.length) {
+    console.log("\n[consistency] 棘轮可收紧（只许变小）：node scripts/consistency-check.mjs --update-baseline");
+    for (const t of tighten) console.log(`  - ${t}`);
+  }
+  console.log("[consistency] OK");
+  process.exit(0);
 }
-if (tighten.length) {
-  console.log("\n[consistency] 棘轮可收紧（只许变小）：node scripts/consistency-check.mjs --update-baseline");
-  for (const t of tighten) console.log(`  - ${t}`);
-}
-console.log("[consistency] OK");
-process.exit(0);
+
+export { collectCssColorLiterals };

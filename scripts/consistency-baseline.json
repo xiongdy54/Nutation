@@ -1,7 +1,8 @@
 {
-  "importantCount": 13,
-  "inlineSvgCount": 33,
+  "importantCount": 9,
+  "inlineSvgCount": 28,
   "hoverOpacityCount": 0,
+  "cssColorLiterals": 0,
   "colorLiterals": {
     "src/components/Reader.tsx": 4,
     "src/components/SettingsPanel.tsx": 4,

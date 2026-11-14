@@ -14,6 +14,8 @@ import { isImeComposing } from "../lib/ime";
 import { isTextEntryTarget, isNativeControlKey, isInModal } from "../lib/keyTarget";
 import { cardsApi, parseCloze, type CardDraft } from "../lib/cards";
 import { useSelectionActions } from "../lib/useSelectionActions";
+// 审计 #14：短时提示的唯一计时面（一个 timer ref、显示前清上一条、卸载回收）
+import { useFlash } from "../lib/useFlash";
 import { headingPathAt, tocPathByHref } from "../lib/reader/tocPath";
 import { paragraphContext } from "../lib/selectionContext";
 import type { OcclusionRect, OcclusionShape } from "../lib/occlusion";
@@ -490,12 +492,9 @@ export default function Reader({
    * v48.44（D84）：「打开导图」落点＝侧栏图谱页签（全屏 Overlay 工作区退役）。
    */
   const [resumeOnce] = useState<string | null>(resumeRunId ?? null);
-  const [toast, setToast] = useState<string | null>(null);
   // v25：showToast 上移到各交互回调之前（回调 deps 在渲染期求值，后置声明会触发 TDZ）
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 1800);
-  }, []);
+  // 审计 #14：计时器归 useFlash 统一持有（清上一条 + 卸载回收），不再裸写 setTimeout
+  const [toast, showToast] = useFlash();
 
   const sourceTextRef = useRef("");
   const occlusionSourceRef = useRef<"engine" | "library">("engine");
@@ -1766,27 +1765,37 @@ export default function Reader({
     const ratio = denom > 0 ? Math.min(1, el.scrollTop / denom) : 0;
     // 阅读字数统计：滚动停止时按"视口顶部对齐块"在 DOM 中的累计字符偏移记事件，
     // 当日字数 = 相邻事件正增量之和（往回滚不计；跳回重读不产生负增量）
-    if (itemId) {
-      const all = Array.from(el.querySelectorAll<HTMLElement>("h1, h2, h3, p, li, blockquote"));
-      let charPos = 0;
-      for (let i = 0; i < all.length; i++) {
-        const rect = all[i].getBoundingClientRect();
-        if (rect.top >= -rect.height && rect.top < window.innerHeight * 0.4 && all[i].textContent?.trim()) {
-          charPos = all.slice(0, i).reduce((acc, b) => acc + (b.textContent?.length || 0), 0);
-          break;
-        }
-      }
-      void readingStats.addEvent(itemId, charPos);
-    }
+    //
+    // 审计 #51：原实现两趟全量遍历——第一趟命中后还要 all.slice(0,i).reduce(...) 把前面所有块的
+    // textContent 再读一遍（O(n²)），第二趟为 lastText 又做一次 querySelectorAll + 逐块 rect。
+    // 长 markdown 书上每个去抖 tick 都是上千次强制布局。现改为**单趟**：running 累计字符数，
+    // 两个判据各自记住首次命中——charPos 判据 top >= -height（允许已部分滚过的块），
+    // lastText 判据 top >= 0；后者是前者的子集（height >= 0），故 lastText 命中块恒不早于
+    // charPos 命中块，两者都命中即 break。rect 读取次数从 (i+1)+(j+1) 降到 (j+1)。
+    // 输出与原实现逐值相同：tests/reader-save-progress.test.cjs 用夹具 DOM 对拍旧实现锁定。
+    const blocks = el.querySelectorAll<HTMLElement>("h1, h2, h3, p, li, blockquote");
+    const limit = window.innerHeight * 0.4;
+    let running = 0;
+    let charPos = 0;
+    let charPosHit = false;
     let lastText = "";
-    const blocks2 = el.querySelectorAll<HTMLElement>("h1, h2, h3, p, li, blockquote");
-    for (const b of blocks2) {
+    let lastTextHit = false;
+    for (const b of blocks) {
+      const text = b.textContent;
       const rect = b.getBoundingClientRect();
-      if (rect.top >= 0 && rect.top < window.innerHeight * 0.4 && b.textContent?.trim()) {
-        lastText = b.textContent.trim().slice(0, 140);
-        break;
+      const hasText = Boolean(text && text.trim());
+      if (!charPosHit && rect.top >= -rect.height && rect.top < limit && hasText) {
+        charPos = running; // ＝命中块之前所有块的 textContent.length 之和（含空白块与嵌套重复计数，口径不变）
+        charPosHit = true;
       }
+      if (!lastTextHit && rect.top >= 0 && rect.top < limit && hasText) {
+        lastText = (text || "").trim().slice(0, 140);
+        lastTextHit = true;
+      }
+      if (charPosHit && lastTextHit) break;
+      running += text?.length || 0;
     }
+    if (itemId) void readingStats.addEvent(itemId, charPos);
     onProgress(ratio, lastText);
   }, [onProgress, itemId]);
 
@@ -1875,14 +1884,22 @@ export default function Reader({
       return;
     }
     let cancelled = false;
-    const load = async () => {
+    // 审计 E-5（D285）：①序号守卫——并发 load() 只认最后发起的那次（原先 last-resolver-wins，
+    // 先发后至的旧结果会覆盖新标记）；②cards/changed 只影响制卡计数，复用上次的摘录全集、只重取计数；
+    // ③同一事件循环内的多次变更（workflow/changed 与 cards/changed 常成对触发）合并为一次 load。
+    let loadSeq = 0;
+    let rowsCache: unknown[] | null = null;
+    const load = async (opts?: { reuseRows?: boolean }) => {
+      const mySeq = ++loadSeq;
       try {
+        const reuse = !!opts?.reuseRows && rowsCache !== null;
         const [rows, counts] = await Promise.all([
-          window.workflowAPI?.listAll?.() ?? Promise.resolve([]),
+          reuse ? Promise.resolve(rowsCache as unknown[]) : (window.workflowAPI?.listAll?.() ?? Promise.resolve([])),
           // C-18c：直卡计数改走主进程 SQL 聚合（cards:countByExtract）——10 万卡不再全量取卡到渲染层
           cardsApi.countByExtract().catch(() => ({}) as Record<string, number>)
         ]);
-        if (cancelled) return;
+        if (cancelled || mySeq !== loadSeq) return;
+        rowsCache = rows as unknown[];
         // v48.45（D85）：已制卡数＝**聚合口径**——该条摘录及其全部子孙摘录上的卡之和（用户点名：
         // 子摘录、子子摘录以及更下层的摘录产生的制卡都算进去）。直卡计数已由主进程聚合（C-18c），
         // 这里只沿父→子邻接表聚合。
@@ -1918,9 +1935,22 @@ export default function Reader({
         /* 标记是增强信息：取不到就不画，阅读/制卡链路不受影响 */
       }
     };
+    let scheduled = false;
+    let needRows = false;
+    const scheduleLoad = (rowsChanged: boolean) => {
+      needRows = needRows || rowsChanged;
+      if (scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        const reuseRows = !needRows;
+        needRows = false;
+        void load({ reuseRows });
+      });
+    };
     void load();
-    const offWorkflow = eventBus.on("workflow/changed", () => void load());
-    const offCards = eventBus.on("cards/changed", () => void load());
+    const offWorkflow = eventBus.on("workflow/changed", () => scheduleLoad(true));
+    const offCards = eventBus.on("cards/changed", () => scheduleLoad(false));
     // 主题/强调色一变，注入 iframe 的高亮字面值要重算——但**必须在主题真正落地之后**：
     // changeReaderTheme 是先 applyAppearance 再 onSwitchAppTheme，此刻 body 还是旧档，
     // 在 applyAppearance 里重算会拿到旧色（实测：切回纸白后 iframe 里仍是深色档的蓝）。
@@ -2719,7 +2749,6 @@ export default function Reader({
         {/* D88 §8：右侧制卡面板（手动态/AI 态经 SelectionPanels 换容器）；dock 头 meta＝材料名（§8.2） */}
         <SelectionPanels
           sel={selActions}
-          selectionText={selection?.text ?? null}
           nowTick={nowTick}
           elapsedSec={elapsedSec}
           dockMeta={title || sourceTitle || undefined}

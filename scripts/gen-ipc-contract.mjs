@@ -14,7 +14,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PRELOAD = path.join(ROOT, "electron", "preload.js");
 const OUT = path.join(ROOT, "docs", "ipc-contract.json");
 
-// 提取单个方法体里第一个通道调用（invoke/send/on）——preload.js 实测 285 方法 = 285 调用（严格 1:1）
+// 提取单个方法体里第一个通道调用（invoke/send/on）——preload.js 每方法恰一个通道调用（严格 1:1）。
+// 不在此硬写方法数快照：通道增删即漂移（D275 退役后曾遗留旧数）。实测计数以 docs/ipc-contract.json
+// 为准，形状锁（桥数/方法数/kind 分布）由 tests/ipc-contract.test.cjs 与 tests/d275-dead-ipc-retirement.test.cjs 把守。
 function extractBlock(src, block) {
   const text = src.slice(block.start, block.end);
   const methodRe = /^[ ]{2}([A-Za-z_$][\w$]*)[ ]*:/gm;

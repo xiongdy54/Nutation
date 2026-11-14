@@ -4,6 +4,10 @@
 // scheduler_options_json 必须涵盖所有影响 FSRS 调度结果的 option（§4.4.10 契约）。
 const crypto = require("crypto");
 
+// D290（F43 G1）：权重维数的单一真源＝electron/fsrs-shape.json。主进程（db / optimizer）经此复用，
+// 渲染层 src/lib/fsrs.ts 直接 import 同一份 JSON——两进程不再各写一个 21。升级 FSRS 代际改这一处。
+const { weightsLen: FSRS_WEIGHTS_LEN } = require("./fsrs-shape.json");
+
 const DEFAULT_CONFIG_ID = "cfg-default";
 const ALGORITHM = "FSRS";
 const ALGORITHM_VERSION = 6; // FSRS 算法代际（非 npm 包版本）
@@ -32,6 +36,13 @@ function canonicalJson(value) {
   return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalJson(value[k])).join(",") + "}";
 }
 
+// 权重形状谓词（D290）：与渲染层引擎验收 src/lib/fsrs.ts buildEngineFromConfig 同口径——
+// 长度＝FSRS_WEIGHTS_LEN 的全有限数值数组。db.setActiveFsrsConfig 与 optimizer.validateWeights 共用，
+// 不在两处各写一套判定（§4.4 同一份事实不允许两套解释）。
+function isValidWeights(w) {
+  return Array.isArray(w) && w.length === FSRS_WEIGHTS_LEN && w.every((x) => typeof x === "number" && Number.isFinite(x));
+}
+
 // 配置指纹：algorithm+代际+weights+options 的规范哈希（同一配置永远一个 config_id）
 function configFingerprint(weights, schedulerOptions) {
   const payload = canonicalJson({
@@ -47,8 +58,10 @@ module.exports = {
   DEFAULT_CONFIG_ID,
   ALGORITHM,
   ALGORITHM_VERSION,
+  FSRS_WEIGHTS_LEN,
   FSRS6_DEFAULT_WEIGHTS,
   DEFAULT_SCHEDULER_OPTIONS,
+  isValidWeights,
   canonicalJson,
   configFingerprint
 };

@@ -37,15 +37,15 @@ export interface ManualCardInput {
   similarity?: { text?: string; k?: number };
 }
 
-/** 手动建卡三步：lint → 写库 → 逐条 addIssue → 相似检索记 S1。
- *  抽自 `Reader.tsx` 的 `createSingleCard`，三步顺序与文案原样未改。 */
+/** 手动建卡三步：lint → 写库 → 批量 addIssues → 相似检索记 S1。
+ *  抽自 `Reader.tsx` 的 `createSingleCard`，三步顺序与文案原样未改。
+ *  D276（审计 #56）：lint 问题由逐条 addIssue（N 次 checkpoint）改为一次 addIssues 批量（1 次）；
+ *  S1 仍单发——依赖 lint 写入之后的异步相似检索，保持既有顺序与错误路径行为。 */
 export async function createManualCard(input: ManualCardInput): Promise<{ id: string }> {
   const { card, lint } = input;
   const issues = lintCard(lint);
   const created = await cardsApi.create({ ...card, generatedBy: "manual" });
-  for (const issue of issues) {
-    await cardsApi.addIssue({ cardId: created.id, ...issue, source: "lint" });
-  }
+  await cardsApi.addIssues(issues.map((issue) => ({ cardId: created.id, ...issue, source: "lint" })));
   const similar = await similaritySearch.findSimilar(
     input.similarity?.text ?? card.frontMarkdown,
     input.similarity?.k ?? 2

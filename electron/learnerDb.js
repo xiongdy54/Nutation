@@ -2,14 +2,15 @@
 // v48.92（D137）：引擎自 sql.js 迁 better-sqlite3（原生 SQLite，WAL journal 原生落盘，设计稿
 // SQLITE3-MIGRATION-D137 §3.2-1）。理由与 dictionary.db 相同：词项索引可达数十万行，入主库会拖慢
 // 每次复习评分的 persist() checkpoint；且这里全部是**派生数据**，删除可由刷新管线完整重建，不进备份。
-// 写入纪律（D137 新语义，GUIDE §7.2）：「每次落库即落盘」由 SQLite 事务提交 + synchronous=FULL 的
-// WAL fsync 承担；写入后调用 save()＝显式 wal_checkpoint(TRUNCATE)（磁盘单文件 = 完整最新状态），
+// 写入纪律（D137 新语义，GUIDE §7.2）：主库/词典库的「每次落库即落盘」由 SQLite 事务提交 +
+// synchronous=FULL 的 WAL fsync 承担；本库是派生可重建数据，按 D137 B6 登记偏离降为 synchronous=NORMAL
+// （见 open()），持久性由 save()＝显式 wal_checkpoint(TRUNCATE)（磁盘单文件 = 完整最新状态）承担，
 // 不走主库 persist()。
 const path = require("path");
 const fs = require("fs");
 const Database = require("better-sqlite3");
 const lmParams = require("./lmParams");
-const { normParams, attachRun, applyStandardPragmas, rmDbFileAndSidecars } = require("./sqliteCompat");
+const { normParams, attachRun, applyStandardPragmas, rmDbFileAndSidecars, cachedPrepare, sqliteOpenPath } = require("./sqliteCompat");
 
 // C-40a（审计：业务核心与 Node/Electron 解耦）：数据目录惰性解析——模块加载不再触碰 electron。
 // 桌面态首次 open() 时回落 Electron userData（首次即定格）；纯 Node 宿主先 configure({ dataDir })
@@ -114,7 +115,7 @@ function readMetaRaw(key) {
 }
 
 function allSync(sql, params = []) {
-  return db.prepare(sql).all(normParams(params));
+  return cachedPrepare(db, sql).all(normParams(params)); // E-3：语句缓存
 }
 
 async function open() {
@@ -123,7 +124,7 @@ async function open() {
     openPromise = (async () => {
       dbFile = path.join(dataDir(), "learner.db");
       const existed = fs.existsSync(dbFile);
-      db = attachRun(new Database(dbFile)); // 文件不存在即创建；崩溃恢复（WAL 回放）由 SQLite 打开时自动完成
+      db = attachRun(new Database(sqliteOpenPath(dbFile))); // 文件不存在即创建；崩溃恢复（WAL 回放）由 SQLite 打开时自动完成
       applyStandardPragmas(db);
       // D137 B6 修正：learner.db 是**派生可重建**数据（§4.20，删除后刷新管线全量重建、不进备份），
       // synchronous 降为 NORMAL——WAL 下 commit 不逐次 fsync（词项索引逐行写入曾是 fsync 风暴，
@@ -142,7 +143,7 @@ async function open() {
         }
         db = null;
         rmDbFileAndSidecars(dbFile);
-        db = attachRun(new Database(dbFile));
+        db = attachRun(new Database(sqliteOpenPath(dbFile)));
         applyStandardPragmas(db);
         db.pragma("synchronous = NORMAL"); // 同上：派生可重建库（D137 B6 修正）
       }
@@ -172,8 +173,8 @@ function setMetaSync(key, value) {
   ]);
 }
 
-// 落盘（D137 重定义）：SQLite 提交语义已保证持久（synchronous=FULL 的 WAL fsync）；
-// save() ＝显式 wal_checkpoint(TRUNCATE)，使磁盘单文件 = 完整最新状态（外部读/拷库安全）。
+// 落盘（D137 重定义）：本库 synchronous=NORMAL（D137 B6 登记的偏离，见 open()），提交不逐次 fsync WAL；
+// 持久性由 save() ＝显式 wal_checkpoint(TRUNCATE) 与「派生可重建」语义共同承担，使磁盘单文件 = 完整最新状态（外部读/拷库安全）。
 // 失败 throw（与主库 persist 同纪律）；不涉及任何 tmp/rename（旧 tmp+fsync+rename 序列随 sql.js 退役）。
 function save() {
   if (!db || !dbFile) return;

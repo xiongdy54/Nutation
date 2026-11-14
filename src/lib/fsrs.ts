@@ -13,6 +13,8 @@ import {
   type FSRSParameters
 } from "ts-fsrs";
 import { t } from "./i18n";
+// D290（F43 G1）：权重维数单一真源＝electron/fsrs-shape.json（主进程 db/optimizer 经 fsrsConfig 共用同一份）。
+import fsrsShape from "../../electron/fsrs-shape.json";
 
 const BASE_PARAMS: FSRSParameters = generatorParameters({ enable_fuzz: false });
 let engine = fsrs(BASE_PARAMS);
@@ -35,7 +37,7 @@ function buildEngineFromConfig(cfg: FsrsConfigSnapshot | null | undefined): bool
   try {
     const w = cfg?.weights;
     const opts = (cfg?.schedulerOptions ?? {}) as Record<string, unknown>;
-    if (!Array.isArray(w) || w.length !== 21 || !w.every((x) => typeof x === "number" && Number.isFinite(x))) {
+    if (!Array.isArray(w) || w.length !== fsrsShape.weightsLen || !w.every((x) => typeof x === "number" && Number.isFinite(x))) {
       return false;
     }
     if (opts.enableFuzz !== false) return false;

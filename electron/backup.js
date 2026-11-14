@@ -172,6 +172,31 @@ function clearDbSidecars(dbPath) {
   }
 }
 
+// D290（F43 F1-5，§9.1 M2 恢复语义 / §7.6 失败必须可见）：换入 library.db 与 assets/ 之后，
+// 以只读连接打开换入库，把 assets 表里仍登记为存在（is_deleted=0）的行逐条与盘上文件核对。
+// 磁盘路径＝assets/<library_item_id>/<path>（path 只存文件名，见 db.createAssetForItem；
+// 制卡台自由截图的 library_item_id 是固定常量 workbench-assets，同公式）。备份 zip 被用户解包删图时
+// 换入本身成功（ok=true），但「库里有行、盘上无文件」必须随返回值 missing 上报、由 main.js 弹可见告警——
+// 不再「恢复成功」却打开书才发现图没了。换入库是 db.backup() 快照（无 WAL sidecar），只读连接即见全量。
+function crossCheckAssets(dbFile, assetsDir) {
+  const missing = [];
+  let conn;
+  try {
+    conn = new Database(dbFile, { readonly: true, fileMustExist: true });
+    const rows = conn.prepare("SELECT library_item_id AS itemId, path FROM assets WHERE is_deleted = 0").all();
+    for (const r of rows) {
+      if (!fs.existsSync(path.join(assetsDir, String(r.itemId), String(r.path)))) missing.push(`${r.itemId}/${r.path}`);
+    }
+  } catch (err) {
+    // 核对本身失败（库打不开等）不阻断恢复主流程——换入完整性已由 isIntactSqliteFile 把过关；
+    // 但留一条日志，避免「核对静默没跑」无处可查（§7.6 失败必须可见）。
+    console.error("[backup] 恢复后资产核对未能执行（不阻断恢复）：", err);
+  } finally {
+    if (conn) { try { conn.close(); } catch { /* 忽略 */ } }
+  }
+  return missing;
+}
+
 // 原写法两步非原子：rename 一旦失败（跨设备 / 杀软实时扫描占用 / 权限 / 磁盘抖动），
 // 线上数据已被删掉而备份又没进去 —— 实测 library.db / assets / memory 三处都会因此被清空。
 // 返回让位文件路径（供整体成功后统一清理，或失败时回滚）。
@@ -1029,6 +1054,10 @@ function applyPendingRestore(opts = {}) {
   }
   for (const { aside } of asides) { try { fs.rmSync(aside, { recursive: true, force: true }); } catch { /* 尽力 */ } }
 
+  // D290（F1-5）：库与资产都换入后核对「库行 ↔ 盘上文件」。缺失不改 ok（换入本身确实成功了），
+  // 而是随 missing 清单上报，由 main.js 消费点弹可见告警（§7.6 失败必须可见）。
+  const missing = restored.includes("library.db") && restored.includes("assets") ? crossCheckAssets(p.dbFile, p.assetsDir) : [];
+
   // B-12（审计）：只有在**真的换入过东西**时才清理标记与暂存区。
   // 原来无条件清 —— 暂存区被清理工具/杀软/手工删掉时，返回 {restored: []} 却把标记也删了，
   // 而 main.js 又把返回值整个丢掉 → 用户主动发起恢复、重启、什么都没变、零提示、也无法重试。
@@ -1037,7 +1066,7 @@ function applyPendingRestore(opts = {}) {
     fs.rmSync(p.stagingDir, { recursive: true, force: true });
     fs.rmSync(p.markerFile, { force: true });
   }
-  return { restored, ok, meta: marker?.meta || null, source: marker?.source || null };
+  return { restored, ok, missing, meta: marker?.meta || null, source: marker?.source || null };
 }
 
 // 当前数据量（设置页展示用）

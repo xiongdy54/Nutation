@@ -2,9 +2,10 @@
 // 唯一实现依据：docs/design/BEHAVIOR-DATA-INFRA-D248-v3.md §9.2 / §9.4。
 // 纪律：每个脏日一个事务；增量结果必须与「清空后全量重建」逐键一致；问号日不补 0；DERIVE_VERSION 变化全量重建（归档日除外）。
 "use strict";
-const { learningDayStartMs } = require("../fsrsTime");
+const { learningDayStartForKey } = require("../fsrsTime");
 
-const DERIVE_VERSION = 1;
+// v2（审计 A-3）：日起点探针由 UTC 正午改为本地切点 → 西半球旧派生数据错误，全量重算。
+const DERIVE_VERSION = 2;
 const ACTIVE_ORIGINS = new Set(["shelf", "search", "browse", "card_source", "link", "mindmap", "kp", "journal", "capture", "reader_toc", "workbench"]);
 const PUSHED_ORIGINS = new Set(["queue", "recommend", "review_flow", "notification"]);
 const SURFACES = ["read", "review", "xreview", "author", "browse", "other"];
@@ -16,8 +17,7 @@ function initiativeOf(origin) {
 }
 
 function dayStart(day, cutoff) {
-  const [y, m, d] = String(day).split("-").map((x) => Number(x));
-  return learningDayStartMs(Date.UTC(y, m - 1, d, 12, 0, 0), cutoff);
+  return learningDayStartForKey(day, cutoff);
 }
 
 function createRollup(opts) {

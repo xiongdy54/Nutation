@@ -19,14 +19,6 @@ contextBridge.exposeInMainWorld("windowAPI", {
   close: () => ipcRenderer.send("win:close"),
   // 外链（v20）：仅 http/https，交系统浏览器
   openExternal: (url) => ipcRenderer.invoke("shell:openExternal", url),
-  // D123：制卡台右侧放置时窗口向右外延 / 还原；最大化时主进程推送回落内推
-  dockExtend: (deltaPx) => ipcRenderer.invoke("win:dockExtend", deltaPx),
-  dockRestore: () => ipcRenderer.invoke("win:dockRestore"),
-  onDockMode: (cb) => {
-    const handler = (_e, mode) => cb(mode);
-    ipcRenderer.on("win:dockMode", handler);
-    return () => ipcRenderer.removeListener("win:dockMode", handler);
-  },
   // D123：独立制卡台窗口（toggle/show/hide/pin）与跨窗口建卡刷新
   workbench: (action) => ipcRenderer.invoke("win:workbench", action),
   // v49.95（D261）：图片挖空编辑器进入 / 退出时展开 / 收回独立制卡台宽度
@@ -203,6 +195,8 @@ contextBridge.exposeInMainWorld("growthAPI", {
 
 contextBridge.exposeInMainWorld("issuesAPI", {
   add: (issue) => ipcRenderer.invoke("issues:add", issue),
+  // D276（审计 #56）：批量写——主进程单事务单 checkpoint；逐条结果 ({id}|false) 按入参顺序
+  addMany: (issues) => ipcRenderer.invoke("issues:addMany", issues),
   list: (cardId) => ipcRenderer.invoke("issues:list", cardId),
   resolve: (id) => ipcRenderer.invoke("issues:resolve", id)
 });
@@ -349,7 +343,6 @@ contextBridge.exposeInMainWorld("shortcutsAPI", {
   status: () => ipcRenderer.invoke("shortcuts:status"),
   apply: () => ipcRenderer.invoke("shortcuts:apply"),
   toggleCapture: () => ipcRenderer.invoke("capture:toggle"),
-  hideCapture: () => ipcRenderer.invoke("capture:hide"),
   requestAddMaterial: () => ipcRenderer.invoke("library:requestAdd"),
   onOpenAddMaterial: (callback) => {
     const handler = () => callback();
@@ -447,16 +440,12 @@ contextBridge.exposeInMainWorld("memoryAPI", {
   }
 });
 
-// v48 批2（M15 重做，D41/D42 / §4.19）：材料知识导图（编排/留痕在主进程；进度经 mindmap:changed 广播）
+// 材料知识导图（编排/留痕在主进程；进度经 mindmap:changed 广播）
+// v1 生成桥（preview / generate / deepen / repairConfirm）已随 D286 退役；以下只剩 v1 读路径与取消。
 contextBridge.exposeInMainWorld("mindmapAPI", {
-  preview: (params) => ipcRenderer.invoke("mindmap:preview", params || {}),
-  generate: (params) => ipcRenderer.invoke("mindmap:generate", params || {}),
-  // v48.13 P4：增量深化（展开已有子结构是纯 UI，不发请求）
-  deepen: (params) => ipcRenderer.invoke("mindmap:deepen", params),
   // v48.13 P3：可续跑运行（应用重启后发现未跑完的 run）
   pendingRuns: () => ipcRenderer.invoke("mindmap:pendingRuns"),
   cancel: (runId) => ipcRenderer.invoke("mindmap:cancel", runId),
-  repairConfirm: (runId) => ipcRenderer.invoke("mindmap:repairConfirm", runId),
   list: (documentId) => ipcRenderer.invoke("mindmap:list", documentId),
   get: (id) => ipcRenderer.invoke("mindmap:get", id),
   getActive: (documentId, scopeAnchor) => ipcRenderer.invoke("mindmap:getActive", documentId, scopeAnchor || "book"),

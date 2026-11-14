@@ -41,6 +41,28 @@ export const GEN = { OUT_MS: 120, IN_MS: 200, IN_DELAY: 100, REVIVE_MS: 160, REM
 /** §16.4：零件级退场时长（≥ --flow-t-out 120 + 一帧余量） */
 const EXIT_MS = 160;
 
+/** draw 线进场时长的回落值＝theme.css 里 `var(--flow-t-draw, 480ms)` 的同一个回落（两处同源）。 */
+const DRAW_MS_FALLBACK = 480;
+
+/**
+ * 审计 #11 / C-32 A4：draw 线进场时长读自 Token `--flow-t-draw`——theme.css 的
+ * `.flow-svg path[data-draw="1"]` 过渡消费的就是它，JS（WAAPI 首帧进场）与 CSS（后续过渡）
+ * 共用一个名字，皮肤覆盖后两侧一起生效。单位 ms / s 均可（CSS 产物压缩会把 480ms 归一成 .48s，
+ * 与 animate.readMotion() 同一换算口径）；无 DOM / 读不到 / 非法时回落 480。
+ */
+function readDrawMs(): number {
+  try {
+    if (typeof document === "undefined" || typeof getComputedStyle !== "function" || !document.documentElement) return DRAW_MS_FALLBACK;
+    const raw = (getComputedStyle(document.documentElement).getPropertyValue("--flow-t-draw") || "").trim();
+    if (!raw) return DRAW_MS_FALLBACK;
+    const v = parseFloat(raw);
+    if (!Number.isFinite(v) || v <= 0) return DRAW_MS_FALLBACK;
+    return /s$/i.test(raw) && !/ms$/i.test(raw) ? v * 1000 : v;
+  } catch {
+    return DRAW_MS_FALLBACK;
+  }
+}
+
 const stagger = (i: number, step: number, cap: number) => Math.min(i * step, cap);
 const vars = (delay: number) => ({ "--flow-delay": `${Math.round(delay)}ms` }) as CSSProperties;
 /** §16.1.5：所有 defs id 都带代前缀——两代同时在文档里时不能互相解析到对方的渐变 / marker */
@@ -317,21 +339,25 @@ function UpperGenImpl({ base, phase, fadeIn, onEvent }: UpperGenProps) {
   const primDelay = () => (motion === "open" ? 480 : motion === "close" ? 60 : 0);
 
   // draw 线：进场用 WAAPI 从 dashoffset 1 → 0（CSS 过渡对首帧挂载不生效）；§16.3：只在打开编排时执行
+  // 审计 #11：motion 是**编排相位**（open/close/live，宿主 setMotion），不是动效偏好——
+  // body.motion-off 只中和 CSS 动画/过渡，WAAPI 照跑，故必须在这里按 motionOff 显式早退
+  //（早退后落回图元自带的 strokeDashoffset:0 内联样式＝线直接画好，不留半截）。
   useEffect(() => {
-    if (motion !== "open" || !armed) return;
+    if (motionOff || motion !== "open" || !armed) return;
     const host = ref.current;
     if (!host || typeof (host.querySelector as Function) !== "function") return;
     const els = Array.from(host.querySelectorAll("[data-draw='1']")) as (SVGElement & { animate?: (k: Keyframe[], o: KeyframeAnimationOptions) => unknown })[];
+    const drawMs = readDrawMs();
     for (const el of els) {
       if (typeof el.animate !== "function") continue;
       const delay = Number(el.getAttribute("data-delay") || 0);
       try {
-        el.animate([{ strokeDashoffset: 1 }, { strokeDashoffset: 0 }], { duration: 480, delay, easing: "cubic-bezier(.16,1,.3,1)", fill: "both" });
+        el.animate([{ strokeDashoffset: 1 }, { strokeDashoffset: 0 }], { duration: drawMs, delay, easing: "cubic-bezier(.16,1,.3,1)", fill: "both" });
       } catch {
         /* 动画能力缺失时直接显示 */
       }
     }
-  }, [base.seq, armed, motion]);
+  }, [base.seq, armed, motion, motionOff]);
 
   const strandColor = (s: FlowStrand) => (s.strong ? colors.accent : `url(#${gid("gs", s.order)})`);
   const strandEndColor = (s: FlowStrand) => (s.strong ? colors.accent : s.colorB);

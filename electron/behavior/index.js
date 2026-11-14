@@ -389,6 +389,27 @@ function configPayload() {
   return { enabled: config.enabled, generation, recordQueryText: config.recordQueryText === true };
 }
 
+/**
+ * 审计 #2：配置变更必须**推**给渲染层。渲染层只在挂载时读一次 behavior:status，
+ * 若不广播：禁用把 generation++ 后，重新启用不会让渲染层知道新世代，此后每个批次都被
+ * acceptBatch 判 stale_generation 拒收，采集直到重启才恢复。
+ * 窗口枚举沿用 init 注入的 ctx.windows()（本目录不 require("electron")；与 sessions.attachAllWindows
+ * 同一来源），因此主窗口 / 阅读透镜 / 制卡台 / 快速记录四个订阅 behavior:config 的窗口全覆盖。
+ * 广播失败不得外溢到业务写路径（§7.6 纪律）。
+ */
+function broadcastConfig() {
+  if (!ctx || typeof ctx.windows !== "function") return;
+  let list = [];
+  try { list = ctx.windows() || []; } catch { return; }
+  const payload = configPayload();
+  for (const w of list) {
+    try {
+      if (!w || (typeof w.isDestroyed === "function" && w.isDestroyed())) continue;
+      w.webContents.send("behavior:config", payload);
+    } catch { /* 窗口已销毁 / 发送失败：不影响采集与业务 */ }
+  }
+}
+
 /** 设置页/诊断用的公开状态（不含文件路径、策略内部字段）。 */
 function publicStatus() {
   const s = getStatus();
@@ -462,7 +483,14 @@ function backupCounts() {
   }
 }
 
+/** 开关入口（两个方向都广播配置：禁用要清渲染层缓冲，重新启用要让渲染层拿到新世代）。 */
 function setEnabled(next) {
+  const status = applyEnabled(next);
+  broadcastConfig();
+  return status;
+}
+
+function applyEnabled(next) {
   const turningOn = next === true;
   if (!turningOn && sessions) {
     try { sessions.end("disabled"); } catch { /* 禁用路径不得抛 */ }
@@ -495,6 +523,12 @@ function setEnabled(next) {
 
 /** 清除全部行为数据：屏障 → 停运行期 → 关库删文件 → 新 dataEpoch/analysisFloorTs → 空库（保持停用）。 */
 async function purgeAll() {
+  const r = await purgeAllNow();
+  broadcastConfig(); // 审计 #2：清除同样推进 generation，渲染层必须同步（含清除失败态）
+  return r;
+}
+
+async function purgeAllNow() {
   if (!ctx) return { ok: false, code: "not_initialized" };
   const purgeTs = now();
   generation++;

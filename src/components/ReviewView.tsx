@@ -1,7 +1,7 @@
 // 连续刷题复习界面（v11.1 连续模式；v12.2 去页内重复标题 + 跳转原文 + 删除按钮）：
 // 进入即开始；评分后自动展示下一张到期卡。每张卡都重新拉取今日队列取队首，
 // 口径 = 今日队列视图（v34/M12 §4.2-20：FSRS due 升序 + 同 due 优先级降序 + 同源卡延后），学习中新到期卡实时进入队列。
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { fsrsEngine, type Rating } from "../lib/fsrs";
 import { cardsApi, hasSourceAnchor, type CardRecord, type TodayQueue } from "../lib/cards";
 import { playVocabAudio } from "../lib/dictClient";
@@ -408,12 +408,20 @@ export default function ReviewView({
   const [currentExtract, setCurrentExtract] = useState<DueTopic | null>(null);
   const extractHeadRef = useRef<DueTopic | null>(null);
 
-  const sessionScope = () =>
-    bookItemIds?.length || (scopeLimits && Object.keys(scopeLimits).length) || scopeTags?.length || scopeKpIds?.length
-      ? { bookItemIds: bookItemIds ?? undefined, tags: scopeTags, kpIds: scopeKpIds, limits: scopeLimits ?? undefined }
-      : undefined;
+  // 审计 #9：会话范围必须覆盖**全部四个** scope prop。原实现是普通函数 + nextCard 的
+  // deps 只写 [bookItemIds, scopeLimits]（还挂 eslint-disable）——从「推荐」页换知识点牌组时
+  // App 只传 scopeKpIds（App.tsx learner/navigate），闭包停在旧范围、首拉 effect 也不重跑。
+  // 现与 ExtractReviewView 的 scope memo 同口径：四个 prop 全进 deps，范围一变 nextCard 换新
+  // → 首拉 effect（deps [nextCard]）自然重跑。
+  const sessionScope = useMemo(
+    () =>
+      bookItemIds?.length || (scopeLimits && Object.keys(scopeLimits).length) || scopeTags?.length || scopeKpIds?.length
+        ? { bookItemIds: bookItemIds ?? undefined, tags: scopeTags, kpIds: scopeKpIds, limits: scopeLimits ?? undefined }
+        : undefined,
+    [bookItemIds, scopeLimits, scopeTags, scopeKpIds]
+  );
   const nextCard = useCallback(async (): Promise<(CardRecord & { docTitle?: string }) | null> => {
-    const session = await fetchSessionQueue({ scope: sessionScope() });
+    const session = await fetchSessionQueue({ scope: sessionScope });
     if (session) {
       mixedRef.current = session.mergeIntoReview === true;
       setMixed(mixedRef.current);
@@ -433,8 +441,7 @@ export default function ReviewView({
     const q = await cardsApi.todayQueue();
     setDeferred(q.deferred ?? []);
     return q.cards[0] ?? null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookItemIds, scopeLimits]);
+  }, [sessionScope]);
 
   // 开场拉第一张；若 sessionStorage 有跳转前的复习现场（从阅读器返回）则恢复该卡
   useEffect(() => {
@@ -472,7 +479,17 @@ export default function ReviewView({
         setShowBack(false);
         setStartedAt(Date.now());
         setSessionStartTs(Date.now()); // v48.85（D129 B3）：会话首卡渲染时刻
+        // 审计 #9 的回归补齐：范围变更后本 effect 会重跑——新牌组**非空**时必须把上一牌组
+        // （空牌组走 else 分支置 true）的收尾态清掉。否则 sessionDone 停在 true：收尾页被
+        // !current 挡住看不出来，但本牌组耗尽时 setSessionDone(true) 成了 no-op，
+        // [sessionDone] 的 effect 不再重跑 → ui/session-complete 整场丢失（D248 会话遥测）。
+        // 与其余重入路径（undoLastGrade / undoMixed / afterExtract）同口径。
+        setSessionDone(false);
       } else {
+        // 审计 #9：范围变更后本 effect 会重跑——新牌组为空时必须清掉上一牌组的当前卡，
+        // 否则收尾页判据（!current && sessionDone）不成立，旧卡留在屏上还能被评分。
+        // 与评分链耗尽分支（setCurrent(null) + setSessionDone(true)）同口径。
+        setCurrent(null);
         setSessionDone(true);
       }
       setLoading(false);
@@ -785,7 +802,7 @@ export default function ReviewView({
       } else if (r.ok && r.kind === "extract_op") {
         eventBus.emit("workflow/changed");
         const restoredId = Array.isArray(r.extractIds) && r.extractIds.length ? String(r.extractIds[0]) : null;
-        const session = restoredId ? await fetchSessionQueue({ scope: sessionScope() }) : null;
+        const session = restoredId ? await fetchSessionQueue({ scope: sessionScope }) : null;
         const hit = session?.items.find((it: SessionItem) => it.kind === "extract" && it.id === restoredId)?.extract ?? null;
         if (hit) {
           extractHeadRef.current = hit;
@@ -855,9 +872,12 @@ export default function ReviewView({
   }
 
   // 顶栏计数：换卡/评完/跳过/删除/撤销后各刷一次（只读、同队列口径）
+  // 审计 #8：scope 必须与队列同传（sessionQueue.fetchCardCounts 的契约原文），否则集中复习
+  // 牌组里显示的是**全局**三档计数，progressDenominator 也随之失真。牌组变更（sessionScope
+  // 换新）同样要重取——故 sessionScope 进 deps。
   useEffect(() => {
     let alive = true;
-    void fetchCardCounts()
+    void fetchCardCounts(sessionScope)
       .then((c) => {
         if (alive) setCounts(c);
       })
@@ -867,7 +887,7 @@ export default function ReviewView({
     return () => {
       alive = false;
     };
-  }, [current?.id, doneCount]);
+  }, [current?.id, doneCount, sessionScope]);
 
   // 「更多」弹层：点弹层外 / Esc 收起（同刻只开这一个）
   useEffect(() => {

@@ -17,6 +17,7 @@ const { app, BrowserWindow, globalShortcut, screen, nativeTheme } = require("ele
 const path = require("path");
 const fs = require("fs");
 const { loadAppPage } = require("./devServer"); // D239：载入顺序 + dev server 地址唯一来源
+const { tMain } = require("./i18n"); // 审计 #66：窗口标题走主进程 i18n（D182 同一自然键制）
 const os = require("os");
 
 // 审计 C-26 步骤 4（D-03=B）：快速记录默认键——Windows/Linux 保持 Ctrl+Alt+Space；
@@ -282,7 +283,7 @@ function createCaptureWindow() {
     skipTaskbar: true,
     alwaysOnTop: true,
     backgroundColor: themeBackground(),
-    title: "快速记录",
+    title: tMain("快速记录"),
     webPreferences: {
       preload: path.join(__dirname, "preload-capture.js"),
       contextIsolation: true,
@@ -290,6 +291,9 @@ function createCaptureWindow() {
       additionalArguments: ["--bdi-role=capture"] // D248：BDI 桥按窗口角色裁剪（T5）
     }
   });
+  // 审计 F-13（D285）：窗口标题由主进程 tMain 决定——页面 <title> 是写死的中文，不让它覆盖窗口标题；
+  // 切换界面语言后由 retitle() 就地更新已创建的单例窗口。
+  captureWin.on("page-title-updated", (e) => e.preventDefault());
   const win = captureWin;
   // 关闭 = 隐藏（单例复用；真正退出应用时才销毁）
   win.on("close", (e) => {
@@ -438,8 +442,14 @@ function init(options) {
   return getStatus();
 }
 
+/** 审计 F-13：界面语言变更后更新已创建窗口的标题（main.js settings:set 钩子调用） */
+function retitle() {
+  if (captureWin && !captureWin.isDestroyed()) captureWin.setTitle(tMain("快速记录"));
+}
+
 module.exports = {
   init,
+  retitle,
   normalizeAccelerator,
   readConfig: readShortcutConfig,
   applyGlobalShortcuts,

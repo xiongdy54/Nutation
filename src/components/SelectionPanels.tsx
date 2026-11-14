@@ -100,8 +100,6 @@ export default function SelectionPanels({
   dockMeta?: string;
   /** 独立窗口传 "window"：制卡台占满窗口，不推让，且常开 */
   placementOverride?: "window";
-  /** @deprecated D123：保留以兼容旧宿主调用，已不使用（AIPanel 自算计时） */
-  selectionText?: string | null;
   nowTick?: number;
   elapsedSec?: number;
 }) {

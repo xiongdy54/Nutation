@@ -79,6 +79,14 @@ jobs:
       - name: Consistency lint (C-35 gate)
         run: npm run lint:consistency
 
+      # 审计 C-4：渲染层类型检查进 CI，阻断性（无 continue-on-error）——此前 tsc 完全不在 CI 中。
+      - name: Typecheck (blocking)
+        run: npm run typecheck
+
+      # 审计 F-6：主进程 JS 增量类型检查（tsconfig.electron.json 的 files 白名单，只许变多）
+      - name: Typecheck electron (blocking)
+        run: npm run typecheck:electron
+
       - name: Run tests (non-blocking; results uploaded below)
         continue-on-error: true
         shell: bash

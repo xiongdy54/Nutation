@@ -2,7 +2,6 @@
 // 与 journal.ts/memory.ts 同构：window.mindmapAPI 薄包装 + 主进程推送桥接为 EventBus `mindmap/changed`。
 
 import { eventBus } from "./eventbus";
-import { t } from "./i18n";
 
 export interface MapNodeRecord {
   id: string;
@@ -60,42 +59,6 @@ export interface MaterialMapMeta {
   structure?: MapStructure | null;
 }
 
-export interface MapPreviewCall {
-  runKind: string;
-  label: string;
-  chars: number;
-  cached: boolean;
-}
-
-export interface MapPreview {
-  error?: string;
-  calls?: MapPreviewCall[];
-  callsTotal?: number;
-  newCalls?: number;
-  cacheHits?: number;
-  fixedCalls?: number;
-  expandFirstWave?: number;
-  budget?: number;
-  sourceCharsExact?: number;
-  charsExact?: number;
-  estInputTokens?: number;
-  estOutputTokens?: number;
-  estCost?: number | null;
-  currency?: string | null;
-  hasPricing?: boolean;
-  provider?: string;
-  model?: string;
-  /** v48.12：当前生效的深挖策略（batch/递归深度/原子启发式/单片上限/补漏轮次） */
-  strategy?: {
-    expandBatch: number;
-    expandDepth: number;
-    atomicHeuristic: boolean;
-    maxPayloadChars: number;
-    gapFillMaxRounds: number;
-    gapMinChars: number;
-  };
-}
-
 export interface MapRunRecord {
   id: string;
   documentId: string;
@@ -131,75 +94,6 @@ export interface ResumableMapRun {
   materialTitle: string | null;
   createdAt: number;
   updatedAt: number;
-}
-
-export interface MapIssue {
-  nodeId: string;
-  type: string;
-  severity: string;
-  repairScope: string;
-  note?: string;
-}
-
-/** 首波深挖计划（v48.11 §3.9 阶段 B：首层完成后**精确**给出的第 1 层计划） */
-export interface MapExpandPlan {
-  firstWaveNodes: number;
-  plannedCalls: number;
-  spanChars: number;
-  maxPayloadChars?: number;
-  expandDepth?: number;
-}
-
-export interface MindmapGenerateResult {
-  // v48.11：新增 section_ready（首层就绪、深挖待续跑）与 partial（部分完成，含预算/失败归因）
-  status:
-    | "completed"
-    | "section_ready"
-    | "partial"
-    | "cancelled"
-    | "failed"
-    | "review_failed"
-    | "failed_final"
-    | "invalid";
-  expandPlan?: MapExpandPlan;
-  mapId?: string;
-  nodeCount?: number;
-  code?: string;
-  error?: string;
-  dropped?: unknown[];
-  issues?: MapIssue[];
-  summary?: string;
-  runId?: string;
-}
-
-/**
- * v48.13 P4（D46）增量深化参数。
- * 与生成共用收集参数（同一份 textByUnit / tocItems 才能保证作用域坐标系一致），
- * 另加「深化哪一个版本里的哪一个节点」。
- */
-export interface MindmapDeepenParams extends MindmapCollectParams {
-  /** 目标节点的 id（必须属于 mapId 指向的版本，且该节点**尚无子结构**） */
-  nodeId: string;
-  /** 要深化的地图版本 id（= 用户当前正在看的版本） */
-  mapId: string;
-  /** 只用于进度文案（如「深化 · 本原问题」） */
-  deepenLabel?: string;
-}
-
-/** 收集给引擎的参数（文本由内核 getSectionText 实测，无截断——§4.19-2④） */
-export interface MindmapCollectParams {
-  documentId: string;
-  title: string;
-  tocItems: { anchor: string; label: string; children?: unknown[] }[];
-  unitAnchors: string[];
-  textByUnit: Record<string, string>;
-  scopeAnchor: string;
-  granularity: "overview" | "standard" | "detailed";
-  force?: boolean;
-  /** v48.11：只跑首层（首层就绪即落一版可看的图），深挖作为可续跑的第二阶段 */
-  stopAfterSection?: boolean;
-  /** v48.11：以同一个 run 续跑（section 全部命中缓存，从深挖继续） */
-  resumeRunId?: string;
 }
 
 /**
@@ -253,12 +147,7 @@ ${JSON.stringify(pkg, null, 1)}`;
 declare global {
   interface Window {
     mindmapAPI?: {
-      preview: (params: MindmapCollectParams) => Promise<MapPreview>;
-      generate: (params: MindmapCollectParams) => Promise<MindmapGenerateResult>;
-  /** v48.13 P4：增量深化——对**尚无更深结构**的节点按其 sourceSpans 继续分析（已有 children 的展开是纯 UI，不走这里） */
-  deepen: (params: MindmapDeepenParams) => Promise<MindmapGenerateResult>;
       cancel: (runId: string) => Promise<boolean>;
-      repairConfirm: (runId: string) => Promise<MindmapGenerateResult>;
       list: (documentId: string) => Promise<MaterialMapMeta[]>;
       get: (id: string) => Promise<MaterialMapMeta | null>;
       getActive: (documentId: string, scopeAnchor?: string) => Promise<MaterialMapMeta | null>;
@@ -276,11 +165,7 @@ declare global {
 }
 
 export const mindmapApi = {
-  preview: (params: MindmapCollectParams) => window.mindmapAPI?.preview(params),
-  generate: (params: MindmapCollectParams) => window.mindmapAPI?.generate(params),
-  deepen: (params: MindmapDeepenParams) => window.mindmapAPI?.deepen(params) ?? Promise.resolve({ status: "invalid" as const, error: t("深不可用") }),
   cancel: (runId: string) => window.mindmapAPI?.cancel(runId),
-  repairConfirm: (runId: string) => window.mindmapAPI?.repairConfirm(runId),
   list: (documentId: string) => window.mindmapAPI?.list(documentId) ?? Promise.resolve([]),
   get: (id: string) => window.mindmapAPI?.get(id) ?? Promise.resolve(null),
   getActive: (documentId: string, scopeAnchor?: string) => window.mindmapAPI?.getActive(documentId, scopeAnchor) ?? Promise.resolve(null),

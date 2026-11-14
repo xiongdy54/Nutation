@@ -71,7 +71,6 @@ declare global {
       status: () => Promise<ShortcutStatus>;
       apply: () => Promise<ShortcutStatus>;
       toggleCapture: () => Promise<boolean>;
-      hideCapture: () => Promise<boolean>;
       requestAddMaterial: () => Promise<boolean>;
       onOpenAddMaterial: (callback: () => void) => () => void;
     };

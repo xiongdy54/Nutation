@@ -53,4 +53,12 @@ function learningDayStartMs(ms, cutoffHour = 0) {
   return guess;
 }
 
-module.exports = { calculateFsrsDeltaT, learningDayIndex, learningDayStartMs };
+// 日键（本地学习日 "YYYY-MM-DD"）→ 该学习日起点。审计 A-3：探针必须取**本地**该日 cutoff 时刻，
+// 不能用 UTC 正午——西半球（如 UTC-10 + cutoff=4）UTC 正午落在本地前一学习日，起点早 24h，
+// 导致 start/end 重合、整日派生全 0 / 覆盖度全 unknown。春进日 cutoff 不存在时 Date 会顺延，仍落在该学习日内。
+function learningDayStartForKey(dayKey, cutoffHour = 0) {
+  const [y, m, d] = String(dayKey).split("-").map(Number);
+  return learningDayStartMs(new Date(y, m - 1, d, cutoffHour, 0, 0, 0).getTime(), cutoffHour);
+}
+
+module.exports = { calculateFsrsDeltaT, learningDayIndex, learningDayStartMs, learningDayStartForKey };

@@ -49,6 +49,111 @@ const SANITIZE_CONFIG = {
   FORBID_ATTR: ["style", "class", "id", "onerror", "onload"]
 };
 
+// ---------- 敌意结构护栏（F40 C-03 / C-05）----------
+// Readability / DOMPurify / turndown 都按 DOM 递归；5 万层嵌套会栈溢出或把导入拖到十几秒。
+// 超深/超多标签的输入直接降级为纯文本（保留可读正文），不进入递归管线。
+const MAX_HTML_DEPTH = 128;
+const MAX_HTML_TAGS = 200000;
+const MAX_HTML_CHARS = 8 * 1024 * 1024;
+// 浏览器会隐式闭合这些元素：网页里大量不带 </p></li> 的写法不能被误判成「深度嵌套」。
+const HTML_IMPLIED_END: Record<string, string[]> = {
+  p: ["p"],
+  li: ["li"],
+  dt: ["dt", "dd"],
+  dd: ["dt", "dd"],
+  tr: ["tr"],
+  td: ["td", "th"],
+  th: ["td", "th"],
+  option: ["option"]
+};
+
+/** 迭代扫描标签深度与数量：不建 DOM、不递归，超限立即返回。 */
+function htmlExceedsBudget(src: string): boolean {
+  if (src.length > MAX_HTML_CHARS) return true;
+  const stripped = src
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "");
+  const re = /<\s*(\/?)\s*([a-zA-Z][a-zA-Z0-9:-]*)([^>]*)>/g;
+  const stack: string[] = [];
+  const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+  let tags = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stripped)) !== null) {
+    const closing = m[1] === "/";
+    const name = m[2].toLowerCase();
+    const selfClosing = /\/\s*$/.test(m[3] || "");
+    if (closing) {
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i] === name) {
+          stack.length = i;
+          break;
+        }
+      }
+    } else if (!selfClosing && !voidTags.has(name)) {
+      const implied = HTML_IMPLIED_END[name];
+      if (implied) {
+        for (let i = stack.length - 1; i >= 0; i--) {
+          if (implied.includes(stack[i])) {
+            stack.length = i;
+            break;
+          }
+        }
+      }
+      stack.push(name);
+      if (stack.length > MAX_HTML_DEPTH) return true;
+    }
+    if (++tags > MAX_HTML_TAGS) return true;
+  }
+  return false;
+}
+
+const HTML_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", hellip: "…", mdash: "—", ndash: "–",
+  ldquo: "“", rdquo: "”", lsquo: "‘", rsquo: "’", middot: "·", times: "×", divide: "÷", copy: "©",
+  reg: "®", trade: "™", deg: "°", plusmn: "±", sup2: "²", sup3: "³", frac12: "½", frac14: "¼",
+  frac34: "¾", laquo: "«", raquo: "»", euro: "€", pound: "£", yen: "¥", cent: "¢", sect: "§",
+  para: "¶", bull: "•", larr: "←", rarr: "→", uarr: "↑", darr: "↓", harr: "↔"
+};
+
+/** 有界实体解码：未知实体原样保留，不吞正文。 */
+function decodeEntities(text: string): string {
+  return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]{0,31});?/g, (m, body: string) => {
+    if (body[0] === "#") {
+      const hex = body[1] === "x" || body[1] === "X";
+      const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
+      if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) return m;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return m;
+      }
+    }
+    const v = HTML_ENTITIES[body.toLowerCase()];
+    return v === undefined ? m : v;
+  });
+}
+
+function htmlToPlainText(html: string): string {
+  const stripped = String(html || "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+    .replace(/<[^>]*>/g, " ");
+  return decodeEntities(stripped).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 把病理级单字符长串收敛到短串。
+ * 只在「可读字符（字母/数字/CJK）占比 < 5%」时启用——正常文章/代码即使偶有长分隔线也不改写；
+ * 触发场景是 4 万个解不开的 `&` 或 5 万个 `×` 这类把正文挤没的解码产物。
+ */
+function collapseSymbolRuns(markdown: string): string {
+  if (!markdown) return markdown;
+  const readable = (markdown.match(/[\p{L}\p{N}]/gu) || []).length;
+  if (readable >= markdown.length * 0.05) return markdown;
+  return markdown.replace(/([^\s\p{L}\p{N}])\1{999,}/gu, (_m, ch: string) => ch.repeat(8));
+}
+
 export interface HtmlImportResult {
   title: string;
   markdown: string;
@@ -99,6 +204,18 @@ export function decodeHtmlBytes(buf: Uint8Array): string {
 export function htmlToMarkdown(html: string): HtmlImportResult {
   const src = String(html || "");
   if (!src.trim()) return { title: "", markdown: "", via: "fallback" };
+
+  // C-03：深嵌套/超大结构不进递归管线，直接降级为纯文本
+  if (htmlExceedsBudget(src)) {
+    const titleMatch = /<title[^>]*>([\s\S]*?)<\/title\s*>/i.exec(src);
+    const plain = htmlToPlainText(src);
+    return {
+      title: decodeEntities((titleMatch?.[1] || "").replace(/\s+/g, " ").trim()),
+      markdown: collapseSymbolRuns(plain),
+      via: "fallback"
+    };
+  }
+
   const doc = new DOMParser().parseFromString(src, "text/html");
 
   // 回退链第 1 步：Readability 正文提取（article 结构）
@@ -125,6 +242,6 @@ export function htmlToMarkdown(html: string): HtmlImportResult {
   }
 
   // 尾部空行收敛 + 连续空白压缩（与合成管线输入整洁度要求一致）
-  markdown = markdown.replace(/\n{3,}/g, "\n\n").trim();
+  markdown = collapseSymbolRuns(markdown.replace(/\n{3,}/g, "\n\n").trim());
   return { title: deriveTitle(doc, readTitle, markdown), markdown, via };
 }

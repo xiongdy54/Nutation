@@ -63,6 +63,30 @@ function createQuery(opts) {
     return db.prepare("SELECT * FROM daily_metrics WHERE day >= ? AND day <= ?").all(from, to);
   }
 
+  /**
+   * 审计 #21：某卡在 review_logs 里的**全部**评分条数。
+   * 原实现只取 time 序前 500 行再按卡过滤——评分全部落在第 500 行之后的卡恒得 0，
+   * 而设计稿 §10 明写「基础评分数不因上下文缺失而少计；review_logs 是评分事实」。
+   * 只读投影（db.bdiPull）没有按卡过滤/计数模式，故沿用本目录既有分页口径
+   * （domains.scanAll 同款 rowid 游标、500 行/页）走一遍并**只计数、不留行**：
+   * 内存恒定一页，不做全表物化；主库事实仍只经投影读取（§4.21 不变量 2：不复制事实、不任意 SQL）。
+   */
+  function countCardReviews(cardId) {
+    let n = 0;
+    let cursor = 0;
+    for (;;) {
+      const rows = pull({ table: "review_logs", mode: "scan", cursor, limit: 500 });
+      if (!rows.length) break;
+      for (const r of rows) if (r.card_id === cardId) n++;
+      const next = Number(rows[rows.length - 1]._rowid);
+      // 游标必须前进（投影恒返回 _rowid）；不前进即止，绝不空转
+      if (!Number.isFinite(next) || next <= cursor) break;
+      cursor = next;
+      if (rows.length < 500) break;
+    }
+    return n;
+  }
+
   const queries = {
     status() {
       return {
@@ -131,8 +155,7 @@ function createQuery(opts) {
           candidates: hits.map((r) => r.id),
         });
       }
-      const base = pull({ table: "review_logs", mode: "time", cursor: { ts: 0, rowid: 0 }, limit: 500 }).filter((r) => r.card_id === cardId);
-      return { cardId, rows: out, baseReviewCount: base.length };
+      return { cardId, rows: out, baseReviewCount: countCardReviews(cardId) };
     },
     /** 覆盖充分度：请求窗口 / 实际观察 / 已知 / 未知 / 估算日（不悄悄裁缺失日）。 */
     dataSufficiency(params) {

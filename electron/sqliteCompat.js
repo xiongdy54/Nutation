@@ -9,6 +9,19 @@
 //    Invalid value；实测 v12.11.1 对数组内 undefined 静默放行，仍按设计稿显式归一为 null，杜绝散点）。
 // 失败语义与 sql.js 时代一致：任何抛错向上传播（persist/checkpoint 失败 → IPC reject → persistNow 重试）。
 const fs = require("fs");
+const path = require("path");
+
+// 审计 C-8（F78 P4）：Windows 上库路径逼近 MAX_PATH（260）时，SQLite 的 Win32 VFS 打不开文件（unable to open
+// database file）→ 应用起不来。Node 的 fs 自带长路径支持，SQLite 不带；对长路径加 `\\?\` 前缀交给 CreateFileW
+// 即可（实测 288 字符路径建库、WAL、重开回读均正常；-wal/-shm 由 SQLite 在同一前缀路径上派生）。
+// 短路径原样返回，非 Windows 原样返回，已带前缀 / UNC 原样返回。
+const WIN_LONG_PATH_THRESHOLD = 240;
+function sqliteOpenPath(file) {
+  if (process.platform !== "win32" || typeof file !== "string" || !file || file === ":memory:") return file;
+  if (file.startsWith("\\\\")) return file;
+  const abs = path.resolve(file);
+  return abs.length >= WIN_LONG_PATH_THRESHOLD ? "\\\\?\\" + abs : file;
+}
 
 function normParams(params) {
   if (params == null) return params;
@@ -21,11 +34,34 @@ function normParams(params) {
   return params;
 }
 
+// 审计 E-3（D285）：按连接缓存预编译语句。热路径（queryAll / db.run / learnerDb.allSync）原先每次调用都
+// 重新 prepare（解析 + 编译 SQL），词项索引等循环里是主进程长阻塞的直接来源。缓存挂在连接对象上——
+// 连接关闭重开后是新对象、新缓存；schema 变更由 SQLite 自动重编译（prepare_v2 语义）。
+// 只缓存 .run / .all 这类一次性跑完的用法；需要 iterate 的调用方仍自行 prepare（避免「语句忙」）。
+const STMT_CACHE_MAX = 512;
+function cachedPrepare(db, sql) {
+  let cache = db.__stmtCache;
+  if (!cache) {
+    cache = new Map();
+    Object.defineProperty(db, "__stmtCache", { value: cache, enumerable: false });
+  }
+  let stmt = cache.get(sql);
+  if (stmt) {
+    cache.delete(sql); // 维持「最近使用在末尾」，超限时淘汰最久未用
+    cache.set(sql, stmt);
+    return stmt;
+  }
+  stmt = db.prepare(sql);
+  cache.set(sql, stmt);
+  if (cache.size > STMT_CACHE_MAX) cache.delete(cache.keys().next().value);
+  return stmt;
+}
+
 function attachRun(db) {
   db.run = (sql, params) => {
     if (params === undefined || params === null) return db.exec(sql);
     const p = normParams(params);
-    const stmt = db.prepare(sql);
+    const stmt = cachedPrepare(db, sql);
     if (Array.isArray(p)) return p.length ? stmt.run(p) : stmt.run();
     return stmt.run(p);
   };
@@ -49,4 +85,4 @@ function rmDbFileAndSidecars(file) {
   }
 }
 
-module.exports = { normParams, attachRun, applyStandardPragmas, rmDbFileAndSidecars };
+module.exports = { normParams, attachRun, applyStandardPragmas, rmDbFileAndSidecars, cachedPrepare, sqliteOpenPath };

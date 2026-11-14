@@ -107,10 +107,18 @@
   /* v48.70（D114 §11.2）：设置页行内说明 tooltip 浮层——modal(400) < tooltip(450) < toast(500) */
   --z-tooltip: 450;
   --z-toast: 500;
+  /* 皮肤前景层（.skin-overlay）：常置顶装饰层，必须压过 toast 等一切应用层。
+     仅此一处允许使用该量级；局部堆叠仍用上面的档位。 */
+  --z-max: 2147483000;
   /* 浮层阴影（全应用唯一允许的阴影） */
   --shadow-float: 0 8px 24px rgba(10, 10, 10, 0.12);
   /* 面板级阴影：皮肤可整组替换（含复合 inset 高光），组件不再各自写 box-shadow */
   --shadow-panel: 0 8px 24px rgba(10, 10, 10, 0.12);
+  /* 书架文件夹悬浮抬升（3D 翻盖投影；与 --shadow-float 同色相、深一档） */
+  --shadow-shelf-lift: 0 12px 32px rgba(10, 10, 10, 0.18);
+  /* 结构流 / 结构全景（D254）局部浮层投影：tooltip 与节点卡 */
+  --shadow-flow-tip: 0 6px 18px -10px rgba(0, 0, 0, 0.35);
+  --shadow-atlas-card: 0 14px 36px -20px rgba(0, 0, 0, 0.35);
   /* 圆角 = 0（直角是灵魂；皮肤层可覆盖） */
   --radius: 0;
   --radius-panel: 0;
@@ -249,6 +257,8 @@ body.theme-dark {
   --surface-input: #141c19;
   --dot: #c9b273;
   --empty-seed-line: transparent;
+  /* 空态插画的「枝线」（bud-line）：与种子描边分开一枚 Token，深色档沿用原浅绿 */
+  --empty-bud-line: rgba(46, 74, 58, 0.55);
   /* v49.90 / D257：夜读焦点色取设计系统 --ink #CFC9B6、反白 --on-ink #0D1311（对比 11.34:1） */
   --accent: #cfc9b6;
   --accent-on: #0d1311;
@@ -355,6 +365,7 @@ body {
      种子描边在深色档按设计系统置透明。 */
   --dot: var(--accent);
   --empty-seed-line: var(--accent);
+  --empty-bud-line: rgba(46, 74, 58, 0.55);
   --radius-xs: var(--radius);          /* 标签、chip */
   --radius-control: var(--radius);     /* 按钮、菜单项、分段控件、行内钮 */
   --radius-input: var(--radius);       /* 输入框、下拉框、编辑器容器 */
@@ -673,11 +684,10 @@ select option { background: var(--surface-overlay); color: var(--text-primary); 
 /* ---------- 卡片四类（规范「组件规范 / 卡片四类」，互斥，不得混用） ----------
    此前这四个类只存在于文档与注释里，全仓零落地 —— 正是各处「灰底又叠描边」
    混用的根因：没有可引用的语义类，组件就各自拼底色 + 边框。
-   用法：多卡并列 / 分组用 card-fill；只有一张需要当唯一焦点时给它 card-accent；
-   需要框住内容但不算卡片时用 card-outlined；反转宣言块用 card-ink。 */
+   用法：多卡并列 / 分组用 card-fill；需要框住内容但不算卡片时用 card-outlined；
+   反转宣言块用 card-ink。 */
 .card-fill,
 .card-outlined,
-.card-accent,
 .card-ink {
   border-radius: var(--radius-card);
   box-shadow: none;
@@ -687,8 +697,6 @@ select option { background: var(--surface-overlay); color: var(--text-primary); 
 .card-fill { background: var(--surface-card-fill); color: var(--text-primary); }
 /* 描边：hairline 锚点框，不填色 */
 .card-outlined { background: var(--surface-card); border: var(--bw-hairline) solid var(--border-subtle); color: var(--text-primary); }
-/* accent 填充：一屏只允许一张 */
-.card-accent { background: var(--accent); color: var(--accent-on); }
 /* 反转块：随主题自然互换（浅色墨底白字 / 深色纸底黑字） */
 .card-ink { background: var(--ink); color: var(--paper); }
 /* 标记 / 引用条：用 accent-soft 底 + 左缘 2px accent，而不是「灰底 + 描边」 */
@@ -754,7 +762,7 @@ select option { background: var(--surface-overlay); color: var(--text-primary); 
 .skin-overlay {
   position: fixed;
   inset: 0;
-  z-index: 2147483000;
+  z-index: var(--z-max);
   pointer-events: none;
   overflow: hidden;
 }
@@ -1682,7 +1690,7 @@ html[data-wb-open="1"][data-wb-place="right"] .topbar { --tb-split: var(--wb-w);
   .bookshelf:not(.is-hover-frozen) .book-card:hover .f-back,
   .book-card:focus-visible .f-back,
   .book-card:has(:focus-visible) .f-back {
-    box-shadow: 0 12px 32px rgba(10, 10, 10, 0.18);
+    box-shadow: var(--shadow-shelf-lift);
   }
 }
 /* ---------- 目录表视图：同一份数据与同一套排序能力的第二种形态，只画横向 hairline ---------- */
@@ -1876,7 +1884,7 @@ html[data-wb-open="1"][data-wb-place="right"] .topbar { --tb-split: var(--wb-w);
 }
 .shelf-empty-seam {
   fill: none;
-  stroke: rgba(46, 74, 58, 0.55);
+  stroke: var(--empty-bud-line);
   stroke-width: 1.43;
   stroke-linecap: round;
 }
@@ -4248,7 +4256,7 @@ html[data-wb-open="1"][data-wb-place="right"] .app-main { margin-right: var(--wb
      混合复习摘录条挂闸门，(0,5,0) 压 (0,4,0)；两条均序在被压规则之后（双保险）。 */
   .review-wrap[data-first-card] .review-flip,
   :root:not([data-vt]) .review-wrap[data-first-card] .extract-face { animation: none; }
-  .bar-pop { animation: stage-pop-in 150ms var(--ease) both; }
+  .bar-pop { animation: stage-pop-in var(--dur-enter) var(--ease) both; }
 }
 @keyframes stage-card-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
 @keyframes stage-pop-in { from { opacity: 0; } to { opacity: 1; } }
@@ -4294,7 +4302,7 @@ html[data-wb-open="1"][data-wb-place="right"] .app-main { margin-right: var(--wb
 /* 计数 bump（§7.2）：由真实 counts 变化驱动（React 比较前后值加类、200ms 后摘）——禁假动画。
    spring 存量豁免（D120 §12-7）：200ms var(--spring) 保留不改——冻结三处之一，禁止扩散。 */
 @media (prefers-reduced-motion: no-preference) {
-  .review-count[data-review-counts] .qi-num { transition: transform 200ms var(--spring); }
+  .review-count[data-review-counts] .qi-num { transition: transform var(--dur-view) var(--spring); }
   .review-count[data-review-counts] .qi-num.bump { transform: scale(1.18); }
 }
 /* 进度轨（§7.2）：2px＝hairline 纪律允许档（D50 半档写法），槽 --grey-1、填 --accent；
@@ -4745,18 +4753,6 @@ html[data-wb-open="1"][data-wb-place="right"] .app-main { margin-right: var(--wb
   color: var(--accent);
   margin-left: var(--sp-2);
 }
-.ai-explorations { margin-top: var(--sp-4); }
-.ai-exploration {
-  margin-top: var(--sp-3);
-  padding-top: var(--sp-3);
-  border-top: 1px solid var(--grey-2);
-}
-.ai-exploration-q {
-  font-size: var(--fs-meta);
-  color: var(--text-helper);
-  margin-bottom: var(--sp-2);
-}
-
 /* ---------- v25 图片聚焦（正文图片点选：上浮 + 周围模糊 + 顶部悬浮选区工具条） ---------- */
 /* 层级：高于阅读器控件与目录，低于 toast；覆盖层自身承载模糊，图片在模糊层之上 */
 .image-focus-layer {
@@ -5018,7 +5014,7 @@ html[data-wb-open="1"][data-wb-place="right"] .app-main { margin-right: var(--wb
   font-size: var(--fs-secondary);
   text-align: left;
   cursor: pointer;
-  animation: tag-row-in 120ms ease-out both;
+  animation: tag-row-in var(--dur) ease-out both;
 }
 @keyframes tag-row-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 .tag-suggest-row:hover { background: var(--grey-1); }
@@ -5332,7 +5328,7 @@ html[data-wb-open="1"][data-wb-place="right"] .app-main { margin-right: var(--wb
   stroke: var(--accent);
   stroke-width: 2;
   cursor: move;
-  animation: occl-pop 240ms var(--spring) both;
+  animation: occl-pop var(--dur-stage) var(--spring) both;
   transform-box: fill-box;
   transform-origin: center;
 }
@@ -5362,7 +5358,7 @@ html[data-wb-open="1"][data-wb-place="right"] .app-main { margin-right: var(--wb
   box-sizing: border-box;
   pointer-events: none;
   z-index: 2;
-  animation: occl-dot-in 150ms cubic-bezier(0, 0, 0.2, 1) both;
+  animation: occl-dot-in var(--dur-enter) cubic-bezier(0, 0, 0.2, 1) both;
 }
 .occl-dot.first {
   width: 12px;
@@ -5408,7 +5404,7 @@ html[data-wb-open="1"][data-wb-place="right"] .app-main { margin-right: var(--wb
   line-height: 1;
   cursor: pointer;
   z-index: 1;
-  animation: occl-badge-pop 240ms var(--spring) both;
+  animation: occl-badge-pop var(--dur-stage) var(--spring) both;
 }
 .occlusion-editor-badge.sel { background: var(--accent); }
 /* R1 裁剪预览：外部压暗 + accent 描边——永不实色填充，框内内容始终可见 */
@@ -6504,30 +6500,6 @@ body.reader-surface {
   border-right: none;
 }
 .reader-side-panel { flex: 1; min-height: 0; overflow: auto; }
-/* 图谱目录条目（D4）：标题 + 区间文字 + 层级缩进（由行内 paddingLeft 给）。
-   **不画占比条**：条的宽度＝自有区间÷全书单元数，是同一份区间的冗余编码，用户明确不要。 */
-.map-item {
-  display: flex;
-  align-items: baseline;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  padding: var(--sp-1) var(--sp-3);
-  font-size: var(--fs-secondary);
-  /* 用 --reader-fg（阅读外观的正文色）而不是 --text-primary（应用主题色）：
-     侧栏底色是 --reader-bg，两者必须同一套档，否则应用主题切深时浅字落浅底（实测踩过）。 */
-  color: var(--reader-fg, var(--text-primary));
-  cursor: pointer;
-}
-.map-item:hover { background: color-mix(in srgb, var(--reader-fg, #1a1a1a) 8%, transparent); }
-.map-item-label { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
-/* 区间与层级：mono、helper 色——与样张 .mm-item .rng/.lvl 同规（区间紧跟标题，层级贴右缘）。
-   ⚠️ meta 这一层必须是 flex：否则里面的 span 只是行内元素，`margin-left:auto` 不生效
-   （实测踩过：层级紧贴区间印成「单元 2–3L0」，而不是贴到行右缘）。 */
-.map-item-meta { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; }
-.map-item-range { margin-left: var(--sp-2); color: var(--text-helper); font-size: var(--fs-meta); }
-.map-item-level { margin-left: auto; color: var(--text-helper); font-size: var(--fs-meta); }
 /* 摘录页签里的条目（阅读器视角：只做「看 + 跳」） */
 .reader-extract-item {
   display: flex;
@@ -6906,7 +6878,7 @@ body.reader-surface {
      （150ms），hero 末端点不带 chart-dot、常显不参互。
      no-preference 之外无 opacity:0 —— reduce / 无 hover 能力时数据点常显。 */
   @media (hover: hover) {
-    .chart-dot { opacity: 0; transition: opacity 150ms var(--ease-enter); }
+    .chart-dot { opacity: 0; transition: opacity var(--dur-enter) var(--ease-enter); }
     .chart-svg:hover .chart-dot { opacity: 1; }
     .chart-svg:hover .chart-bar:not(:hover),
     .chart-svg:hover .chart-seg:not(:hover),
@@ -7694,43 +7666,10 @@ body.capture-body #root { height: 100vh; }
 .kmg-prop-actions { display: flex; gap: var(--sp-2); }
 
 /* ============ v48.44（D84）：材料导图并入阅读器侧栏图谱页签（docs/design/MINDMAP-SIDEBAR-TAB.md）============
-   全屏 Overlay 退役（§4.19-2 v47.2 决策作废）。两个宿主：
-   · 画布层＝.reader-map-layer（Reader 挂在 .reader-engine-main 内的覆盖层，:empty 时不遮正文）
-     → .reader-map-stage（portal 根，App token 取色——画布 SVG 用 resolveTheme() 读的同一套 paper/ink）；
-   · 页签面板＝.mindmap-tab-panel（侧栏 data-panel="map"）→ .mindmap-sidebar 随栏宽铺满，
-     内部配色挂阅读外观变量（--reader-border / --reader-fg），与侧栏其余页签同一套取色。
+   全屏 Overlay 退役（§4.19-2 v47.2 决策作废）；D254 后画布宿主改为 .reader-atlas-layer（结构全景）。
+   本节保留页签面板＝.mindmap-tab-panel（侧栏 data-panel="map"）→ .mindmap-sidebar 随栏宽铺满，
+   内部配色挂阅读外观变量（--reader-border / --reader-fg），与侧栏其余页签同一套取色。
    瑞士风：单 accent / 直角 / 无阴影渐变 / 1px hairline / 8px 基线 / 全 token 化 */
-.reader-map-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-}
-.reader-map-layer:empty { display: none; }
-.reader-map-stage {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--paper);
-  color: var(--text-primary);
-}
-.reader-map-top {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  height: 40px;
-  padding: 0 var(--sp-4);
-  border-bottom: var(--bw-hairline) solid var(--border-subtle);
-  flex: none;
-}
-.reader-map-top .mindmap-top-title {
-  font-size: var(--fs-secondary);
-  font-weight: 600;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .mindmap-top-actions {
   margin-left: auto;
   display: flex;
@@ -7754,12 +7693,6 @@ body.capture-body #root { height: 100vh; }
   flex-direction: column;
   align-items: center;
   gap: var(--sp-4);
-}
-/* 焦点环必须挂在真正可聚焦的元素上：键盘焦点在 .reader-map-stage
-   （tsx 里 tabIndex={0} + onKeyDown），而 .mindmap-canvas 没有 tabIndex。 */
-.reader-map-stage:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
 }
 .mindmap-canvas:active {
   cursor: grabbing;
@@ -7858,8 +7791,6 @@ body.capture-body #root { height: 100vh; }
   min-width: 0;
   display: flex;
 }
-/* 页签容器变 flex，让面板拿到有界高度（内部自滚，与目录页签 .reader-toc-list 同规） */
-.reader-sidebar .reader-map-panel { display: flex; }
 .reader-sidebar .mindmap-sidebar {
   width: 100%;
   flex: 1;
@@ -8739,13 +8670,6 @@ button.crumb-root:hover { color: var(--text-primary); text-decoration: underline
 }
 /* D95 v1.3（用户反馈）：引文左缘 3px 批注色条退役——正文左缘与卡内其他小节（标签/meta）共享同一对齐边
    （better-layout：对齐到共同边缘）；批注色信息由批注轨与文中高亮承载，不再重复一条竖线。 */
-/* v48.41（D81）：卡面 meta 行移除（来源上顶栏、状态文字删除），规则随零消费者删除 */
-.badge-experimental {
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  padding: 0 var(--sp-2);
-  font-size: var(--fs-meta);
-}
 /* D95 §F.1：摘录卡字号/字体/行高桥的 :root 静态默认档（17px/inherit/1.7）——变量未注入时卡面有
    合法基线（IACVT 纪律：下方 var() 全带回退值，双保险）。运行时由 useExtractFaceTypography
    写 document.body 上的同名变量（跟随阅读器外观或独立自定义）。26px 的 .extract-page 覆盖已删
@@ -8837,8 +8761,6 @@ button.crumb-root:hover { color: var(--text-primary); text-decoration: underline
 .prio-track input[type="range"]::-webkit-slider-runnable-track { height: 100%; background: transparent; border: none; }
 .prio-track input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 6px; height: 100%; margin: 0; background: var(--paper); border: none; }
 .prio-track input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.extract-face-hints { display: flex; gap: var(--sp-2); align-items: center; font-size: var(--fs-meta); color: var(--text-helper); }
-
 /* ---------- 卡片浏览器 2.0（v48.22 / D58 §6.8-6）：多选列 + 批量动作条 ---------- */
 .cb-pick {
   width: 22px;
@@ -9139,7 +9061,7 @@ button.crumb-root:hover { color: var(--text-primary); text-decoration: underline
 .md-tb-menu-item[data-h="2"] { font-size: 14px; font-weight: 600; }
 .md-tb-menu-item[data-h="3"] { font-size: 13px; font-weight: 600; }
 @media (prefers-reduced-motion: no-preference) {
-  .md-tb-menu { animation: stage-pop-in 150ms var(--ease) both; }
+  .md-tb-menu { animation: stage-pop-in var(--dur-enter) var(--ease) both; }
 }
 
 /* （D122：§K.4 阅读器选区动作组悬浮弹层 .reader-sel-actions-pop 已退役——被选区浮条 .sel-bar 取代；
@@ -9667,7 +9589,6 @@ html.wbw-occl-out .occlusion-editor-layer {
 .wb-pick:hover { color: var(--accent-hover); }
 .wb-pick.is-miss { color: var(--text-helper); }
 .wb-fields .manual-region-preview { margin: 0; max-width: 100%; }
-.wb-cloze-preview { margin: 0; font-size: var(--fs-meta); color: var(--text-helper); overflow-wrap: anywhere; }
 .wb-empty { margin: 0; font-size: var(--fs-meta); color: var(--text-helper); }
 
 /* 「更多」折叠：collapse-clip 通用手法；收起态延迟隐藏（防 Tab 进入、防读屏） */
@@ -10534,14 +10455,6 @@ html.wbw-occl-out .occlusion-editor-layer {
 .mm2-svg [data-act] {
   cursor: pointer;
 }
-.mm2-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  user-select: none;
-}
 .mm2-detail-block {
   margin-top: var(--sp-3);
 }
@@ -10832,8 +10745,8 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
   color: color-mix(in srgb, var(--reader-fg, var(--ink)) 82%, transparent);
   overflow-y: auto;
   padding-bottom: 14px;
-  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent); /* consistency-allow: mask */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent); /* consistency-allow: mask */
 }
 .flow-explain::-webkit-scrollbar { width: 6px; }
 .flow-explain::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--reader-fg, var(--ink)) 18%, transparent); }
@@ -10874,7 +10787,7 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
   padding: 3px 8px;
   font-size: 12px;
   color: color-mix(in srgb, var(--reader-fg, var(--ink)) 90%, transparent);
-  box-shadow: 0 6px 18px -10px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-flow-tip);
   max-width: 220px;
   white-space: nowrap;
   overflow: hidden;
@@ -11085,7 +10998,7 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
 .atlas-card {
   box-sizing: border-box; padding: 6px 12px 8px; max-height: 340px; overflow-y: auto;
   background: var(--reader-bg, var(--paper)); border: 1px solid color-mix(in srgb, var(--reader-fg, var(--ink)) 12%, transparent);
-  border-radius: 8px; box-shadow: 0 14px 36px -20px rgba(0, 0, 0, 0.35);
+  border-radius: 8px; box-shadow: var(--shadow-atlas-card);
   animation: flow-inline-in 220ms var(--flow-ease) both; animation-delay: var(--flow-delay, 0ms);
 }
 .atlas-card .flow-actions { flex-wrap: wrap; height: auto; min-height: 26px; }

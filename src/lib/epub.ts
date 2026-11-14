@@ -42,6 +42,212 @@ const turndown = new TurndownService({
   bulletListMarker: "-"
 });
 
+// ---------- 导入侧资源上限（F40 C-02 / C-20 / C-22）----------
+// 解压炸弹的防御必须在**解压之前**：只读 ZIP 中央目录里声明的体积，不碰条目内容。
+// 绝对值上限是主闸（与压缩比无关，重复度高的合法书也能过）；压缩比只作为超大条目的补充信号。
+const MAX_EPUB_UNZIPPED_TOTAL_BYTES = 160 * 1024 * 1024;
+const MAX_EPUB_UNZIPPED_ENTRY_BYTES = 96 * 1024 * 1024;
+const MAX_EPUB_RATIO_GUARD_BYTES = 32 * 1024 * 1024;
+const MIN_EPUB_RATIO_GUARD_BYTES = 64 * 1024;
+const MAX_EPUB_COMPRESSION_RATIO = 400;
+// turndown 的 join() 对「父节点子元素数」是二次方复杂度；逐块转写把单次规模压到常数级。
+const MAX_TURNDOWN_BLOCK_CHILDREN = 500;
+// 与 htmlImport 同口径的嵌套深度护栏（EPUB 章节同样是不可信 HTML）。
+const MAX_EPUB_HTML_DEPTH = 128;
+const MAX_EPUB_HTML_TAGS = 200000;
+// 浏览器会隐式闭合这些元素：网页里大量不带 </p></li> 的写法不能被误判成「深度嵌套」。
+const HTML_IMPLIED_END: Record<string, string[]> = {
+  p: ["p"],
+  li: ["li"],
+  dt: ["dt", "dd"],
+  dd: ["dt", "dd"],
+  tr: ["tr"],
+  td: ["td", "th"],
+  th: ["td", "th"],
+  option: ["option"]
+};
+
+interface ZipCentralEntry {
+  name: string;
+  uncompressed: number;
+  compressed: number;
+}
+
+/** 读 ZIP 中央目录（只读字节，不解压）。结构不可识别时返回 null，交给解析器自行报错。 */
+function readZipCentralDirectory(bytes: Uint8Array): ZipCentralEntry[] | null {
+  const len = bytes.length;
+  if (len < 22) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = -1;
+  const stop = Math.max(0, len - 22 - 65535);
+  for (let i = len - 22; i >= stop; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0 || eocd + 22 > len) return null;
+  const count = view.getUint16(eocd + 10, true);
+  const cdSize = view.getUint32(eocd + 12, true);
+  const cdOffset = view.getUint32(eocd + 16, true);
+  if (!count || cdOffset + 46 > len || cdOffset + cdSize > len) return null;
+  const entries: ZipCentralEntry[] = [];
+  let p = cdOffset;
+  for (let i = 0; i < count && p + 46 <= len; i++) {
+    if (view.getUint32(p, true) !== 0x02014b50) return null;
+    const compressed = view.getUint32(p + 20, true);
+    const uncompressed = view.getUint32(p + 24, true);
+    const nameLen = view.getUint16(p + 28, true);
+    const extraLen = view.getUint16(p + 30, true);
+    const commentLen = view.getUint16(p + 32, true);
+    const nameEnd = p + 46 + nameLen;
+    if (nameEnd > len) return null;
+    entries.push({
+      name: new TextDecoder().decode(bytes.subarray(p + 46, nameEnd)),
+      uncompressed,
+      compressed
+    });
+    p = nameEnd + extraLen + commentLen;
+  }
+  return entries;
+}
+
+function formatMB(bytes: number): string {
+  return (bytes / 1024 / 1024).toFixed(1) + "MB";
+}
+
+/** C-02：解压前按中央目录声明的体积拒绝炸弹；超限抛可读错误，不做部分解压。 */
+function assertEpubArchiveWithinLimits(bytes: Uint8Array): void {
+  const entries = readZipCentralDirectory(bytes);
+  if (!entries) return; // 中央目录都没有：让解析器给出它自己的结构错误
+  let total = 0;
+  for (const e of entries) {
+    if (!e.name || e.name.endsWith("/")) continue;
+    if (e.uncompressed === 0xffffffff) {
+      throw new Error("这本 EPUB 含 ZIP64 超大条目，暂不支持导入（条目声明体积超出常规 ZIP 范围）");
+    }
+    total += e.uncompressed;
+    if (e.uncompressed > MAX_EPUB_UNZIPPED_ENTRY_BYTES) {
+      throw new Error(
+        `这本 EPUB 的单个条目「${e.name}」解压后约 ${formatMB(e.uncompressed)}，超过 ` +
+          `${formatMB(MAX_EPUB_UNZIPPED_ENTRY_BYTES)} 的安全上限，已拒绝导入以免内存耗尽`
+      );
+    }
+    if (
+      e.uncompressed >= MAX_EPUB_RATIO_GUARD_BYTES &&
+      e.compressed >= MIN_EPUB_RATIO_GUARD_BYTES &&
+      e.compressed > 0 &&
+      e.uncompressed / e.compressed > MAX_EPUB_COMPRESSION_RATIO
+    ) {
+      throw new Error(
+        `这本 EPUB 的条目「${e.name}」压缩比异常（${Math.round(e.uncompressed / e.compressed)}:1，` +
+          `解压后 ${formatMB(e.uncompressed)}），已拒绝导入以免内存耗尽`
+      );
+    }
+  }
+  if (total > MAX_EPUB_UNZIPPED_TOTAL_BYTES) {
+    throw new Error(
+      `这本 EPUB 解压后总大小约 ${formatMB(total)}，超过 ${formatMB(MAX_EPUB_UNZIPPED_TOTAL_BYTES)} 的` +
+        `安全上限，已拒绝导入以免内存耗尽`
+    );
+  }
+}
+
+/** 章节 HTML 的嵌套深度/标签数预检：超限时降级为纯文本，绝不让递归序列化器爆栈。 */
+function htmlExceedsBudget(html: string): boolean {
+  const src = String(html || "");
+  if (src.length > 8 * 1024 * 1024) return true;
+  const stripped = src
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "");
+  const re = /<\s*(\/?)\s*([a-zA-Z][a-zA-Z0-9:-]*)([^>]*)>/g;
+  const stack: string[] = [];
+  const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+  let tags = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stripped)) !== null) {
+    const closing = m[1] === "/";
+    const name = m[2].toLowerCase();
+    const selfClosing = /\/\s*$/.test(m[3] || "");
+    if (closing) {
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i] === name) {
+          stack.length = i;
+          break;
+        }
+      }
+    } else if (!selfClosing && !voidTags.has(name)) {
+      const implied = HTML_IMPLIED_END[name];
+      if (implied) {
+        for (let i = stack.length - 1; i >= 0; i--) {
+          if (implied.includes(stack[i])) {
+            stack.length = i;
+            break;
+          }
+        }
+      }
+      stack.push(name);
+      if (stack.length > MAX_EPUB_HTML_DEPTH) return true;
+    }
+    if (++tags > MAX_EPUB_HTML_TAGS) return true;
+  }
+  return false;
+}
+
+const HTML_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", hellip: "…", mdash: "—", ndash: "–",
+  ldquo: "“", rdquo: "”", lsquo: "‘", rsquo: "’", middot: "·", times: "×", divide: "÷", copy: "©",
+  reg: "®", trade: "™", deg: "°", plusmn: "±", sup2: "²", sup3: "³", frac12: "½", frac14: "¼",
+  frac34: "¾", laquo: "«", raquo: "»", euro: "€", pound: "£", yen: "¥", cent: "¢", sect: "§",
+  para: "¶", bull: "•", larr: "←", rarr: "→", uarr: "↑", darr: "↓", harr: "↔"
+};
+
+/** 有界实体解码：只认已知命名实体与数字引用，未知原样保留（不吞正文）。 */
+function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]{0,31});?/g, (m, body: string) => {
+    if (body[0] === "#") {
+      const hex = body[1] === "x" || body[1] === "X";
+      const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
+      if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) return m;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return m;
+      }
+    }
+    const v = HTML_ENTITIES[body.toLowerCase()];
+    return v === undefined ? m : v;
+  });
+}
+
+/** 结构过深时的降级路径：标签剥离 + 有界实体解码，保留可读正文。 */
+function htmlToPlainText(html: string): string {
+  const stripped = String(html || "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+    .replace(/<[^>]*>/g, " ");
+  return decodeHtmlEntities(stripped).replace(/\s+/g, " ").trim();
+}
+
+/** 逐块 turndown：把单个父节点的子元素数压到常数级，避免 turndown.join() 的二次方开销。 */
+function turndownInBlocks(root: DocumentFragment | Element): string {
+  const doc = root.ownerDocument ?? document;
+  const kids = Array.from(root.childNodes);
+  const convert = (nodes: Node[]): string => {
+    const box = doc.createElement("div");
+    for (const n of nodes) box.appendChild(n.cloneNode(true));
+    return turndown.turndown(box).trim();
+  };
+  if (kids.length <= MAX_TURNDOWN_BLOCK_CHILDREN) return convert(kids);
+  const parts: string[] = [];
+  for (let i = 0; i < kids.length; i += MAX_TURNDOWN_BLOCK_CHILDREN) {
+    const part = convert(kids.slice(i, i + MAX_TURNDOWN_BLOCK_CHILDREN));
+    if (part) parts.push(part);
+  }
+  return parts.join("\n\n");
+}
+
 function stripTags(html: string): string {
   const div = document.createElement("div");
   div.innerHTML = html || "";
@@ -98,18 +304,47 @@ export async function importEpubFile(): Promise<EpubImportResult | null> {
 export async function parseEpubBytes(name: string, rawBytes: Uint8Array): Promise<EpubImportResult> {
   const picked = { name: name || "book.epub", data: rawBytes };
   const raw = picked.data as Uint8Array;
+  // C-02：解压炸弹在解压前拒绝（只读中央目录声明的体积）
+  assertEpubArchiveWithinLimits(raw);
   const arrayBuffer = raw.buffer.slice(
     raw.byteOffset,
     raw.byteOffset + raw.byteLength
   ) as ArrayBuffer;
 
   const book: Book = ePub(arrayBuffer);
-  await book.ready;
+  // C-22：book.ready 也把 navigation 等支路并在一起；不 await 它时仍要接住拒绝，
+  // 否则库内部失败会让进程留下 unhandledRejection。
+  void book.ready.catch(() => undefined);
+  // C-22：@likecoin/epub-ts 的 loadNavigation 没有 catch——nav 文件缺失时
+  // `loading.navigation` 永不 settle（book.ready 悬挂）且留下无人接手的 rejection。
+  // 在 unpack 执行前把该方法包一层：目录不可用只丢目录，不阻塞正文。
+  const bookPatchable = book as unknown as { loadNavigation?: (pkg: unknown) => Promise<unknown> };
+  if (typeof bookPatchable.loadNavigation === "function") {
+    const original = bookPatchable.loadNavigation.bind(book);
+    // 用 then 包一层：即使原方法同步抛错，也统一收口为 resolve(undefined)。
+    bookPatchable.loadNavigation = (pkg: unknown) =>
+      Promise.resolve().then(() => original(pkg)).catch(() => undefined);
+  }
+  try {
+    // 不 await book.ready（它把 navigation 也并进去了）；正文所需的元数据各自独立 settle。
+    await Promise.all([book.loaded.manifest, book.loaded.spine, book.loaded.metadata]);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`这本 EPUB 的结构无法解析：${msg}`);
+  }
 
-  const meta = await book.packaging?.metadata;
+  const meta = book.packaging?.metadata;
   const coverDataUrl = await extractCover(book);
 
-  const nav = await book.loaded.navigation;
+  // 目录加载仍可能有未 settle 的挂起（库内已 catch 拒绝），给一个上限，不拖住导入。
+  let navTimer: ReturnType<typeof setTimeout> | undefined;
+  const nav = await Promise.race([
+    book.loaded.navigation.catch(() => undefined),
+    new Promise<undefined>((resolve) => {
+      navTimer = setTimeout(() => resolve(undefined), 3000);
+    })
+  ]);
+  if (navTimer) clearTimeout(navTimer);
   const toc = (nav?.toc ?? []).map((t) => ({
     title: stripTags(t.label || ""),
     href: t.href || ""
@@ -117,27 +352,40 @@ export async function parseEpubBytes(name: string, rawBytes: Uint8Array): Promis
 
   const spineItems = book.spine?.spineItems ?? [];
   let markdown = "";
+  const failures: string[] = [];
   for (let i = 0; i < spineItems.length; i++) {
     const section = spineItems[i];
-    await section.load(book.load.bind(book));
     try {
-      const bodyHtml = section.document?.body?.innerHTML ?? "";
+      // C-20：直接取章节 XHTML 文本，不建整章 DOM（section.load 会在 jsdom 里驻留一份完整文档）；
+      // C-04：逐章容错，单章坏（目录谎报/条目缺失）只跳过该章，不连坐同包正常章。
+      const sectionHtml = await book.load(section.href || section.url || "", "string");
+      if (typeof sectionHtml !== "string") throw new Error("章节内容不可读");
       const base = (section.href || "").split("/").pop();
       const tocItem = toc.find((t) => t.href.split("/").pop() === base);
       const chapterTitle = tocItem?.title || `第 ${i + 1} 章`;
-      const cleanHtml = DOMPurify.sanitize(bodyHtml, {
-        FORBID_TAGS: ["style", "script", "img", "link", "meta"],
-        FORBID_ATTR: ["style", "class", "id"]
-      });
-      const chapterMd = turndown.turndown(cleanHtml).trim();
+      let chapterMd: string;
+      if (htmlExceedsBudget(sectionHtml)) {
+        chapterMd = htmlToPlainText(sectionHtml);
+      } else {
+        const cleanDom = DOMPurify.sanitize(sectionHtml, {
+          FORBID_TAGS: ["style", "script", "img", "link", "meta"],
+          FORBID_ATTR: ["style", "class", "id"],
+          RETURN_DOM: true
+        });
+        chapterMd = turndownInBlocks(cleanDom as unknown as DocumentFragment);
+      }
       markdown += `\n\n# ${chapterTitle}\n\n${chapterMd}`;
-    } finally {
-      section.unload();
+    } catch (e) {
+      failures.push(`第 ${i + 1} 章：${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
   if (!markdown.trim()) {
-    throw new Error("未能从这本书中提取到文本内容");
+    throw new Error(
+      failures.length
+        ? `未能从这本书中提取到文本内容（${failures.length} 章读取失败，首条：${failures[0]}）`
+        : "未能从这本书中提取到文本内容"
+    );
   }
 
   return {
@@ -176,22 +424,60 @@ export const SYNTH_GENERATOR_VERSION = "syn-3";
 
 const synthMd: MarkdownIt = new MarkdownIt({ html: false, linkify: false, typographer: false });
 
+// KaTeX 产物预算（F40 C-03 / C-21）：每个公式都会展开成一份自包含 HTML，
+// 合法但密集的公式同样能把产物撑到 12 倍。超预算的公式保留 TeX 原文（纯文本），不抛异常。
+const MAX_KATEX_FORMULAS = 800;
+const MAX_KATEX_TEX_CHARS = 4000;
+const MAX_KATEX_BRACE_DEPTH = 64;
+
+/** 花括号最大嵌套深度（KaTeX 递归解析；1 万层会 RangeError）。 */
+function maxBraceDepth(tex: string): number {
+  let depth = 0;
+  let max = 0;
+  for (let i = 0; i < tex.length; i++) {
+    const c = tex.charCodeAt(i);
+    if (c === 0x7b) {
+      depth += 1;
+      if (depth > max) max = depth;
+    } else if (c === 0x7d && depth > 0) {
+      depth -= 1;
+    }
+  }
+  return max;
+}
+
+function escapeHtmlText(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 /** markdown → 正文 HTML（KaTeX 服务端渲染为自包含 HTML+CSS，无脚本；占位符法避免被 markdown 转义） */
 export function renderMarkdownToBodyHtml(markdown: string): string {
   const mathSlots: string[] = [];
-  const stash = (tex: string, display: boolean) => {
-    const idx = mathSlots.push(
-      katex.renderToString(tex, { displayMode: display, throwOnError: false, output: "html" })
-    ) - 1;
+  let renderedCount = 0;
+  const stash = (tex: string, display: boolean, raw: string) => {
+    let rendered: string | null = null;
+    if (
+      renderedCount < MAX_KATEX_FORMULAS &&
+      tex.length <= MAX_KATEX_TEX_CHARS &&
+      maxBraceDepth(tex) <= MAX_KATEX_BRACE_DEPTH
+    ) {
+      try {
+        rendered = katex.renderToString(tex, { displayMode: display, throwOnError: false, output: "html" });
+        renderedCount += 1;
+      } catch {
+        rendered = null; // 超深/超长公式：降级为原文，不得让整本书打不开
+      }
+    }
+    const idx = mathSlots.push(rendered ?? escapeHtmlText(raw)) - 1;
     return `@@KATEX${idx}@@`;
   };
   // $$…$$（display，含多行）先行；再行内 $…$
   const withSlots = markdown
-    .replace(/\$\$([\s\S]+?)\$\$/g, (_m, tex) => stash(String(tex).trim(), true))
+    .replace(/\$\$([\s\S]+?)\$\$/g, (m, tex) => stash(String(tex).trim(), true, m))
     // A-6（审计）：原写法会把 `costs $5 and the box $10` 整段当行内公式，两个 $ 号被吞、正文被改写
     // （违反 §9.1 M6-1「正文不做任何改写」）。加边界守卫：开 $ 后不得紧跟数字或空白，闭 $ 前不得是空白。
     // 于是货币写法与裸 $ 不再被吞，`$x$` 这类真行内公式照旧。
-    .replace(/\$(?![0-9\s])([^$\n]*?[^\s$])\$/g, (_m, tex) => stash(String(tex).trim(), false));
+    .replace(/\$(?![0-9\s])([^$\n]*?[^\s$])\$/g, (m, tex) => stash(String(tex).trim(), false, m));
   return synthMd.render(withSlots).replace(/@@KATEX(\d+)@@/g, (_m, i) => mathSlots[Number(i)] ?? "");
 }
 

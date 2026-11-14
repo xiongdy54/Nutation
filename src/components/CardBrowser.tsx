@@ -87,13 +87,15 @@ function statusOf(c: CardRecord): string {
 // 到期判定与难点口径（v48.67 / D111 起内联在轻量行集过滤器中，字段口径不变：
 // 到期＝未挂起且 due≤now（fsrs 缺失视为 due=now）；难点＝isLeech 或已暂停）
 
+// C-17：与 src/lib/fsrs.ts 的 formatInterval 逐字同实现——同一到期间隔在复习页与
+// 卡片浏览页必须说同一句话；参数化形态（{n} 占位）交给 i18n，避免各语言语序错位。
 function formatDue(ms: number): string {
   const days = ms / 86400000;
-  if (days < 1 / 24) return `${Math.max(1, Math.round(ms / 60000))} ${t("分钟")}`;
-  if (days < 1) return `${Math.round(days * 24)} ${t("小时")}`;
-  if (days < 30) return `${Math.round(days)} ${t("天", { n: Math.round(days) })}`;
-  if (days < 365) return `${(days / 30).toFixed(1)} ${t("个月")}`;
-  return `${(days / 365).toFixed(1)} ${t("年")}`;
+  if (days < 1 / 24) return t("{n} 分钟", { n: Math.max(1, Math.round(ms / 60000)) });
+  if (days < 1) return t("{n} 小时", { n: Math.round(days * 24) });
+  if (days < 30) return t("{n} 天", { n: Math.round(days) });
+  if (days < 365) return t("{n} 个月", { n: (days / 30).toFixed(1) });
+  return t("{n} 年", { n: (days / 365).toFixed(1) });
 }
 
 function dueText(c: CardRecord): string {
@@ -132,6 +134,23 @@ const LEECH_LIST_CAP = 200;
 // 隐蔽，异步行取数把它放大为 getWindow + 行缓存拷贝风暴）。setWin 另做等值短路双保险。
 const EMPTY_META: BrowserMetaRow[] = [];
 const EMPTY_EXTRACTS: DueTopic[] = [];
+
+// 审计 A-1：cardsApi.update 是整行写回。写前必须取库内最新行再并入本次改动——手里的快照可能已陈旧
+// （复习、辨析弹窗、其它面板改过该卡），直接 {...快照} 会静默覆盖别处的修改（含 FSRS 调度状态）。
+// 取不到最新行（卡已删除/读失败）或主进程拒写 → 抛错由调用方呈现，绝不回落到陈旧快照（Q9）。
+async function loadFreshCard(id: string): Promise<CardRecord> {
+  const fresh = await cardsApi.get(id);
+  if (!fresh) throw new Error("card-missing");
+  return fresh;
+}
+async function writeCard(next: CardRecord): Promise<void> {
+  if (!(await cardsApi.update(next))) throw new Error("card-missing");
+}
+// 与 electron/db.js freshNewCardFsrs 同形的八字段新卡基线——「重置为新卡」承诺的「清零」（审计 A-1 澄清一）。
+// 写入时须同时带 resetToNew: true（显式意图），否则 updateCard 的陈旧快照守卫会按「状态后退」拒写。
+function newCardBaselineFsrs(now: number): CardRecord["fsrs"] {
+  return { state: "new", due: now, lapses: 0, stability: 0, difficulty: 0, reps: 0, learningSteps: 0, lastReview: null };
+}
 
 function pruneRowCache(m: Map<string, BrowserCard>): Map<string, BrowserCard> {
   while (m.size > ROW_CACHE_MAX) {
@@ -2149,9 +2168,20 @@ function CardDetail({
     };
   }, [card.id, card.generatedBy, card.updatedAt]);
 
-  async function handleEdit(patch: { frontMarkdown?: string; backMarkdown?: string; noteText?: string }) {
-    await cardsApi.update({ ...card, ...patch });
+  const [saveError, setSaveError] = useState(false);
+  async function guardedWrite(build: (fresh: CardRecord) => CardRecord) {
+    try {
+      const fresh = await loadFreshCard(card.id);
+      await writeCard(build(fresh));
+      setSaveError(false);
+    } catch {
+      setSaveError(true);
+    }
     eventBus.emit("cards/changed");
+  }
+
+  async function handleEdit(patch: { frontMarkdown?: string; backMarkdown?: string; noteText?: string }) {
+    await guardedWrite((fresh) => ({ ...fresh, ...patch }));
   }
 
   async function toggleSuspend() {
@@ -2160,15 +2190,15 @@ function CardDetail({
   }
 
   async function postpone(days: number) {
-    const base = Math.max(Date.now(), card.fsrs?.due ?? Date.now());
-    await cardsApi.update({ ...card, fsrs: { ...card.fsrs, due: base + days * 86400000 } });
-    eventBus.emit("cards/changed");
+    await guardedWrite((fresh) => {
+      const base = Math.max(Date.now(), fresh.fsrs?.due ?? Date.now());
+      return { ...fresh, fsrs: { ...fresh.fsrs, due: base + days * 86400000 } };
+    });
   }
 
   async function resetNew() {
     if (!window.confirm(T("重置为新卡？该卡的调度进度（稳定度/难度/复习次数/遗忘次数）将被清零。"))) return;
-    await cardsApi.update({ ...card, fsrs: { state: "new", due: Date.now(), lapses: 0 } });
-    eventBus.emit("cards/changed");
+    await guardedWrite((fresh) => ({ ...fresh, fsrs: newCardBaselineFsrs(Date.now()), resetToNew: true }));
   }
 
   async function handleDelete() {
@@ -2459,6 +2489,11 @@ function CardDetail({
             >
               {isArchived ? T("恢复（解除归档）") : T("归档")}
             </button>
+            {saveError && (
+              <p className="notice-bar card-marked-error" role="alert">
+                {T("保存失败：该卡已被删除，或已在别处更新。请刷新后重试。")}
+              </p>
+            )}
             <button className="btn btn-outline btn-sm" onClick={() => postpone(1)}>
               {T("推迟 1 天")}
             </button>
@@ -2738,6 +2773,17 @@ export function LeechWizard({ card: cardProp, onClose, onDone }: { card: CardRec
   const [step, setStep] = useState(0);
   const [diagnosis, setDiagnosis] = useState<{ diagnosis?: string; analysis?: string; suggestions?: string[] } | null>(null);
   const [running, setRunning] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+  async function wizardWrite(build: (fresh: CardRecord) => CardRecord): Promise<boolean> {
+    try {
+      await writeCard(build(await loadFreshCard(card.id)));
+      setSaveError(false);
+      return true;
+    } catch {
+      setSaveError(true);
+      return false;
+    }
+  }
   // v48.77（D121 §3.1）：辨析弹窗（与复习页共用 DisambiguateModal；替换 v30 易混对比卡一键生成）
   const [disambOpen, setDisambOpen] = useState(false);
 
@@ -2789,6 +2835,11 @@ export function LeechWizard({ card: cardProp, onClose, onDone }: { card: CardRec
             </svg>
           </button>
         </div>
+        {saveError && (
+          <p className="notice-bar card-marked-error" role="alert">
+            {T("保存失败：该卡已被删除，或已在别处更新。请刷新后重试。")}
+          </p>
+        )}
         <div className="modal-scroll">
           <div className="seg-tabs mb-4">
             {steps.map((s, i) => (
@@ -2853,8 +2904,7 @@ export function LeechWizard({ card: cardProp, onClose, onDone }: { card: CardRec
                 <button
                   className="btn btn-outline btn-sm"
                   onClick={async () => {
-                    await cardsApi.update({ ...card, priority: 20 });
-                    onDone();
+                    if (await wizardWrite((fresh) => ({ ...fresh, priority: 20 }))) onDone();
                   }}
                 >
                   {T("降优先级到 20")}
@@ -2868,7 +2918,7 @@ export function LeechWizard({ card: cardProp, onClose, onDone }: { card: CardRec
               <button
                 className="btn btn-outline btn-sm"
                 onClick={async () => {
-                  await cardsApi.update({ ...card, fsrs: { ...card.fsrs, due: Date.now() + 30 * 86400000 } });
+                  if (!(await wizardWrite((fresh) => ({ ...fresh, fsrs: { ...fresh.fsrs, due: Date.now() + 30 * 86400000 } })))) return;
                   await cardsApi.updateLeech(card.id, { suspended: true, suspendedAt: Date.now() });
                   onDone();
                 }}
@@ -2888,7 +2938,7 @@ export function LeechWizard({ card: cardProp, onClose, onDone }: { card: CardRec
               className="btn btn-secondary btn-sm"
               onClick={async () => {
                 // 处理完成：重置为新卡 + 清 leech 标记（§8.7 处理后默认重置）
-                await cardsApi.update({ ...card, fsrs: { state: "new", due: Date.now(), lapses: 0 } });
+                if (!(await wizardWrite((fresh) => ({ ...fresh, fsrs: newCardBaselineFsrs(Date.now()), resetToNew: true })))) return;
                 await cardsApi.resolveLeech(card.id, "reworded", {});
                 onDone();
               }}

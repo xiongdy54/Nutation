@@ -34,6 +34,7 @@ body.skin-claude {
   --surface-overlay: #fbf9f4;
   --surface-input: #fbf9f4;
   --dot: #f1da8c;
+  --empty-bud-line: rgba(46, 74, 58, 0.55);
   /* 圆角阶梯（CDS 十档收敛到组件 Token；嵌套圆角「内 = 外 − 内边距」） */
   --radius: 8px;
   --radius-panel: 12px;
@@ -53,6 +54,11 @@ body.skin-claude {
   --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
   --shadow-popover: var(--shadow-float);
   --shadow-dialog: 0 4px 8px 0 rgba(0, 0, 0, 0.06), 0 12px 28px -2px rgba(0, 0, 0, 0.08);
+  /* F-11：新增主题 Token 在皮肤块内给出与原值视觉等价的值（skin 可另行调整） */
+  --shadow-shelf-lift: 0 12px 32px rgba(10, 10, 10, 0.18);
+  --shadow-flow-tip: 0 6px 18px -10px rgba(0, 0, 0, 0.35);
+  --shadow-atlas-card: 0 14px 36px -20px rgba(0, 0, 0, 0.35);
+  --sheen-skeleton: rgba(255, 255, 255, 0.45);
   /* 焦点：outline 承载（跟随圆角；不用 box-shadow 光环——避免与 --field-line/卡片阴影互相覆盖） */
   --focus-outline-width: 2px;
   --focus-outline-color: color-mix(in srgb, var(--accent) 85%, transparent);
@@ -110,6 +116,7 @@ body.skin-claude.theme-dark {
   --surface-overlay: #184633;
   --surface-input: #184633;
   --dot: #edd385;
+  --empty-bud-line: rgba(46, 74, 58, 0.55);
   /* 圆角与动效两档同值（浅色块已覆盖，非颜色 Token 不需重复——skin 层浅色块恒在场） */
   --shadow-card: 0 1px 2px 0 rgba(0, 0, 0, 0.30), 0 2px 8px 0 rgba(0, 0, 0, 0.40);
   --skin-shadow-card-hover: 0 2px 4px 0 rgba(0, 0, 0, 0.30), 0 6px 16px 0 rgba(0, 0, 0, 0.40);
@@ -117,6 +124,10 @@ body.skin-claude.theme-dark {
   --shadow-float: inset 0 1px 0 0 rgba(255, 255, 255, 0.06), 0 8px 24px rgba(0, 0, 0, 0.50), 0 2px 6px rgba(0, 0, 0, 0.40);
   --shadow-popover: var(--shadow-float);
   --shadow-dialog: inset 0 1px 0 0 rgba(255, 255, 255, 0.06), 0 12px 28px -2px rgba(0, 0, 0, 0.50);
+  --shadow-shelf-lift: 0 12px 32px rgba(10, 10, 10, 0.18);
+  --shadow-flow-tip: 0 6px 18px -10px rgba(0, 0, 0, 0.35);
+  --shadow-atlas-card: 0 14px 36px -20px rgba(0, 0, 0, 0.35);
+  --sheen-skeleton: rgba(255, 255, 255, 0.45);
   --focus-outline-color: color-mix(in srgb, var(--accent) 85%, transparent);
   /* D256：遮挡层光标图形固定配色；深色档按 A4 重声明同一枚陶土圆角光标。 */
   --overlay-close-cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Crect x='1' y='1' width='30' height='30' rx='8' fill='%23f5f5f2' stroke='%230a0a0a'/%3E%3Cpath d='M10 10L22 22M22 10L10 22' stroke='%230a0a0a' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") 16 16, pointer;
@@ -212,7 +223,7 @@ body.skin-claude {
    .btn-primary/.grade/.bar-btn.primary，避免 transform 动画互相覆盖，D88 §5.4 白名单纪律的皮肤版） */
 body.skin-claude.motion-full :is(.btn-secondary, .btn-outline, .icon-btn, .dd-btn, .topbar-wb, .nav-item, .seg-tabs button, .act, .cap-more):active {
   transform: scale(var(--press-scale));
-  transition: transform 60ms cubic-bezier(0.32, 0.72, 0, 1);
+  transition: transform var(--dur-press) cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 /* 弹层弹簧弹出（覆盖 pop-in 的时长与缓动——SNAPPY 503ms 弹簧；选择器 = theme.css pop-in 白名单，
@@ -253,7 +264,7 @@ body.skin-claude.motion-full .skeleton { animation: none; position: relative; ov
     position: absolute;
     inset: 0;
     transform: translateX(-100%);
-    background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.45) 50%, transparent 100%);
+    background: linear-gradient(90deg, transparent 0%, var(--sheen-skeleton) 50%, transparent 100%);
     animation: skin-claude-skel-sweep 1.8s infinite cubic-bezier(0.4, 0, 0.2, 1);
   }
 }

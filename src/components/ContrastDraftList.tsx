@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { createAcceptedCard, type CardDraft, type CardRecord } from "../lib/cards";
 import { eventBus } from "../lib/eventbus";
 import { IconAlert } from "./icons";
+import { useT } from "../lib/i18n";
 
 export default function ContrastDraftList({
   drafts,
@@ -17,6 +18,7 @@ export default function ContrastDraftList({
   sourceAuthor?: string | null;
   contextRef?: CardRecord["contextRef"];
 }) {
+  const T = useT();
   const [accepted, setAccepted] = useState<Set<number>>(new Set());
   const [skipped, setSkipped] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState(false);
@@ -46,7 +48,7 @@ export default function ContrastDraftList({
   return (
     <div className="contrast-drafts" data-testid="contrast-drafts">
       {drafts.length === 0 && (
-        <p className="form-hint">AI 认为这两张卡之间没有真实的混淆风险，未产对比卡。</p>
+        <p className="form-hint">{T("AI 认为这两张卡之间没有真实的混淆风险，未产对比卡。")}</p>
       )}
       {error && <p className="ai-draft-warnings"><IconAlert size={14} /> {error}</p>}
       {drafts.map((d, i) => (
@@ -60,19 +62,19 @@ export default function ContrastDraftList({
           <div className="ai-draft-back">{d.back}</div>
           <div className="ai-actions">
             {accepted.has(i) ? (
-              <span className="form-hint state-ok">已入库</span>
+              <span className="form-hint state-ok">{T("已入库")}</span>
             ) : skipped.has(i) ? (
-              <span className="form-hint">已放弃</span>
+              <span className="form-hint">{T("已放弃")}</span>
             ) : (
               <>
-                <button className="btn btn-primary btn-sm" disabled={saving} onClick={() => void acceptOne(d, i)}>入库</button>
-                <button className="btn btn-secondary btn-sm" disabled={saving} onClick={() => setSkipped((prev) => new Set([...prev, i]))}>放弃</button>
+                <button className="btn btn-primary btn-sm" disabled={saving} onClick={() => void acceptOne(d, i)}>{T("入库")}</button>
+                <button className="btn btn-secondary btn-sm" disabled={saving} onClick={() => setSkipped((prev) => new Set([...prev, i]))}>{T("放弃")}</button>
               </>
             )}
           </div>
         </div>
       ))}
-      {drafts.length > 0 && pendingCount === 0 && <p className="form-hint">全部处理完毕。</p>}
+      {drafts.length > 0 && pendingCount === 0 && <p className="form-hint">{T("全部处理完毕。")}</p>}
     </div>
   );
 }

@@ -89,23 +89,44 @@ function unionMs(spans) {
   return total;
 }
 
+/** t 在升序日界 bounds 中所属的下标 i（bounds[i] ≤ t < bounds[i+1]）；早于首项（含 NaN）→ -1，不早于末项 → bounds.length-1。
+ * 与 db.js dayBucketOf（D236）同一习语与语义：本模块是纯函数、不 import db.js，两处保持同构。 */
+function dayBucketOf(bounds, t) {
+  if (!(t >= bounds[0])) return -1;
+  let lo = 0, hi = bounds.length - 1;
+  if (t >= bounds[hi]) return hi;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (bounds[mid] <= t) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
 /**
  * @param events  行为事件数组（reviewEvent / readEvent / pointEvent 产物）
- * @param opts    { dayStart0: 第一个学习日起点(ms), days: 天数 }
+ * @param opts    { dayStart0: 第一个学习日起点(ms), days: 天数,
+ *                  dayStarts?: 学习日起点数组（days+1 项，末项为末日终点；db.js learningDayStarts 推导，
+ *                  夏令时切换日 23/25 小时）。缺省时按 dayStart0 均匀日界回落（旧调用方 / 纯函数单测；
+ *                  无夏令时时区两种口径逐值相同）。 }
  * @returns       { days: [{ date, blocks, totals, activeMs, first, last, longestMs }] }
  */
 function buildTimeline(events, opts) {
-  const dayStart0 = Number(opts.dayStart0);
   const days = Math.max(1, Math.floor(Number(opts.days) || 1));
+  // 审计 #6（D236）：归桶与日界夹取一律用真实学习日界二分查找，不再 (t1-dayStart0)/DAY_MS 硬除——
+  // 回拨日 23:00–24:00 的事件会被硬除挤出窗口整段丢失。
+  const bounds = Array.isArray(opts.dayStarts) && opts.dayStarts.length === days + 1
+    ? opts.dayStarts
+    : Array.from({ length: days + 1 }, (_, i) => Number(opts.dayStart0) + i * DAY_MS);
   const buckets = Array.from({ length: days }, () => []);
   for (const e of events) {
-    const idx = Math.floor((e.t1 - dayStart0) / DAY_MS);
+    const idx = dayBucketOf(bounds, e.t1);
     if (idx >= 0 && idx < days) buckets[idx].push(e);
   }
   const out = [];
   for (let i = 0; i < days; i++) {
-    const dayStart = dayStart0 + i * DAY_MS;
-    const dayEnd = dayStart + DAY_MS;
+    const dayStart = bounds[i];
+    const dayEnd = bounds[i + 1];
     const byKind = new Map();
     for (const e of buckets[i]) {
       if (!byKind.has(e.kind)) byKind.set(e.kind, []);

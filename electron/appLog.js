@@ -86,6 +86,7 @@ function metaSuffix(meta) {
  *        repeatWindowMs / now 仅供测试注入（时钟可拔插），生产走默认值。
  */
 function init(opts) {
+  /** @type {any} F-6：opts 字段见上方注释（dir/maxBytes/keepFiles/repeatWindowMs/now/version/...），均可选 */
   const o = opts || {};
   state.dir = String(o.dir || "");
   state.file = state.dir ? path.join(state.dir, LOG_FILE_NAME) : "";

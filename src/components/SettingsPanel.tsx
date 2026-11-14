@@ -58,6 +58,9 @@ import { rerankExtractsNow, readMultiSelectKey, MULTI_SELECT_KEYS, DEFAULT_MULTI
 // v49.8（D182）：界面语言——语言切换区块（sec-language，唯一切换入口）
 import { LANGUAGES, getLocale, setLocale, normalizeLocale, useT, type Locale } from "../lib/i18n";
 import { computeSettingsNotices, latestSaneBackupAt, type SettingsNotice, type SettingsNoticeKind, type SettingsNoticesInput } from "../lib/settingsNotices";
+// 审计 #12：平滑滚动必须同时尊重系统 prefers-reduced-motion 与应用内动效等级（body.motion-off）——
+// 显式 behavior:"smooth" 会压过 theme.css 的 scroll-behavior:auto !important，只判 matchMedia 不够。
+import { motionPreference } from "../lib/mindmap/v2/animate";
 
 // C-37：新增 "system"（跟随系统）——theme 存的是解析后的落窗档（accent 默认值按它取），
 // themeMode 是 theme.mode 原始档（按钮高亮按它；"system" 时浅/深两钮都不高亮）。
@@ -2527,7 +2530,7 @@ function SettingsNotices() {
     stopFlashRef.current?.();
     const btn = document.querySelector<HTMLElement>(`[data-action="${action}"]`);
     if (!btn) return; // 目标按钮不在场（如更新态不含下载钮）→ 只滚动不闪烁
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduce = motionPreference() === "off";
     btn.classList.add(reduce ? "flash-hold" : "flash-blink");
     const onBtnClick = () => stopFlashRef.current?.();
     btn.addEventListener("click", onBtnClick);
@@ -2555,7 +2558,7 @@ function SettingsNotices() {
     if (!t) return;
     const sec = document.getElementById(t.sectionId);
     if (!sec) return;
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduce = motionPreference() === "off";
     sec.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
     if (t.flashAction) startFlash(t.flashAction);
   };
@@ -3539,6 +3542,18 @@ function ThemePluginsBlock() {
     await reload.current();
   }
 
+  // 审计 #3：「重新扫描」必须真的重扫目录——plugins:list 走 listRecords(false)（读缓存），
+  // 只有 plugins:rescan 走 listRecords(true)。先强制重扫再拉列表（宿主 rescan 内的广播也会
+  // 触发一次 reload，两次都是只读幂等，不另加去重）。
+  async function rescan() {
+    try {
+      await window.pluginsAPI?.rescan();
+    } catch {
+      /* 无桥窗口 / 扫描失败：仍拉一次列表，沿用既有静默口径 */
+    }
+    await reload.current();
+  }
+
   const settingValue = (p: PluginListItem, s: PluginSettingDef): unknown => {
     const v = valuesMap[p.id]?.[s.id];
     return v === undefined ? s.default : v;
@@ -3643,7 +3658,7 @@ function ThemePluginsBlock() {
         <button type="button" className="btn btn-outline btn-sm" data-plugin-open-folder onClick={() => void window.pluginsAPI?.openFolder()}>
           {T("打开插件文件夹")}
         </button>
-        <button type="button" className="btn btn-outline btn-sm" data-plugin-rescan onClick={() => void reload.current()}>
+        <button type="button" className="btn btn-outline btn-sm" data-plugin-rescan onClick={() => void rescan()}>
           {T("重新扫描")}
         </button>
       </div>
@@ -3676,23 +3691,41 @@ export default function SettingsPanel({
   // v48.70（D114）：13 个导航项与 13 个区块一一对应（SECTION_GROUPS 生成 navIds），
   // 不再需要「跳过无导航节」的特判；子块 id（sec-learningday/sec-siblingbury/sec-global）
   // 挂在 div 上、不带 .settings-section 类，天然不进测量集。
+  // 审计 #52：原实现每个 scroll 事件都重跑 querySelectorAll + getComputedStyle + 对**全部**区块
+  // getBoundingClientRect（无节流）＝长设置页每次滚动几十次强制布局。现改为
+  // ①区块清单缓存（DOM 增删经 MutationObserver 失效——仪表盘等区块数据加载后才从骨架换成真内容，
+  //   挂载时快照会漏节，故不能只在挂载时取一次）②滚动容器判定缓存（宽/窄档由媒体查询切换，resize 时失效）
+  // ③measure 经 rAF 合帧（一帧最多一次布局读）④scrollTop/clientHeight/scrollHeight 各读一次。
+  // 判据与兜底顺序原样保留：到底兜底 → 距容器顶最近的一节。
   useEffect(() => {
     const root = layoutRef.current;
     if (!root) return;
     const navIds = new Set(SECTION_GROUPS.flatMap((g) => g.items.map((s) => `sec-${s.id}`)));
-    // 每次现取：仪表盘等区块在数据加载后才从骨架换成真内容，挂载时快照会漏节
-    const listItems = () =>
-      Array.from(root.querySelectorAll<HTMLElement>(".settings-section[id]")).filter((el) => navIds.has(el.id));
+    let itemsCache: HTMLElement[] | null = null;
+    const listItems = () => {
+      if (!itemsCache) {
+        itemsCache = Array.from(root.querySelectorAll<HTMLElement>(".settings-section[id]")).filter((el) => navIds.has(el.id));
+      }
+      return itemsCache;
+    };
     // 宽档由 .settings-content 滚动（左导航固定不动），窄档由 .settings-layout 整体滚动
     const contentEl = root.querySelector<HTMLElement>(".settings-content");
-    const scroller = () =>
-      contentEl && getComputedStyle(contentEl).overflowY === "auto" ? contentEl : root;
+    let scrollerCache: HTMLElement | null = null;
+    const scroller = () => {
+      if (!scrollerCache) {
+        scrollerCache = contentEl && getComputedStyle(contentEl).overflowY === "auto" ? contentEl : root;
+      }
+      return scrollerCache;
+    };
     const measure = () => {
       const items = listItems();
       if (!items.length) return;
       const sc = scroller();
+      const top = sc.scrollTop;
+      const viewH = sc.clientHeight;
+      const fullH = sc.scrollHeight;
       // 已滚到底：最后一节再怎么滚也到不了顶部，最近判据会停在倒数第二节 → 兜底
-      if (sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 8) {
+      if (top + viewH >= fullH - 8) {
         setActiveNav(items[items.length - 1].id.replace(/^sec-/, ""));
         return;
       }
@@ -3710,11 +3743,23 @@ export default function SettingsPanel({
     // 平滑滚动的最后一帧不保证送达 scroll 事件（实测停在落点前约 40px），
     // 故每次滚动事件后再尾随测一次，保证最终收敛到落点。
     let tail = 0;
-    const onScroll = () => {
-      measure();
-      window.clearTimeout(tail);
-      tail = window.setTimeout(measure, 220);
+    let raf = 0;
+    const schedule = () => {
+      if (raf) return; // 同一帧内的多次 scroll 只测一次
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        measure();
+      });
     };
+    const onScroll = () => {
+      schedule();
+      window.clearTimeout(tail);
+      tail = window.setTimeout(schedule, 220);
+    };
+    const mo = new MutationObserver(() => { itemsCache = null; });
+    mo.observe(root, { childList: true, subtree: true });
+    const onResize = () => { scrollerCache = null; };
+    window.addEventListener("resize", onResize);
     const targets = [root, contentEl].filter((x): x is HTMLElement => !!x);
     for (const t of targets) {
       t.addEventListener("scroll", onScroll, { passive: true });
@@ -3723,6 +3768,9 @@ export default function SettingsPanel({
     measure();
     return () => {
       window.clearTimeout(tail);
+      if (raf) cancelAnimationFrame(raf);
+      mo.disconnect();
+      window.removeEventListener("resize", onResize);
       for (const t of targets) {
         t.removeEventListener("scroll", onScroll);
         t.removeEventListener("scrollend", onScroll);
@@ -3737,7 +3785,7 @@ export default function SettingsPanel({
     setActiveNav(id);
     const el = document.getElementById(`sec-${id}`);
     if (!el) return;
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduce = motionPreference() === "off";
     el.scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
     el.querySelector("h3")?.focus({ preventScroll: true });
   };

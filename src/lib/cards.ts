@@ -57,6 +57,8 @@ declare global {
     };
     issuesAPI?: {
       add: (issue: unknown) => Promise<{ id: string }>;
+      /** v49.110（D276）：批量写——主进程单事务单 checkpoint；逐条结果 ({id}|false) 按入参顺序 */
+      addMany?: (issues: unknown[]) => Promise<Array<{ id: string } | false>>;
       list: (cardId: string) => Promise<unknown[]>;
       resolve: (id: string) => Promise<boolean>;
     };
@@ -404,6 +406,32 @@ export function parseFollowUps(summaries: unknown): FollowUpGroup[] {
   return out;
 }
 
+/** C-09：单张 AI 草稿的形状校验。提示词用 front/back，DB 侧快照用 frontMarkdown/backMarkdown，两套命名都要认。
+ *  cloze 卡以挖空文本（cloze 或 front 里的 {{cN::}}）为准，背面允许留空。 */
+function cardDraftProblem(c: unknown): string | null {
+  if (!c || typeof c !== "object" || Array.isArray(c)) return "不是卡片对象";
+  const o = c as Record<string, unknown>;
+  const pick = (...keys: string[]): string => {
+    for (const k of keys) {
+      const v = o[k];
+      if (typeof v === "string" && v.trim()) return v;
+    }
+    return "";
+  };
+  const front = pick("frontMarkdown", "front", "noteText");
+  const back = pick("backMarkdown", "back");
+  const cardType = typeof o.cardType === "string" ? o.cardType.trim() : "";
+  if (cardType === "cloze") {
+    const cloze = pick("cloze");
+    if (!front && !cloze) return "cloze 卡缺挖空文本";
+    if (!cloze && !/\{\{c\d+::/.test(front)) return "cloze 卡缺挖空文本";
+    return null;
+  }
+  if (!front) return "缺题面（front）";
+  if (!back) return "缺答案（back）";
+  return null;
+}
+
 // 导出供提示词测试台（prompt-lab）复用同一 JSON 容错逻辑
 export function extractJson(raw: string): GenResult {
   const text = String(raw ?? "");
@@ -446,14 +474,22 @@ export function extractJson(raw: string): GenResult {
     try {
       const parsed = JSON.parse(cand) as GenResult;
       if (!Array.isArray(parsed.cards)) throw new Error("AI 返回缺少 cards 数组");
+      // C-09（§4.4.5「不产出半成品」）：形状不可信的响应整批丢弃，绝不把半卡/空卡当草稿落库。
+      // F41 口径＝宁可全丢，不可半落——同一批里只要有一张残缺，剩余卡片也不可信。
+      const badIndex = parsed.cards.findIndex((c) => cardDraftProblem(c) !== null);
+      if (badIndex >= 0) {
+        const bad = new Error(`AI 返回的卡片不完整（第 ${badIndex + 1} 张：${cardDraftProblem(parsed.cards[badIndex])}），本批已整批丢弃，请重新生成`);
+        (bad as Error & { code?: string }).code = "card_shape";
+        throw bad;
+      }
       return parsed;
     } catch (err) {
       lastErr = err;
     }
   }
-  throw new Error(
-    `AI 未返回有效 JSON：${lastErr instanceof Error ? lastErr.message : "未找到 JSON 对象"}`
-  );
+  // 形状错误已自带可执行文案，不再套「未返回有效 JSON」前缀
+  if (lastErr instanceof Error && (lastErr as Error & { code?: string }).code === "card_shape") throw lastErr;
+  throw new Error(`AI 未返回有效 JSON：${lastErr instanceof Error ? lastErr.message : "未找到 JSON 对象"}`);
 }
 
 /** D98（v48.57）：card-occlusion 请求公共段（模板装配 + 多模态调用 + JSON 解析）——
@@ -1197,6 +1233,14 @@ export const cardsApi = {
     (await window.cardsAPI?.resolveLeech(id, resolution, updates)) ?? false,
   listLeech: async () => ((await window.cardsAPI?.listLeech()) ?? []) as CardRecord[],
   addIssue: async (issue: unknown) => (await window.issuesAPI?.add(issue)) ?? { id: "" },
+  /** v49.110（D276，审计 #56）：批量写卡片问题——主进程单事务、恰一次 checkpoint（N 条逐条单写 = N 次）。
+   *  逐条语义与 addIssue 一致，结果按入参顺序（{id} | false）；旧 preload 无 addMany 时回落逐条单写（行为不变）。 */
+  addIssues: async (issues: unknown[]): Promise<Array<{ id: string } | false>> => {
+    if (window.issuesAPI?.addMany) return (await window.issuesAPI.addMany(issues)) ?? [];
+    const out: Array<{ id: string } | false> = [];
+    for (const issue of issues) out.push(await cardsApi.addIssue(issue));
+    return out;
+  },
   listIssues: async (cardId: string) => ((await window.issuesAPI?.list(cardId)) ?? []) as CardIssueRecord[],
   resolveIssue: async (id: string) => (await window.issuesAPI?.resolve(id)) ?? false,
   setBatchStatus: async (id: string, status: string) => {
@@ -1252,7 +1296,9 @@ export interface CardRecord {
     regionScope?: string;
   } | null;
   // §4.1 契约：fsrs_json 全字段持久化（含 S/D/reps/lastReview）
-  fsrs: { state?: string; due?: number; lapses?: number; reps?: number; stability?: number; difficulty?: number; lastReview?: number | null };
+  fsrs: { state?: string; due?: number; lapses?: number; reps?: number; stability?: number; difficulty?: number; learningSteps?: number; lastReview?: number | null };
+  /** 仅写入意图标记（不落库）：updateCard 据此放行「重置为新卡」这一有意的调度后退（审计 A-1） */
+  resetToNew?: boolean;
   leech: { isLeech?: boolean; suspended?: boolean; suspendedAt?: number | null; resolution?: string } | null;
   generatedBy: string;
   /** v34（M12，§4.16）：同源组标识——同一制卡来源单元的多张卡共享；NULL=不参与延后。只服务今日队列视图，不参与 FSRS */
@@ -1533,9 +1579,8 @@ export async function createAcceptedCard(
     });
     const created = await cardsApi.create(card);
     ids.push(created.id);
-    for (const issue of issues) {
-      await cardsApi.addIssue({ cardId: created.id, ...issue, source: "lint" });
-    }
+    // D276（审计 #56）：lint 问题一次批量写（原逐条 addIssue = N 次 checkpoint）；载荷与顺序原样
+    await cardsApi.addIssues(issues.map((issue) => ({ cardId: created.id, ...issue, source: "lint" })));
     const similar = await similaritySearch.findSimilar(card.frontMarkdown || cloze, 2);
     if (similar.length > 0) {
       await cardsApi.addIssue({

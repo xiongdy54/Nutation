@@ -169,8 +169,20 @@ function computePasses(events, units, docLen) {
       const b = session[i];
       const step = b.char_pos - a.char_pos;
       if (step <= 0 || step > lmParams.JUMP_CHARS) continue; // 往回翻或目录跳转不算读
-      for (const u of us) {
-        if (a.char_pos < u.mdTo && b.char_pos >= u.mdTo && !passedInSession.has(u.id)) {
+      // 审计 #55c：us 已按 mdTo 升序，命中条件 a.char_pos < mdTo <= b.char_pos 是连续区间。
+      // 事件对按 created_at 排序而 char_pos 非单调（回翻被跳过后从更低位置继续）⇒ 单指针不成立，
+      // 逐事件对二分首个 mdTo > a.char_pos，再顺序扫到 mdTo > b.char_pos 为止。
+      // 命中集合与记录顺序（mdTo 升序、稳定排序保序）与原全扫描逐字等价（tests/lm-perf-equiv.test.cjs A 组）。
+      let lo = 0;
+      let hi = us.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (us[mid].mdTo <= a.char_pos) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < us.length && us[i].mdTo <= b.char_pos; i++) {
+        const u = us[i];
+        if (!passedInSession.has(u.id)) {
           record(u.id, b.created_at);
           passedInSession.add(u.id);
         }

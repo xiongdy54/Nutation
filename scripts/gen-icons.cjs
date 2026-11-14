@@ -1,5 +1,6 @@
 // 图标资产生成器（D187 / v49.14）：从用户设计包 nutation-icon-kit-v2 一次性生成软件全部图标。
-// 运行方式：npx electron scripts/gen-icons.cjs（需 Electron 运行时：nativeImage 解码/缩放/反色）。
+// 运行方式：npx electron scripts/gen-icons.cjs [设计包 out 目录]（需 Electron 运行时：nativeImage 解码/缩放/反色）。
+// 设计包路径优先级：argv[2] > 环境变量 NUTATION_ICON_KIT > DEFAULT_KIT（原作者本机路径，换机器必须覆盖）。
 // 产物入库（electron/ + build/ + public/），本脚本保留供日后换图再生成。零新依赖。
 "use strict";
 
@@ -7,7 +8,9 @@ const { app, nativeImage } = require("electron");
 const fs = require("fs");
 const path = require("path");
 
-const KIT = "C:/Users/xiongdy/Downloads/nutation-icon-kit-v2/out";
+// 默认值＝历史行为（原硬编码路径），仅为兼容原作者本机；目录缺失时下方 whenReady 里会给出可操作报错。
+const DEFAULT_KIT = "C:/Users/xiongdy/Downloads/nutation-icon-kit-v2/out";
+const KIT = path.resolve(process.argv[2] || process.env.NUTATION_ICON_KIT || DEFAULT_KIT);
 const ROOT = path.resolve(__dirname, "..");
 const OUT = {
   mainIco: [path.join(ROOT, "build", "icon.ico"), path.join(ROOT, "electron", "icon.ico")],
@@ -168,6 +171,17 @@ function packVerified(images, files, refImg) {
 
 app.whenReady().then(() => {
   try {
+    // ---- 设计包目录校验：缺失即报可操作的错，不静默产出空图标 ----
+    if (!fs.existsSync(KIT) || !fs.statSync(KIT).isDirectory()) {
+      fail(
+        "设计包 out 目录不存在：" + KIT + "\n" +
+        "[gen-icons] 处理：取得 nutation-icon-kit-v2 设计包后，任选一种方式指定它的 out 目录：\n" +
+        "  npx electron scripts/gen-icons.cjs \"<out 目录路径>\"\n" +
+        "  NUTATION_ICON_KIT=\"<out 目录路径>\" npx electron scripts/gen-icons.cjs\n" +
+        "[gen-icons] 未指定时回落到脚本内 DEFAULT_KIT（原作者本机路径，换机器必须覆盖）。"
+      );
+    }
+
     // ---- 源图 ----
     const lightSrc = nativeImage.createFromPath(path.join(KIT, "png", "nutation-icon-light-1024.png"));
     const light256 = nativeImage.createFromPath(path.join(KIT, "png", "nutation-icon-light-256.png"));

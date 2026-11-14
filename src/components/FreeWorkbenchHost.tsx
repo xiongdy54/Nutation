@@ -2,18 +2,16 @@
 // 窗口内没有「当前阅读位置」——手动制卡免选区、AI 解释/制卡走「粘贴文字」入口，
 // 卡片不带来源锚（contextRef=null，与既有「contextRef 为 NULL 的老卡」同口径）。
 // 主窗口的阅读器与摘录页各有带阅读上下文的宿主；其余页面不再挂本宿主（制卡走 Ctrl+Alt+K 独立窗口）。
-import { useCallback, useRef, useState } from "react";
+import { useRef } from "react";
 import SelectionPanels from "./SelectionPanels";
 import { useSelectionActions } from "../lib/useSelectionActions";
+import { useFlash } from "../lib/useFlash";
 
 export default function FreeWorkbenchHost({ standalone = false }: { standalone?: boolean }) {
-  const [flash, setFlash] = useState<string | null>(null);
+  // 审计 #14：计时器归 useFlash 统一持有（清上一条 + 卸载回收），不再裸写 setTimeout
+  const [flash, showToast] = useFlash();
   const sourceTextRef = useRef("");
   const occlusionSourceRef = useRef<"engine" | "library">("engine");
-  const showToast = useCallback((msg: string) => {
-    setFlash(msg);
-    window.setTimeout(() => setFlash(null), 1800);
-  }, []);
 
   const sel = useSelectionActions({
     selectionText: () => null,

@@ -5,14 +5,14 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const SCHEMA_VERSION = 5; // 每新增一个 MIGRATIONS 项就 +1，并与最后一项的 version 相等
+const SCHEMA_VERSION = 6; // 每新增一个 MIGRATIONS 项就 +1，并与最后一项的 version 相等
 
 // C-18a（审计）：due 表达式——只在「JSON 合法且 $.due 是数值」时取出，其余一律为 NULL
 // （NULL = 交给 JS 精确判定，见 db.js 的 TODAY_QUEUE_DUE_SQL 快速路径）。
 // 建索引与查询必须引用**同一个常量字符串**，SQLite 才能把查询表达式匹配到索引。
 const DUE_EXPR = "(CASE WHEN json_valid(fsrs_json) AND json_type(fsrs_json, '$.due') IN ('integer','real') THEN json_extract(fsrs_json, '$.due') END)";
 
-/** 未来的迁移写在这里：{ version: 4, name: "…", up(db) { db.exec("…") } }。禁止修改已发布的项。 */
+/** 未来的迁移写在这里：{ version: 6, name: "…", up(db) { db.exec("…") } }（当前最后一项为 version 6）。禁止修改已发布的项。 */
 const MIGRATIONS = [
   {
     version: 2,
@@ -109,6 +109,23 @@ const MIGRATIONS = [
         const a = flipOpText(r.a);
         if (b !== r.b || a !== r.a) updOp.run(b, a, r.id);
       }
+    }
+  },
+  {
+    // 审计 E-4（D282）：四条热查询路径补索引（此前全表扫描）。纯加速，不改任何行、不改查询结果。
+    //  · review_logs(card_id, review_seq)：成长派生 / 撤销 / 按卡取日志（card_id IN、card_id=? ORDER BY review_seq、GROUP BY card_id）；
+    //  · assets(library_item_id, kind)：开书取原件 / 图片（按书 + 种类）；
+    //  · card_issues(card_id)：卡片问题列表；
+    //  · reading_events(item_id, created_at)：按书取上次阅读位置。
+    version: 6,
+    name: "hot_query_indexes",
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_review_logs_card_seq ON review_logs(card_id, review_seq);
+        CREATE INDEX IF NOT EXISTS idx_assets_item_kind ON assets(library_item_id, kind);
+        CREATE INDEX IF NOT EXISTS idx_card_issues_card ON card_issues(card_id);
+        CREATE INDEX IF NOT EXISTS idx_reading_events_item_created ON reading_events(item_id, created_at);
+      `);
     }
   }
 ];

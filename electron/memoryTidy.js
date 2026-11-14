@@ -370,6 +370,11 @@ async function runBackfill(ctx) {
   broadcast(ctx, { phase: "backfill", running: true });
   const exec = async () => {
     let aborted = false;
+    // 审计 A-2：无进展即停。水位线可能推不过本批（条目 updated_at 在未来——A-11 把水位线钳到 now；
+    // 或整批 updatedAt 全 0/NULL——不写水位线），下一批会原样取回同一批条目 → 原先 for(;;) 死循环，
+    // 每圈一次 AI 调用、账单无上限。本次补处理内已处理过的条目不再送 AI：整批都处理过即 break。
+    // 只堵死循环，不改水位线语义（推进语义的取舍登记为待裁决）。
+    const seenIds = new Set();
     try {
       for (;;) {
         if (st.backfillAbort) break;
@@ -379,6 +384,8 @@ async function runBackfill(ctx) {
           limit: cur.backfillBatchEntries
         });
         if (!entries.length) break;
+        if (entries.every((e) => seenIds.has(e.id))) break;
+        for (const e of entries) seenIds.add(e.id);
         const r = await runRound(ctx, { kind: "ingest", trigger: "backfill", entries });
         if (!r.ok) break; // 失败即停：水位线未推进，下次继续（§4.18-16④）
         st.backfill.done += entries.length;

@@ -33,7 +33,7 @@ function resolvePrebuildInstallBin() {
 function verifyElectronAbi() {
   // ELECTRON_RUN_AS_NODE=1：electron 内嵌 Node（45 = 24.x；31 = 20.18 / ABI 125）——
   // v13 NAPI 二进制跨 ABI 通用，加载成功 + 建库即验证（D137 设计稿探测②同法）
-  const probe = "const D=require('better-sqlite3');const d=new D(':memory:');d.exec('CREATE TABLE t(x)');d.prepare('INSERT INTO t VALUES (?)').run(1);if(d.prepare('SELECT COUNT(*) AS n FROM t').get().n!==1)throw new Error('count!=1');console.log('PIN_OK abi='+process.versions.modules+' electron='+process.versions.electron||'');";
+  const probe = "const D=require('better-sqlite3');const d=new D(':memory:');d.exec('CREATE TABLE t(x)');d.prepare('INSERT INTO t VALUES (?)').run(1);if(d.prepare('SELECT COUNT(*) AS n FROM t').get().n!==1)throw new Error('count!=1');console.log('PIN_OK abi='+process.versions.modules+' electron='+(process.versions.electron||''));";
   const cli = path.join(repoRoot, "node_modules", "electron", "cli.js");
   const r = spawnSync(process.execPath, [cli, "-e", probe], {
     cwd: repoRoot,

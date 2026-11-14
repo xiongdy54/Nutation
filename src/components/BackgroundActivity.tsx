@@ -25,6 +25,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { mindmapApi } from "../lib/mindmap";
 import { describeTask, dismissTask, listTasks, subscribe, type ActivityTask } from "../lib/activity";
 import { rememberDismissed } from "../lib/activityDismiss";
+import { useT } from "../lib/i18n";
 
 /** 超过这个条数就折到「另有 N 项」后面（卡片高度 = 24×N + 120，不封顶会顶出屏幕） */
 const ROW_CAP = 8;
@@ -38,6 +39,7 @@ interface BackgroundActivityProps {
 }
 
 export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
+  const T = useT();
   const [tasks, setTasks] = useState<ActivityTask[]>(() => listTasks());
   const [expanded, setExpanded] = useState(false); // 整卡是否展开（收起态只有一行）
   const [openId, setOpenId] = useState<string | null>(null); // 哪一行摊开详情（同一时刻只有一行）
@@ -145,7 +147,7 @@ export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
       <div className="bg-activity-card" data-ui="card-interactive" role="status" aria-live="polite">
         {hiddenCount > 0 && (
           <button type="button" className="bg-activity-more" onClick={() => setShowAll(true)}>
-            另有 {hiddenCount} 项 · 点此全展开
+            {T("另有 {n} 项 · 点此全展开", { n: hiddenCount })}
           </button>
         )}
         {shown.map(({ t, v }) => {
@@ -180,7 +182,7 @@ export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
                   <span className="bg-activity-vr" aria-hidden="true" />
                   <span className="bg-activity-text">{v.short}</span>
                 </span>
-                {isPrimary && rows.length > 1 && <span className="bg-activity-count">· 共 {rows.length} 项</span>}
+                {isPrimary && rows.length > 1 && <span className="bg-activity-count">{T("· 共 {n} 项", { n: rows.length })}</span>}
               </button>
 
               {/* 详情块：**定高**（恒等式①）——切行时卡片总高不变，光标不会被甩出去 */}
@@ -197,17 +199,17 @@ export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
                         className="bg-activity-btn is-primary"
                         onClick={() => openMap(t.runId, t.documentId, t.mapId, t.phase)}
                       >
-                        打开导图
+                        {T("打开导图")}
                       </button>
                     )}
                     {/* 只有**正在跑**的才谈得上取消：被中断/首层就绪的 run 已不在运行，给「取消」是假动作 */}
                     {t.phase === "running" && (
                       <button type="button" className="bg-activity-btn" onClick={() => void mindmapApi.cancel(t.runId)}>
-                        取消任务
+                        {T("取消任务")}
                       </button>
                     )}
                     <button type="button" className="bg-activity-btn" onClick={() => dispose(t.runId)}>
-                      关闭
+                      {T("关闭")}
                     </button>
                   </div>
                 </div>
@@ -217,7 +219,7 @@ export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
         })}
         {showAll && rows.length > ROW_CAP && (
           <button type="button" className="bg-activity-more" onClick={() => setShowAll(false)}>
-            收起，只看最新 {ROW_CAP} 项
+            {T("收起，只看最新 {n} 项", { n: ROW_CAP })}
           </button>
         )}
       </div>

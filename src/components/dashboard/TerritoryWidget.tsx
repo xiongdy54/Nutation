@@ -5,6 +5,7 @@
 // 回落呈现纪律（§4.17-7③）：只显示现状（覆盖率可回落），无回落提示无警告——Growth Records 才是历史。
 import { useGrowthOverview, type GrowthTerritoryRow } from "../../lib/growth";
 import { territoryAriaLabel, territoryFootText, territoryPctText } from "../../lib/growthStrings";
+import { useT } from "../../lib/i18n";
 
 function TerritoryRowView({ row, index }: { row: GrowthTerritoryRow; index: number }) {
   // 四段只渲染 count>0 的段（0 宽段会留下 1px 幽灵缝）；段顺序/配色 = 设计稿 §5.3 视觉阶梯
@@ -30,6 +31,7 @@ function TerritoryRowView({ row, index }: { row: GrowthTerritoryRow; index: numb
 }
 
 export default function TerritoryWidget() {
+  const T = useT();
   const { data } = useGrowthOverview();
   const rows = (data?.territory.rows ?? []).filter((r) => r.kind === "book").slice(0, 8);
   return (
@@ -40,7 +42,7 @@ export default function TerritoryWidget() {
       {rows.length > 0 ? (
         <p className="territory-foot mono">{territoryFootText(rows.filter((r) => r.crossedHalf).length)}</p>
       ) : (
-        <p className="growth-empty">暂无可展示的材料——至少 8 张活跃卡的材料才会出现在这里。</p>
+        <p className="growth-empty">{T("暂无可展示的材料——至少 8 张活跃卡的材料才会出现在这里。")}</p>
       )}
     </div>
   );

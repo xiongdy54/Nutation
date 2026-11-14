@@ -25,6 +25,8 @@ import { eventBus } from "../lib/eventbus";
 import { readingWorkflow, parseContextRef, undoApi, modifierFlagOf, readMultiSelectKey, type MultiSelectKey, type DueTopic, type ExtractDetail } from "../lib/readingWorkflow";
 import { extractSettings, fetchSessionQueue, type ExtractEngine, type Limits, type ScopeFilter } from "../lib/sessionQueue";
 import { useSelectionActions } from "../lib/useSelectionActions";
+// 审计 #14：短时提示的唯一计时面（一个 timer ref、显示前清上一条、卸载回收）
+import { useFlash } from "../lib/useFlash";
 import { WB_WIDTH } from "../lib/workbenchLayout";
 // D248（T8）：摘录复习会话/呈现/结果埋点（落库动作本身由主进程 tap 记）
 import { track, newUuid7, getTrackConfig, setTrackContext } from "../lib/behavior/track";
@@ -143,7 +145,9 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
   const [cardCounts, setCardCounts] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [flash, setFlash] = useState<string | null>(null);
+  // 审计 #14：flash 计时器归 useFlash 统一持有（显示前清上一条、卸载回收）——
+  // 原 11 处裸写 setTimeout 会让 1.8s 内的第二条提示被第一条的计时器提前清掉。
+  const [flash, showFlash] = useFlash();
   const [undoAvailable, setUndoAvailable] = useState(false);
   /** 面包屑层级链（自根到当前；随显示中的卡片变化） */
   const [chain, setChain] = useState<Array<{ id: string; text: string; depth: number }>>([]);
@@ -185,8 +189,7 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
     const box = el?.getBoundingClientRect();
     const capture = window.assetsAPI?.captureRegion;
     if (!box || box.width < 8 || box.height < 8 || !capture) {
-      setFlash(T("当前环境无法截图"));
-      window.setTimeout(() => setFlash(null), 1800);
+      showFlash(T("当前环境无法截图"));
       return null;
     }
     window.getSelection()?.removeAllRanges();
@@ -197,12 +200,11 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
     const dataUrl = await capture({ x: box.left, y: box.top, width: box.width, height: box.height });
     if (!dataUrl) {
-      setFlash(T("截图失败"));
-      window.setTimeout(() => setFlash(null), 1800);
+      showFlash(T("截图失败"));
       return null;
     }
     return { dataUrl, alt: T("页面截图") };
-  }, [T]);
+  }, [T, showFlash]);
   // 多段选择的修饰键（v48.38 / D78）：settings.app.multiSelectKey——与 Reader 同源同订阅（改动即时生效）
   useEffect(() => {
     let alive = true;
@@ -320,35 +322,69 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
   /**
    * 拉取会话队列。opts.repin＝消费类动作后清钉（新队列头按最新排序成为当前卡）；
    * opts.pinTo＝撤销召回的摘录 id（在队列里才改钉，否则保持原钉）。缺省＝只更新数据、不换卡（D226）。
+   *
+   * 审计 #50：本函数是队列的**唯一**刷新入口，两条纪律——
+   * ① 序号守卫：每次刷新领一个 seq，await 回来后 seq 已过期就整段丢弃。原实现无守卫，
+   *    两次在途刷新的 setItems(list) 可以交错，旧响应覆盖新响应（队列/钉/计数一起错）。
+   * ② 在途 promise 记在 ref：消费类动作经 workflow/changed 广播触发刷新（订阅方刷这一次），
+   *    动作侧 await 的就是同一个 promise——既去掉重复刷新，又保住「刷新落地才解 busy / 才弹提示」的时序。
    */
-  const refresh = useCallback(async (opts?: { repin?: boolean; pinTo?: string | null }) => {
-    const [q, prefs] = await Promise.all([fetchSessionQueue({ scope }), extractSettings.read()]);
-    const list = (q?.extracts ?? []) as DueTopic[];
-    setItems(list);
-    if (opts?.pinTo && list.some((x) => x.id === opts.pinTo)) setPinnedId(opts.pinTo);
-    else if (opts?.repin) setPinnedId(null);
-    setEngine(prefs.engine);
-    setLoaded(true);
-    // 撤销可用性：**空态也必须可达**（处理完最后一条后仍要能 Ctrl+Z / 点「撤销最近一次操作」）
-    try {
-      const info = await undoApi.info();
-      setUndoAvailable(Boolean(info?.available));
-    } catch {
-      setUndoAvailable(false);
-    }
-    // 派生信息：这条摘录已经制过几张卡（按 contextRef.extractId 关联，§4.2-16 上下文引用）。
-    // C-18c：改走主进程 SQL 聚合（cards:countByExtract）——不再 listAll 全量取卡到渲染层。
-    try {
-      const counts = await cardsApi.countByExtract();
-      setCardCounts(counts);
-    } catch {
-      /* 计数是增强信息，失败不影响处理 */
-    }
+  const refreshSeqRef = useRef(0);
+  const refreshInFlightRef = useRef<Promise<void> | null>(null);
+  const refresh = useCallback((opts?: { repin?: boolean; pinTo?: string | null }): Promise<void> => {
+    const seq = ++refreshSeqRef.current;
+    const stale = () => seq !== refreshSeqRef.current;
+    const p = (async () => {
+      const [q, prefs] = await Promise.all([fetchSessionQueue({ scope }), extractSettings.read()]);
+      if (stale()) return;
+      const list = (q?.extracts ?? []) as DueTopic[];
+      setItems(list);
+      if (opts?.pinTo && list.some((x) => x.id === opts.pinTo)) setPinnedId(opts.pinTo);
+      else if (opts?.repin) setPinnedId(null);
+      setEngine(prefs.engine);
+      setLoaded(true);
+      // 撤销可用性：**空态也必须可达**（处理完最后一条后仍要能 Ctrl+Z / 点「撤销最近一次操作」）
+      try {
+        const info = await undoApi.info();
+        if (stale()) return;
+        setUndoAvailable(Boolean(info?.available));
+      } catch {
+        if (!stale()) setUndoAvailable(false);
+      }
+      // 派生信息：这条摘录已经制过几张卡（按 contextRef.extractId 关联，§4.2-16 上下文引用）。
+      // C-18c：改走主进程 SQL 聚合（cards:countByExtract）——不再 listAll 全量取卡到渲染层。
+      try {
+        const counts = await cardsApi.countByExtract();
+        if (!stale()) setCardCounts(counts);
+      } catch {
+        /* 计数是增强信息，失败不影响处理 */
+      }
+    })();
+    refreshInFlightRef.current = p;
+    return p;
   }, [scope]);
+
+  /**
+   * 广播「工作流已变」并等**那一次**刷新落地。repin / pinTo 语义随载荷过事件（订阅方消费），
+   * 动作侧不再自己另刷一次（原 emit + await refresh 双跑＝每次动作 8 趟 IPC）。
+   * 订阅方不在场（挂载/卸载间隙的极端时序）才自己补刷一次——恒不双跑。
+   */
+  const broadcastWorkflow = useCallback(
+    (opts?: { repin?: boolean; pinTo?: string | null }): Promise<void> => {
+      const prev = refreshInFlightRef.current;
+      eventBus.emit("workflow/changed", opts);
+      const p = refreshInFlightRef.current;
+      return p && p !== prev ? p : refresh(opts);
+    },
+    [refresh]
+  );
 
   useEffect(() => {
     void refresh();
-    return eventBus.on("workflow/changed", () => void refresh());
+    return eventBus.on("workflow/changed", (payload) => {
+      const o = payload as { repin?: boolean; pinTo?: string | null } | undefined;
+      void refresh(o && (o.repin || o.pinTo) ? { repin: o.repin, pinTo: o.pinTo } : undefined);
+    });
   }, [refresh]);
 
   const current = (pinnedId ? items.find((x) => x.id === pinnedId) : undefined) ?? items[0] ?? null;
@@ -817,8 +853,7 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
     captureWorkbenchImage,
     occlusionSourceRef: { current: "engine" },
     showToast: (msg) => {
-      setFlash(msg);
-      window.setTimeout(() => setFlash(null), 1800);
+      showFlash(msg);
     },
     // 摘录页的选区就是「卡面里选中的那段」：快照面由卡面 onSelection 提供（faceSel），
     // 但菜单/面板的点击会先触发卡面 mouseup——动作面点击已豁免（见 ExtractCardFace.onUp）。
@@ -870,8 +905,7 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
     const id = await createAnnotation(sel.text, undefined, color, kind, form, comment || null);
     // 直接建摘录（无既有条目可升级）给一条与阅读器同款提示
     if (id && kind === "extract") {
-      setFlash(T("已摘录进学习队列"));
-      window.setTimeout(() => setFlash(null), 1800);
+      showFlash(T("已摘录进学习队列"));
     }
     return id;
   }
@@ -913,17 +947,17 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
       setBusy(true);
       try {
         await fn();
-        eventBus.emit("workflow/changed");
-        await refresh({ repin: true }); // D226：消费类动作＝换卡点，新队列头按最新排序（含刚改的优先级）
+        // D226：消费类动作＝换卡点，新队列头按最新排序（含刚改的优先级）——repin 随广播过事件，
+        // 刷新只发生一次（订阅方），这里 await 的就是它（审计 #50）。
+        await broadcastWorkflow({ repin: true });
         if (note) {
-          setFlash(note);
-          window.setTimeout(() => setFlash(null), 1800);
+          showFlash(note);
         }
       } finally {
         setBusy(false);
       }
     },
-    [current, busy, refresh, viewing]
+    [current, busy, broadcastWorkflow, viewing, showFlash]
   );
 
   const advance = useCallback(() => run(async () => {
@@ -949,15 +983,15 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
       if (!current || viewing) return;
       try {
         await readingWorkflow.updateContent(current.id, text);
-        eventBus.emit("workflow/changed");
-        await refresh();
-        setFlash(T("正文已保存"));
-        window.setTimeout(() => setFlash(null), 1800);
+        // 正文变更牵动批注区间与队列投影 → 广播；刷新只由订阅方跑一次（审计 #50），
+        // 不带 repin：编辑正文不是消费类动作，保持原钉（D226 语义原样）。
+        await broadcastWorkflow();
+        showFlash(T("正文已保存"));
       } catch {
         /* 与 run 同径：投影不回流即视为未生效，不弹错（提交方已有幂等短路兜底） */
       }
     },
-    [current, refresh, viewing]
+    [current, broadcastWorkflow, viewing, showFlash]
   );
   /**
    * 优先级专用静默提交（v48.33 / D73）：与 run() 的差别＝不挂 busy（busy 态会把整排底栏按钮打成
@@ -981,16 +1015,14 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
     if (viewing) return;
     const r = await undoApi.last();
     if (r.ok) {
-      setFlash(T("已撤销最近一次操作"));
-      window.setTimeout(() => setFlash(null), 1800);
+      showFlash(T("已撤销最近一次操作"));
       // D226：撤销召回的摘录（推进/推迟/毕业被撤回）钉为当前卡；撤销的是闪卡评分或召回条不在本队列＝不换卡
       const restored = Array.isArray(r.extractIds) && r.extractIds.length ? String(r.extractIds[0]) : null;
       await refresh({ pinTo: restored });
     } else {
-      setFlash(r.reason || T("没有可撤销的操作"));
-      window.setTimeout(() => setFlash(null), 1800);
+      showFlash(r.reason || T("没有可撤销的操作"));
     }
-  }, [refresh, viewing]);
+  }, [refresh, viewing, showFlash]);
 
   /** 查看态的唯一出口：回队列（同时清掉「要看的范围」，避免下次查看串档） */
   const closeViewing = useCallback(() => {
@@ -1096,8 +1128,7 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
       }
     }
     if (!anchor) {
-      setFlash(T("该摘录没有跳转位置数据（较早版本创建）"));
-      window.setTimeout(() => setFlash(null), 1800);
+      showFlash(T("该摘录没有跳转位置数据（较早版本创建）"));
       return;
     }
     onJumpToDoc(ref.documentId, anchor, "queue");
@@ -1522,13 +1553,11 @@ export default function ExtractReviewView({ onJumpToDoc, bookItemIds, scopeLimit
           onUpdateForm={saveAnnotationForm}
           onUpgrade={async (id) => {
             await upgradeAnnotation(id);
-            setFlash(T("已升级为摘录 · 同一条记录"));
-            window.setTimeout(() => setFlash(null), 1800);
+            showFlash(T("已升级为摘录 · 同一条记录"));
           }}
           onSaveComment={saveAnnotationComment}
           onAlreadyExtracted={() => {
-            setFlash(T("已在学习队列"));
-            window.setTimeout(() => setFlash(null), 1800);
+            showFlash(T("已在学习队列"));
           }}
           byLocked={multiKeyHeld}
           form={annotForm}

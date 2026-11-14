@@ -6,7 +6,7 @@
 const fs = require("fs");
 const path = require("path");
 const Database = require("better-sqlite3");
-const { attachRun, applyStandardPragmas } = require("../sqliteCompat");
+const { attachRun, applyStandardPragmas, sqliteOpenPath } = require("../sqliteCompat");
 
 const BDI_SCHEMA_VERSION = 1;
 
@@ -283,7 +283,7 @@ function probeUserVersion(file) {
   if (!fs.existsSync(file)) return { version: 0, corrupt: false };
   let conn = null;
   try {
-    conn = new Database(file, { readonly: true, fileMustExist: true });
+    conn = new Database(sqliteOpenPath(file), { readonly: true, fileMustExist: true });
     return { version: readUserVersion(conn), corrupt: false };
   } catch (e) {
     const code = String((e && e.code) || "");
@@ -352,7 +352,7 @@ async function open() {
     if (probe.corrupt) return disable("db_corrupt", "只读探测失败：文件损坏或不是 SQLite 库（保留现场，不自动改名/新建）");
     if (probe.version > BDI_SCHEMA_VERSION) return disable("db_too_new", `库版本 ${probe.version} 高于本程序支持的 ${BDI_SCHEMA_VERSION}`);
     try {
-      db = attachRun(new Database(dbFile));
+      db = attachRun(new Database(sqliteOpenPath(dbFile)));
       applyBdiPragmas(db);
       runMigrations(db);
       state = { status: "ok", reason: null, detail: null };

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu, dialog, protocol, net, shell, screen, nativeTheme, session, powerMonitor } = require("electron");
+const { app, BrowserWindow, ipcMain, Menu, dialog, protocol, net, shell, nativeTheme, session, powerMonitor } = require("electron");
 const path = require("path");
 const fs = require("fs");
 // D239：开发服务器地址唯一来源（--dev-server=<url> / NUTATION_DEV_SERVER_URL / 默认 5173）+ 开发模式 watchdog
@@ -214,6 +214,7 @@ const {
   resolveLeech,
   listLeechCards,
   addCardIssue,
+  addCardIssues,
   listCardIssues,
   resolveCardIssue,
   createAIGenBatch,
@@ -376,6 +377,8 @@ ipcMain.handle("settings:set", (_e, scope, key, value) => {
   if (scope === "app" && key === "language") {
     mainI18n.onLanguageWritten(value);
     tray.rebuild();
+    quickCapture.retitle(); // 审计 F-13：已创建的单例窗口标题随语言更新
+    workbenchWindow.retitle();
   }
   // v36（M8-A）：全局快捷键组改动即时生效（重注册；被占用等失败经 shortcuts:status 在设置页可见）
   if (scope === "app" && key === "globalShortcuts") {
@@ -403,40 +406,7 @@ ipcMain.on("win:close", (e) => {
   BrowserWindow.fromWebContents(e.sender)?.close();
 });
 
-// ---------- D123：制卡台窗口外延 / 独立窗口 ----------
-// 非最大化且屏幕右缘有余量：窗口整体向右变宽 delta（面板占新增的那一条，正文宽度不变）；
-// 最大化/全屏/余量不足：返回 inner，渲染层按「向内推」处理。外延记录只为还原用。
-let dockExt = null; // { win, delta }
-function dockExtend(win, delta) {
-  if (!win || win.isDestroyed() || !(delta > 0)) return { mode: "inner" };
-  if (win.isMaximized() || win.isFullScreen() || win.isMinimized()) return { mode: "inner" };
-  if (dockExt && dockExt.win === win) return { mode: "extended" };
-  try {
-    const b = win.getBounds();
-    const wa = screen.getDisplayMatching(b).workArea;
-    if (b.x + b.width + delta > wa.x + wa.width) return { mode: "inner" };
-    win.setBounds({ x: b.x, y: b.y, width: b.width + delta, height: b.height });
-    dockExt = { win, delta };
-    return { mode: "extended" };
-  } catch {
-    return { mode: "inner" };
-  }
-}
-function dockRestore(win) {
-  if (!dockExt || dockExt.win !== win || !win || win.isDestroyed()) {
-    if (!dockExt || !dockExt.win || dockExt.win.isDestroyed()) dockExt = null;
-    return false;
-  }
-  const { delta } = dockExt;
-  dockExt = null;
-  if (win.isMaximized() || win.isFullScreen()) return true;
-  const b = win.getBounds();
-  const [minW] = win.getMinimumSize();
-  win.setBounds({ x: b.x, y: b.y, width: Math.max(minW || 0, b.width - delta), height: b.height });
-  return true;
-}
-ipcMain.handle("win:dockExtend", (e, deltaPx) => dockExtend(BrowserWindow.fromWebContents(e.sender), Number(deltaPx)));
-ipcMain.handle("win:dockRestore", (e) => dockRestore(BrowserWindow.fromWebContents(e.sender)));
+// ---------- D123：独立制卡台窗口 ----------
 ipcMain.handle("win:workbench", (_e, action) => workbenchWindow.control(String(action || "toggle")));
 // v49.95（D261）：图片挖空编辑器宽幅——独立制卡台展开 / 收回（仅本窗口渲染进程可请求）
 // 动画结束（窗口到位）才 resolve：渲染层据此决定何时淡入 / 解除内容钉位（D261）
@@ -987,6 +957,8 @@ ipcMain.handle("cards:resolveLeech", (_e, id, resolution, updates) =>
 );
 ipcMain.handle("cards:listLeech", () => listLeechCards());
 ipcMain.handle("issues:add", (_e, issue) => addCardIssue(issue || {}));
+// D276（审计 #56）：批量写卡片问题——一个事务一次 checkpoint；逐条语义与 issues:add 一致（幽灵父卡返回 false）
+ipcMain.handle("issues:addMany", (_e, issues) => addCardIssues(Array.isArray(issues) ? issues : []));
 ipcMain.handle("issues:list", (_e, cardId) => listCardIssues(String(cardId)));
 ipcMain.handle("issues:resolve", (_e, id) => resolveCardIssue(String(id)));
 // D121 §1.2：卡片辨析链接
@@ -1371,6 +1343,15 @@ ipcMain.handle("dict:cacheSet", (_e, providerId, language, word, entry) => dbMod
 
 // 词典文件/目录 → 词条行（下载与手动导入共用路由）：.csv(ECDICT)/.u8(CC-CEDICT)/.gz(嗅探：kaikki JSONL/JMdict XML/ECDICT CSV)
 // /.zip(内含 db/u8/csv)/.db/.sqlite(jamdict schema 探测 → ECDICT)/.jsonl(kaikki)/StarDict 三件套目录/.dsl
+// 审计 E-6（D283）：词典导入的整文件读取一律异步（fs.promises / zlib 异步），不再同步阻塞主进程事件循环。
+async function gunzipBestEffortAsync(buf) {
+  try {
+    return await require("util").promisify(require("zlib").gunzip)(buf);
+  } catch {
+    return buf; // 与 dictStore.gunzipBestEffort 同口径：非 gzip / 损坏 → 原样返回
+  }
+}
+
 async function importDictRowsFromPath(p, onScanProgress = null) {
   const stat = fs.statSync(p);
   const lower = p.toLowerCase();
@@ -1379,10 +1360,10 @@ async function importDictRowsFromPath(p, onScanProgress = null) {
   }
   const ext = path.extname(lower);
   if (ext === ".csv") {
-    return { rows: dictStore.parseEcdictCsv(fs.readFileSync(p, "utf-8")), format: "ecdict-csv" };
+    return { rows: dictStore.parseEcdictCsv(await fs.promises.readFile(p, "utf-8")), format: "ecdict-csv" };
   }
   if (ext === ".u8") {
-    return { rows: dictStore.parseCedictText(fs.readFileSync(p, "utf-8")), format: "cedict" };
+    return { rows: dictStore.parseCedictText(await fs.promises.readFile(p, "utf-8")), format: "cedict" };
   }
   if (ext === ".jsonl") {
     // v38（D35）：kaikki zhwiktionary 原始提取（裸 jsonl；.jsonl.gz 落 .gz 分支嗅探）
@@ -1394,34 +1375,21 @@ async function importDictRowsFromPath(p, onScanProgress = null) {
     if (head.startsWith("{") && head.includes('"lang_code"')) {
       return { rows: dictStore.parseKaikkiJsonlFile(p, onScanProgress), format: "kaikki-jsonl" };
     }
-    const text = dictStore.gunzipBestEffort(fs.readFileSync(p)).toString("utf-8");
+    const text = (await gunzipBestEffortAsync(await fs.promises.readFile(p))).toString("utf-8");
     if (text.includes("<JMdict>") || (text.startsWith("<?xml") && text.includes("<entry>"))) {
       return { rows: dictStore.parseJmdictXml(text), format: "jmdict-xml" };
     }
     return { rows: dictStore.parseEcdictCsv(text), format: "ecdict-csv" };
   }
   if (ext === ".zip") {
-    const JSZip = require("jszip");
-    const zip = await JSZip.loadAsync(fs.readFileSync(p));
-    const names = Object.keys(zip.files).filter((n) => !zip.files[n].dir);
     // 优先级：sqlite(ECDICT 完整版/jamdict-cn) > u8(CC-CEDICT) > csv > stardict 三件套散件不支持（zip 内不成目录）
-    const dbN = names.find((n) => /\.(db|sqlite)$/i.test(n));
-    if (dbN) {
-      const bytes = await zip.files[dbN].async("nodebuffer");
-      return await sqliteDictRows(bytes);
-    }
-    const u8N = names.find((n) => /\.u8$/i.test(n));
-    if (u8N) {
-      return { rows: dictStore.parseCedictText(await zip.files[u8N].async("string")), format: "cedict" };
-    }
-    const csvN = names.find((n) => /\.csv$/i.test(n));
-    if (csvN) {
-      return { rows: dictStore.parseEcdictCsv(await zip.files[csvN].async("string")), format: "ecdict-csv" };
-    }
-    throw new Error("zip 内未找到可识别的词典文件（.db/.u8/.csv）");
+    const entry = await require("./zipRead").readDictZipEntry(p);
+    if (entry.kind === "sqlite") return await sqliteDictRows(entry.buf);
+    if (entry.kind === "cedict") return { rows: dictStore.parseCedictText(entry.buf.toString("utf8")), format: "cedict" };
+    return { rows: dictStore.parseEcdictCsv(entry.buf.toString("utf8")), format: "ecdict-csv" };
   }
   if (ext === ".db" || ext === ".sqlite") {
-    return await sqliteDictRows(fs.readFileSync(p));
+    return await sqliteDictRows(await fs.promises.readFile(p));
   }
   if (ext === ".dsl") {
     let text = "";
@@ -1890,9 +1858,8 @@ ipcMain.handle("memory:reset", () => {
   return { created: memoryStore.resetMemory(dir) };
 });
 
-// ============ v48 批2（M15 重做，D41/D42 / §4.19）：材料知识导图编排 ============
-// 主进程编排（memoryTidy 同款偏差——后台多级管线与窗口生命周期解耦）；chat 经 chatStream 直连，
-// usage/cancel/机读错误码随 ai.js 批2 增补统一获得。进度经 mindmap:changed 广播到全部窗口。
+// 主进程 AI 编排共用的 chat 包装（后台多级管线与窗口生命周期解耦；chat 经 chatStream 直连）。
+// 现存消费者＝摘录 AI 重排（extracts:rerankNow）；v1 导图生成调用方已随 D286 退役。
 function mindmapChat({ system, user, abortSignal, temperature, retry }) {
   return new Promise((resolve, reject) => {
     let acc = "";
@@ -1929,44 +1896,33 @@ function mindmapChat({ system, user, abortSignal, temperature, retry }) {
   });
 }
 
-const mindmapCtx = () => ({
-  db: dbModule,
-  readSettings,
-  writeSettings,
-  hasKey: async () => {
-    try {
-      const cfg = await getAIConfig();
-      return Boolean(cfg.hasKey) || cfg.preset === "local";
-    } catch {
-      return false;
-    }
-  },
-  chat: mindmapChat,
-  broadcast: (payload) => {
-    for (const w of BrowserWindow.getAllWindows()) {
-      if (!w.isDestroyed()) w.webContents.send("mindmap:changed", payload);
-    }
-  }
-});
-
-ipcMain.handle("mindmap:preview", (_e, params) => mindmapEngine.preview(mindmapCtx(), params || {}));
-ipcMain.handle("mindmap:generate", (_e, params) =>
-    // v48.11：resumeRunId 存在时以同一 run 续跑（section 缓存续跑，账本连续）
-    mindmapEngine.generate(mindmapCtx(), params || {}, (params && params.resumeRunId) || undefined)
-  );
-// v48.13 P4：增量深化——「展开」是纯 UI（零调用），「深化」走这里创建后台任务
-ipcMain.handle("mindmap:deepen", (_e, params) => mindmapEngine.deepen(mindmapCtx(), params || {}));
+// ============ 材料知识导图：v1 读路径 + v2 生成（§4.19；v1 生成链已于 D286 退役）============
+// v1 的生成通道（preview / generate / deepen / repairConfirm）连同 `mindmapEngine.js` 的生成链一并删除；
+// 新生成一律走下方 v2 单例（graphGenerate 等）。这里保留 v1 的**读路径**与 run 取消入口：
+// v1 存量地图仍可 list/get/getActive/mapTree/setActive/delete/runs/learningStatus/pendingRuns。
 // v48.13 P3（D47）：可续跑运行——应用重启后发现未跑完的 run，供指示器提示「可继续生成」
 ipcMain.handle("mindmap:pendingRuns", async () => {
   // C-24：首帧即到达的 db 依赖 IPC 之一（见 dbReadyGate 注释）——新库的表由 initDb 建
   await dbReadyGate;
   return dbModule.listResumableMaterialMapRuns();
 });
+// 审计 #10：全局指示器「取消任务」对 v2 run 曾是空动作——v1 cancelRun 只碰 v1 的
+// cancelledRuns / activeControllers，v2 的取消在另一个单例（graphCancel）里，却共用同一指示器通道。
+// 归属路由：两引擎的 run 都出自同一张 material_map_runs（db.createMaterialMapRun → crypto.randomUUID），
+// id 不可能撞号；v2 建行恒带 granularity="v2" + input.engine="v2"（与 graphResume 的判据同源）。
+// 读不到 run 行（已删 / 恢复前的旧 id）＝归属不明，两边都发：graphCancel 对未知 id 是安全空操作
+// （gens/alls 未命中 + scheduler.cancelWhere 零匹配 → 恒返回 true），v1 cancelRun 也只记内存标记。
 ipcMain.handle("mindmap:cancel", (_e, runId) => {
-  mindmapEngine.cancelRun(runId);
+  const id = String(runId ?? "");
+  let owner = "unknown";
+  try {
+    const run = dbModule.getMaterialMapRun(id);
+    if (run) owner = run.granularity === "v2" || (run.input && run.input.engine === "v2") ? "v2" : "v1";
+  } catch { /* 库未就绪 / 行不存在：按归属不明处理 */ }
+  if (owner !== "v2") mindmapEngine.cancelRun(id);
+  if (owner !== "v1") getMindmapEngineV2().graphCancel({ runId: id });
   return true;
 });
-ipcMain.handle("mindmap:repairConfirm", (_e, runId) => mindmapEngine.repairConfirm(mindmapCtx(), runId));
 ipcMain.handle("mindmap:list", (_e, documentId) => dbModule.listMaterialMaps(documentId));
 ipcMain.handle("mindmap:get", (_e, id) => dbModule.getMaterialMap(id));
 ipcMain.handle("mindmap:getActive", (_e, documentId, scopeAnchor) => dbModule.getActiveMaterialMap(documentId, scopeAnchor || "book"));
@@ -2252,17 +2208,7 @@ function createWindow() {  // 防重入：已存在**主窗口**时不再创建�
       tray.hintHidden();
     }
   });
-  // 窗口被最大化/全屏：清外延记录，并告知渲染层回落「向内推」
-  const dropExt = () => {
-    if (dockExt && dockExt.win === win) {
-      dockExt = null;
-      if (!win.isDestroyed()) win.webContents.send("win:dockMode", "inner");
-    }
-  };
-  win.on("maximize", dropExt);
-  win.on("enter-full-screen", dropExt);
   win.on("closed", () => {
-    if (dockExt && dockExt.win === win) dockExt = null;
     if (mainWindow === win) mainWindow = null;
     // 关闭未被收进托盘（closeToTray 关闭）＝用户要退出：隐藏常驻的小窗口不会触发 window-all-closed，需显式退出
     if (!appQuitting && process.platform !== "darwin") app.quit();
@@ -2359,6 +2305,19 @@ app.whenReady().then(async () => {
     if (applied && applied.ok === false) {
       console.error("[backup] 恢复未完成：暂存区为空或不可用，已保留标记以便下次启动重试（restored=0）");
     }
+    // D290（F43 F1-5，§7.6 失败必须可见）：换入成功但备份包里缺了部分资产文件（用户解包删图等）——
+    // 库行仍登记这些图，打开书才会发现图没了。启动期弹四语告警把缺失清单告诉用户，不再静默「假成功」。
+    if (applied && Array.isArray(applied.missing) && applied.missing.length > 0) {
+      const n = applied.missing.length;
+      const list = applied.missing.slice(0, 20).join("\n") + (n > 20 ? "\n…" : "");
+      dialog.showMessageBoxSync({
+        type: "warning",
+        title: mainI18n.tMain("恢复完成，但部分图片缺失"),
+        message: mainI18n.tMain("备份恢复成功，但有 {n} 个图片文件在备份包里缺失。").replace("{n}", String(n)),
+        detail: `${mainI18n.tMain("这些图片对应的卡片仍会显示，但图片本身已丢失。建议从原始备份重新恢复。缺失清单：")}\n${list}`,
+        buttons: [mainI18n.tMain("知道了")]
+      });
+    }
   } catch (err) {
     console.error("[backup] 应用待恢复数据失败：", err);
   }
@@ -2374,10 +2333,10 @@ app.whenReady().then(async () => {
     if (e && e.code === "DB_TOO_NEW") {
       dialog.showMessageBoxSync({
         type: "error",
-        title: "数据版本过新",
+        title: mainI18n.tMain("数据版本过新"),
         message: e.message,
-        detail: `数据文件夹：${app.getPath("userData")}\n本程序不会修改这份数据。`,
-        buttons: ["退出"]
+        detail: `${mainI18n.tMain("数据文件夹：")}${app.getPath("userData")}\n${mainI18n.tMain("本程序不会修改这份数据。")}`,
+        buttons: [mainI18n.tMain("退出")]
       });
       app.exit(1);
       return;

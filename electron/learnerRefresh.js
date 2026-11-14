@@ -758,13 +758,21 @@ async function stepKp() {
   const cardsByKp = new Map();
   const cardMaterial = new Map(); // cardId → libraryItemId
   const docByDocId = new Map((facts.documents || []).map((d) => [String(d.id), d]));
+  // 审计 #55a：extractId → documentId 索引每次刷新建一次，卡循环内 O(1) 查找（原逐卡 find 为 O(cards×extracts)）。
+  // 原 find 谓词是纯键相等 e.id === ref.extractId：重复 id 时 find 取数组序首个 ⇒ 索引首达优先；
+  // NaN 键跳过（=== 永不匹配 NaN，而 Map 的 SameValueZero 会匹配），其余键语义与 === 全等。
+  const docIdByExtractId = new Map();
+  for (const ex of facts.extracts || []) {
+    if (ex.id !== ex.id) continue; // NaN
+    if (!docIdByExtractId.has(ex.id)) docIdByExtractId.set(ex.id, ex.documentId);
+  }
   for (const card of facts.cards || []) {
     const kpId = cardKp.get(String(card.id));
     if (!kpId) continue;
     if (!cardsByKp.has(kpId)) cardsByKp.set(kpId, []);
     cardsByKp.get(kpId).push(card);
     const ref = parseContextRef(card.contextRefJson);
-    const documentId = ref && ref.documentId ? String(ref.documentId) : ref && ref.extractId ? String((facts.extracts || []).find((e) => e.id === ref.extractId)?.documentId || "") : "";
+    const documentId = ref && ref.documentId ? String(ref.documentId) : ref && ref.extractId ? String(docIdByExtractId.get(ref.extractId) || "") : "";
     const doc = docByDocId.get(documentId);
     if (doc) cardMaterial.set(String(card.id), String(doc.libraryItemId));
   }
@@ -862,17 +870,45 @@ async function stepKp() {
       computedAt: now
     });
   }
-  await learnerDb.run("DELETE FROM kp_states");
-  for (const r of rows) {
-    await learnerDb.run(
-      "INSERT INTO kp_states (kp_id, level, score, confidence, fading, metrics_json, first_l3_at, first_l4_at, computed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [r.kpId, r.level, r.score, r.confidence, r.fading, r.metricsJson, r.firstL3At, r.firstL4At, r.computedAt]
-    );
-  }
+  // 审计 #42：整表覆盖写＝单事务 DELETE + 预编译语句复用 INSERT + 每 1000 行 setImmediate 让出
+  // （replaceBatch，D143 T3 同 stepLex :1239 先例）。原「DELETE + 逐行 await run」无事务：
+  // 中途崩溃留半表、并发读可见空表；replaceBatch 失败显式 ROLLBACK（整表保持原状）。
+  // 行集与列值逐行不变（undefined→null 归一同样走 sqliteCompat.normParams）。
+  await learnerDb.replaceBatch(
+    "DELETE FROM kp_states",
+    "INSERT INTO kp_states (kp_id, level, score, confidence, fading, metrics_json, first_l3_at, first_l4_at, computed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    rows.map((r) => [r.kpId, r.level, r.score, r.confidence, r.fading, r.metricsJson, r.firstL3At, r.firstL4At, r.computedAt])
+  );
 }
 
 /** 摘录 KP 匹配（lexical 规则：归一后 ≥2 次出现；设计稿 §6.5「摘录正文也用同一 lexical 规则」） */
+// 审计 E-2（D285）：一轮刷新里 stepKp / updateKpFactorMap / buildSnapshot 各自 loadFacts() 后都要算一次
+// 摘录→KP 映射（O(摘录 × KP × 别名) 全文 indexOf，5k×2k 量级约 2000 万次子串扫描），三次结果相同。
+// 这里按「输入指纹」做单条记忆：指纹覆盖全部会影响结果的输入（KP 的 id/label/aliasJson、摘录的 id/正文），
+// 计算指纹只需 O(总字符数) 的一次哈希，远小于映射本身；任何输入变化 → 指纹变 → 重新计算，结果语义不变。
+// 命中时返回新 Map + 数组副本，调用方即便改动返回值也不污染缓存。
+let extractKpMemo = null; // { sig, out }
+function extractKpSignature(facts) {
+  const h = require("crypto").createHash("sha1");
+  for (const kp of facts.kps || []) h.update(JSON.stringify(["k", kp.id, kp.label ?? "", kp.aliasJson ?? ""]));
+  for (const ex of facts.extracts || []) h.update(JSON.stringify(["e", ex.id, ex.contentMarkdown ?? ""]));
+  return h.digest("hex");
+}
+function cloneKpMap(m) {
+  const out = new Map();
+  for (const [k, v] of m) out.set(k, v.slice());
+  return out;
+}
+
 function computeExtractKpIds(facts) {
+  const sig = extractKpSignature(facts);
+  if (extractKpMemo && extractKpMemo.sig === sig) return cloneKpMap(extractKpMemo.out);
+  const out = computeExtractKpIdsUncached(facts);
+  extractKpMemo = { sig, out: cloneKpMap(out) };
+  return out;
+}
+
+function computeExtractKpIdsUncached(facts) {
   const hasIdeo = (s) => /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}/u.test(s);
   const kps = (facts.kps || []).map((kp) => {
     const labels = [String(kp.label || ""), ...parseJsonSafe(kp.aliasJson, [])].filter(Boolean);
@@ -2415,6 +2451,7 @@ module.exports = {
   learnerSettings,
   learnerLocale,
   computeExtractKpIds,
+  computeExtractKpIdsUncached,
   recommendFlow,
   buildTrackSummaries,
   kpLevelsFor,

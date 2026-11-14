@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // C-01 统一测试入口。用法：
-//   node scripts/run-tests.mjs                 # 跑 tests/*.test.cjs 全部
-//   node scripts/run-tests.mjs m12 d111        # 只跑文件名包含任一关键词的
+//   node scripts/run-tests.mjs                 # 跑 tests/*.test.cjs 与 tests/fsrs/*.test.cjs 全部
+//   node scripts/run-tests.mjs m12 d111        # 只跑相对路径包含任一关键词的
 //   node scripts/run-tests.mjs --list          # 只打印每个文件判定的运行时
 //   node scripts/run-tests.mjs --timeout=300   # 单个测试超时秒数（默认 180，可被文件头 @timeout 覆盖）
 import fs from "node:fs";
@@ -95,12 +95,17 @@ function runOne(file, runtime, timeoutSec) {
   });
 }
 
-const dir = path.join(ROOT, "tests");
-const files = fs.readdirSync(dir)
-  .filter((f) => f.endsWith(".test.cjs"))
-  .filter((f) => filters.length === 0 || filters.some((k) => f.includes(k)))
-  .sort()
-  .map((f) => path.join(dir, f));
+// C-3：默认入口同时覆盖 tests/ 与 tests/fsrs/（过滤词匹配相对路径，故 `fsrs` 可整组选中）。
+const dirs = [path.join(ROOT, "tests"), path.join(ROOT, "tests", "fsrs")];
+const files = dirs
+  .flatMap((dir) => fs.readdirSync(dir)
+    .filter((f) => f.endsWith(".test.cjs"))
+    .map((f) => path.join(dir, f)))
+  .filter((f) => {
+    const rel = path.relative(ROOT, f).replace(/\\/g, "/");
+    return filters.length === 0 || filters.some((k) => rel.includes(k));
+  })
+  .sort();
 
 if (flags.list) {
   const counts = {};

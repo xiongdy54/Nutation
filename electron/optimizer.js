@@ -3,17 +3,19 @@
 // 与调度器 elapsed_days 同语义）；应用/重置只移动指针、绝不修改配置内容（§4.4.10 不可变）。
 const { FSRS, FSRSItem, FSRSReview } = require("fsrs-rs-nodejs");
 const { calculateFsrsDeltaT } = require("./fsrsTime");
-const { DEFAULT_CONFIG_ID, DEFAULT_SCHEDULER_OPTIONS } = require("./fsrsConfig");
+const { DEFAULT_CONFIG_ID, DEFAULT_SCHEDULER_OPTIONS, FSRS_WEIGHTS_LEN, isValidWeights } = require("./fsrsConfig");
 
 // 最低数据门槛：官方建议 400+ 条复习记录；低于此值训练不可靠（仍允许跑，UI 提示）
 const MIN_RECOMMENDED_REVIEWS = 400;
 
 const DAY_MS = 86400000;
 
-// 从 review_logs 构建每卡时序序列 → FSRSItem[]
+// 从 review_logs 构建每卡时序序列（普通对象 {rating, deltaT}，不构造原生 FSRS 对象）。
 // rating 映射：Again=1 Hard=2 Good=3 Easy=4（与应用存储一致，无需转换）
 // delta_t = canonical 日历日差（§4.4.8，首条恒为 0；与调度器 elapsed_days 同语义）
-function buildTrainSet(db) {
+// buildTrainSet（训练）与 getOptimizerStats（轻量计数）共用本生成器——映射 / 排序 / 过滤口径
+// 只有一份解释（§4.4 最高不变量：同一份事实不允许两套解释），两路计数不可能漂移。
+function* trainSequences(db) {
   const cards = db.listAllCards();
   const logsByCard = new Map();
   for (const card of cards) {
@@ -24,9 +26,6 @@ function buildTrainSet(db) {
     const arr = logsByCard.get(log.cardId);
     if (arr) arr.push(log);
   }
-  const items = [];
-  let reviewCount = 0;
-  let cardCount = 0;
   const RATING_MAP = { Again: 1, Hard: 2, Good: 3, Easy: 4 };
   for (const logs of logsByCard.values()) {
     if (logs.length === 0) continue;
@@ -37,18 +36,32 @@ function buildTrainSet(db) {
       const rating = RATING_MAP[log.rating];
       if (!rating) continue;
       const deltaT = prevAt === null ? 0 : Math.max(0, calculateFsrsDeltaT(prevAt, log.reviewedAt));
-      reviews.push(new FSRSReview(rating, deltaT));
+      reviews.push({ rating, deltaT });
       prevAt = log.reviewedAt;
-      reviewCount++;
     }
-    // FSRSItem 要求「每条复习一个实例、携带此前全部历史」，且至少含一条 delta_t>0 的复习
-    // （fsrs-rs dataset.rs：全零间隔序列会 panic）——单次复习或全同日复习的卡跳过
-    if (reviews.length < 2) continue;
-    const hasGap = reviews.some((r, i) => i > 0 && r.deltaT > 0);
-    if (!hasGap) continue;
-    for (let i = 1; i < reviews.length; i++) {
-      // 每个前缀子序列也必须含 delta_t>0（首条 delta_t 恒为 0，从 i=1 起的前缀含 reviews[1]）
-      const prefix = reviews.slice(0, i + 1);
+    yield reviews;
+  }
+}
+
+// 卡级准入（训练 / 计数共用）：≥2 条有效复习且至少含一条 delta_t>0 的跨天间隔
+// （fsrs-rs dataset.rs：全零间隔序列会 panic）——单次复习或全同日复习的卡跳过。
+function sequenceTrainable(reviews) {
+  return reviews.length >= 2 && reviews.some((r, i) => i > 0 && r.deltaT > 0);
+}
+
+// 每卡时序序列 → FSRSItem[]（仅训练路径构造原生对象）
+function buildTrainSet(db) {
+  const items = [];
+  let reviewCount = 0;
+  let cardCount = 0;
+  for (const reviews of trainSequences(db)) {
+    reviewCount += reviews.length;
+    if (!sequenceTrainable(reviews)) continue;
+    const fsrsReviews = reviews.map((r) => new FSRSReview(r.rating, r.deltaT));
+    for (let i = 1; i < fsrsReviews.length; i++) {
+      // FSRSItem 要求「每条复习一个实例、携带此前全部历史」；每个前缀子序列也必须含 delta_t>0
+      // （首条 delta_t 恒为 0，从 i=1 起的前缀含 reviews[1]）
+      const prefix = fsrsReviews.slice(0, i + 1);
       if (!prefix.some((r, j) => j > 0 && r.deltaT > 0)) continue;
       items.push(new FSRSItem(prefix));
     }
@@ -57,8 +70,17 @@ function buildTrainSet(db) {
   return { items, reviewCount, cardCount };
 }
 
+// 审计 #41：设置页每次打开都调（main.js optimizer:stats），只需要两个计数——
+// 不再借道 buildTrainSet：原来每卡 O(n²) 前缀引用复制 + n 个原生 FSRSItem（10k 卡 × 50 评
+// ≈ 12.5M 次复制 / 50 万原生对象）只为数数。轻量路径零 FSRSItem / FSRSReview 构造，
+// 序列口径与训练共用 trainSequences / sequenceTrainable，返回形状不变。
 function getOptimizerStats(db) {
-  const { reviewCount, cardCount } = buildTrainSet(db);
+  let reviewCount = 0;
+  let cardCount = 0;
+  for (const reviews of trainSequences(db)) {
+    reviewCount += reviews.length;
+    if (sequenceTrainable(reviews)) cardCount++;
+  }
   return {
     reviewCount,
     cardCount,
@@ -74,7 +96,9 @@ async function train(db, onProgress) {
   }
   const f = new FSRS([]);
   const weights = await f.computeParameters(items, {
-    numEpochs: items.length >= 1000 ? 25 : 10,
+    // 审计 #4：numEpochs 属于 TrainingConfig（fsrs-rs-nodejs index.d.ts：ComputeParametersOption
+    // 无顶层 numEpochs，napi 只读声明字段）——原顶层传法被静默忽略，25/10 epoch 从未生效。
+    trainingConfig: { numEpochs: items.length >= 1000 ? 25 : 10 },
     progress: onProgress
       ? (_err, value) => onProgress(value)
       : undefined
@@ -101,10 +125,10 @@ function getActiveConfig(db) {
   return cfg;
 }
 
-// 校验待应用权重：21 维、全部有限数值（§4.4.10）
+// 校验待应用权重：FSRS_WEIGHTS_LEN 维、全部有限数值（§4.4.10；D290 起维数与谓词走 fsrsConfig 单一真源）
 function validateWeights(weights) {
-  if (!Array.isArray(weights) || weights.length !== 21 || !weights.every((x) => typeof x === "number" && Number.isFinite(x))) {
-    throw new Error("权重格式错误：需要 21 个数值");
+  if (!isValidWeights(weights)) {
+    throw new Error(`权重格式错误：需要 ${FSRS_WEIGHTS_LEN} 个数值`);
   }
   return weights.map(Number);
 }

@@ -6,6 +6,63 @@ const TurndownService = require("turndown");
 
 // 单书内嵌图片总量上限（沿用 createAssetForItem 的 10MB 思路，按书计）
 const MAX_WORD_IMAGES_TOTAL_BYTES = 10 * 1024 * 1024;
+// DOCX 结构深度上限（F40 C-03）：mammoth 按 DOM 递归转换，表格套表格 200 层会把导入拖死。
+// 超限时降级为纯文本（保留 w:t 文本），不进入递归转换。
+const MAX_DOCX_NESTING_DEPTH = 64;
+const MAX_DOCX_XML_CHARS = 32 * 1024 * 1024;
+
+/** XML 最大元素嵌套深度（迭代扫描，不解压之外的额外 DOM）。 */
+function maxXmlNestingDepth(xml) {
+  const src = String(xml || "");
+  if (src.length > MAX_DOCX_XML_CHARS) return Number.POSITIVE_INFINITY;
+  const stripped = src.replace(/<!--[\s\S]*?-->/g, "").replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, "");
+  const re = /<\s*(\/?)\s*([A-Za-z_][\w.:-]*)([^>]*)>/g;
+  let depth = 0;
+  let max = 0;
+  let m;
+  while ((m = re.exec(stripped)) !== null) {
+    if (m[1] === "/") {
+      if (depth > 0) depth -= 1;
+    } else if (!/\/\s*$/.test(m[3] || "") && !/^\?/.test(m[2])) {
+      depth += 1;
+      if (depth > max) max = depth;
+      if (max > MAX_DOCX_NESTING_DEPTH) return max;
+    }
+  }
+  return max;
+}
+
+function decodeXmlEntities(text) {
+  return String(text || "").replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (m, body) => {
+    if (body[0] === "#") {
+      const hex = body[1] === "x" || body[1] === "X";
+      const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
+      if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) return m;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return m;
+      }
+    }
+    const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+    return named[body] === undefined ? m : named[body];
+  });
+}
+
+/** 结构过深时的降级：按文档顺序取 w:t 文本（段落换行），保留可读正文。 */
+function docxXmlToPlainMarkdown(xml) {
+  const parts = [];
+  const re = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t\s*>|<\/w:p\s*>/g;
+  let m;
+  while ((m = re.exec(String(xml || ""))) !== null) {
+    parts.push(m[1] !== undefined ? decodeXmlEntities(m[1]) : "\n");
+  }
+  return parts
+    .join("")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 // mammoth 产出的 contentType → 资产扩展名（EMF/WMF 等浏览器不可渲染的格式直接跳过）
 const MIME_TO_EXT = {
@@ -58,24 +115,63 @@ turndown.addRule("gfmTable", {
  * 图片按出现序确定性命名 img-0.png…（synth 合成纪律：非随机）；markdown 引用名 = 资产文件名。
  */
 async function wordToMarkdown(buf) {
+  // C-03：先量结构深度。深嵌套表格是 mammoth 的递归炸弹，必须在转换前拦下。
+  // document.xml 的读取失败仍交给 mammoth 报它自己的可读错误（保持原有行为）。
+  let documentXml = null;
+  try {
+    const JSZip = require("jszip");
+    const zip = await JSZip.loadAsync(buf);
+    const f = zip.file("word/document.xml");
+    if (f) documentXml = await f.async("string");
+  } catch {
+    documentXml = null;
+  }
+  if (documentXml && maxXmlNestingDepth(documentXml) > MAX_DOCX_NESTING_DEPTH) {
+    const plain = docxXmlToPlainMarkdown(documentXml);
+    // 即使没有可提取文本也不回到 mammoth：已知超深的 XML 进入递归转换只会再次卡死。
+    return {
+      markdown: plain,
+      images: [],
+      messages: [{ type: "warning", message: "文档结构嵌套过深，已按纯文本导入" }],
+      skippedImages: 0,
+      degraded: "nested-structure",
+    };
+  }
+
   const images = [];
   let skippedImages = 0;
-  const result = await mammoth.convertToHtml(
-    { buffer: buf },
-    {
-      convertImage: mammoth.images.imgElement(async (image) => {
-        const contentType = String(image.contentType || "").toLowerCase();
-        const ext = MIME_TO_EXT[contentType];
-        if (!ext) {
-          skippedImages += 1;
-          return { src: "" };
-        }
-        const bytes = await image.read(); // mammoth image.read() → Promise<Buffer>
-        images.push({ filename: `img-${images.length}.${ext}`, bytes, mediaType: contentType });
-        return { src: `img-${images.length - 1}.${ext}` };
-      }),
+  let result;
+  try {
+    result = await mammoth.convertToHtml(
+      { buffer: buf },
+      {
+        convertImage: mammoth.images.imgElement(async (image) => {
+          const contentType = String(image.contentType || "").toLowerCase();
+          const ext = MIME_TO_EXT[contentType];
+          if (!ext) {
+            skippedImages += 1;
+            return { src: "" };
+          }
+          const bytes = await image.read(); // mammoth image.read() → Promise<Buffer>
+          images.push({ filename: `img-${images.length}.${ext}`, bytes, mediaType: contentType });
+          return { src: `img-${images.length - 1}.${ext}` };
+        }),
+      }
+    );
+  } catch (e) {
+    // 递归/结构异常不该让整份文档打不开：能取到文本就降级，否则抛可读错误。
+    const plain = documentXml ? docxXmlToPlainMarkdown(documentXml) : "";
+    if (plain) {
+      return {
+        markdown: plain,
+        images: [],
+        messages: [{ type: "warning", message: "文档结构无法转换，已按纯文本导入" }],
+        skippedImages: 0,
+        degraded: "conversion-failed",
+      };
     }
-  );
+    throw new Error(`Word 文档结构无法解析：${e instanceof Error ? e.message : String(e)}`);
+  }
 
   // 清掉未支持格式留下的空 <img src="">；turndown 收 HTML 出 markdown
   const html = String(result.value || "").replace(/<img\b[^>]*\bsrc=""[^>]*>/g, "");

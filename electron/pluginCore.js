@@ -302,7 +302,7 @@ function parseSettingsBlock(cssText) {
 
   const schema = [];
   const header = { name: null, description: null };
-  let cur = null; // 当前 settings 列表项
+  /** @type {any} */ let cur = null; // 当前 settings 列表项（F-6：动态键对象）
   let curOptions = null; // 当前项的 options 列表（解析中）
   let seenSettings = false;
   let mode = "top"; // top | items | options

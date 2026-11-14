@@ -32,7 +32,6 @@ import { getLastWorkbenchOpen } from "./workbenchLayout";
 import { t, useT } from "./i18n";
 import { track } from "./behavior/track";
 import type { DictPanelState } from "../components/DictPanel";
-import type { ImageFocusSubmit } from "../components/reader/ImageFocus";
 import type { OcclusionEditorSubmit } from "../components/editor/OcclusionEditor";
 import type { ManualCardPayload } from "../components/ManualCardEditor";
 import { createManualCard } from "./manualCard";
@@ -43,6 +42,19 @@ import { useTagsEnabled } from "./tagSettings";
 import { learnerApi, learnerSettings } from "./learner";
 import { routeExplainMode, type ExplainModePref } from "./explainRouter";
 import type { ExtractSpan } from "./readingWorkflow";
+
+/**
+ * 图片区域选区的提交载荷（百分比坐标，与 occlusion_json 同口径）。
+ * 审计 #63c：原定义在 `components/reader/ImageFocus.tsx`——该覆盖层已随 D98/R1 退役
+ * （正文图片点击直进挖空编辑器），零渲染点，唯一存活的是本类型。类型移到唯一消费方
+ * （submitRegionCards / submitRegionManual）所在的本模块，组件本体删除。
+ */
+export interface ImageFocusSubmit {
+  shape: OcclusionShape;
+  bbox: OcclusionRect;
+  /** D98：「挖空编辑」提交时附图片聚焦层的显示框，供编辑器 FLIP 承接（视口坐标） */
+  origin?: { x: number; y: number; width: number; height: number };
+}
 
 /** 宿主注入面：钩子只从这些函数取值，不反向持有宿主 UI 状态 */
 export interface SelectionActionsAdapter {
@@ -979,9 +991,8 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
       knowledgePointId: card.knowledgePointId
     });
     const created = await cardsApi.create(card);
-    for (const issue of issues) {
-      await cardsApi.addIssue({ cardId: created.id, ...issue, source: "lint" });
-    }
+    // D276（审计 #56）：lint 问题一次批量写（原逐条 addIssue = N 次 checkpoint）；载荷与顺序原样
+    await cardsApi.addIssues(issues.map((issue) => ({ cardId: created.id, ...issue, source: "lint" })));
     setAiPanel((p) =>
       p && p.drafts ? { ...p, accepted: new Set([...(p.accepted ?? []), draftIndex]) } : p
     );

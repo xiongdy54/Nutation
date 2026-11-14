@@ -4,7 +4,8 @@
 // 输入  docs/tutorial/使用教程.md（单一事实源；不再进入应用书架播种）
 // 输出  docs/tutorial/使用教程.html（零脚本、零外链、图表全部预渲染为内联 SVG 的单文件）
 // 失败语义：任何一个 mermaid 围栏渲染失败即非零退出（教程例子的正确性由本脚本身做闸门）。
-// 运行：node scripts/build-tutorial-html.mjs
+// 运行：node scripts/build-tutorial-html.mjs [--out <path>]（默认写回 docs/tutorial/使用教程.html；
+//       --out 仅供新鲜度测试输出到临时文件，不改变默认行为）
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +20,14 @@ const GithubSlugger = require("github-slugger").default ?? require("github-slugg
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SRC = path.join(ROOT, "docs", "tutorial", "使用教程.md");
 const OUT_DIR = path.join(ROOT, "docs", "tutorial");
-const OUT = path.join(OUT_DIR, "使用教程.html");
+const DEFAULT_OUT = path.join(OUT_DIR, "使用教程.html");
+const argv = process.argv.slice(2);
+const outFlag = argv.indexOf("--out");
+if (outFlag >= 0 && !argv[outFlag + 1]) {
+  console.error("[build-tutorial] --out 需要一个输出路径");
+  process.exit(2);
+}
+const OUT = outFlag >= 0 ? path.resolve(argv[outFlag + 1]) : DEFAULT_OUT;
 
 const md = new MarkdownIt({ html: true, breaks: false, linkify: false });
 
@@ -263,6 +271,6 @@ ${bodyTail}
 </html>
 `;
 
-fs.mkdirSync(OUT_DIR, { recursive: true });
+fs.mkdirSync(path.dirname(OUT), { recursive: true });
 fs.writeFileSync(OUT, html, "utf8");
 console.log(`[build-tutorial] OK：${mermaidCount} 个 mermaid 图全部预渲染 → ${path.relative(ROOT, OUT)}（${Math.round(html.length / 1024)} KB）`);

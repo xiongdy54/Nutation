@@ -679,6 +679,20 @@ function genReinforce(track, ctx) {
 function genCrossMaterial(track, ctx) {
   if (!["concept", "procedural"].includes(track.mode)) return [];
   const now = ctx.snapshot.now;
+  // 审计 #55b：kpId → [{u, link}] 倒排索引每次调用建一次（原每 KP 全量扫 units × kpLinks.find）。
+  // 条目保持 units 数组序；同一单元对同一 KP 的多条链接只取 kpLinks 序首条——与原 find 的
+  // 首匹配语义逐字等价（平局/重复链接的选择结果不变，见 tests/lm-perf-equiv.test.cjs B 组）。
+  const unitsByKp = new Map();
+  for (const u of ctx.snapshot.units || []) {
+    const seen = new Set();
+    for (const l of u.kpLinks || []) {
+      const key = String(l.kpId);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!unitsByKp.has(key)) unitsByKp.set(key, []);
+      unitsByKp.get(key).push({ u, link: l });
+    }
+  }
   const eligible = [];
   for (const kpId of sortedKeys(ctx.kpsOfTrack(track))) {
     const kp = ctx.view.kpsById.get(kpId);
@@ -686,12 +700,16 @@ function genCrossMaterial(track, ctx) {
     const cardMats = new Set((kp.cardMaterialIds || []).map(String));
     // 链接该 KP（任意 source、weight ≥ 0.3）的单元：材料 ≠ KP 卡片所在材料，且未通读
     let bestUnit = null;
-    for (const u of ctx.snapshot.units || []) {
+    let bestWeight = 0; // 审计 #55b：缓存扫描时已找到的首匹配链接权重，替代对 bestUnit 的重复 find（同链接同值）
+    for (const { u, link } of unitsByKp.get(kpId) || []) {
       if (u.passes && u.passes.length > 0) continue;
-      const link = (u.kpLinks || []).find((l) => String(l.kpId) === kpId);
-      if (!link || (Number(link.weight) || 0) < 0.3) continue;
+      const w = Number(link.weight) || 0;
+      if (w < 0.3) continue;
       if (cardMats.has(String(u.libraryItemId))) continue;
-      if (!bestUnit || (Number(link.weight) || 0) > (Number((bestUnit.kpLinks || []).find((l) => String(l.kpId) === kpId)?.weight) || 0)) bestUnit = u;
+      if (!bestUnit || w > bestWeight) {
+        bestUnit = u;
+        bestWeight = w;
+      }
     }
     if (!bestUnit) continue;
     eligible.push({ kp, unit: bestUnit });

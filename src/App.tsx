@@ -533,12 +533,27 @@ export default function App() {
       .finally(clearVtMarkers);
   }, []);
 
+  // 审计 #13：开书是异步链（取文档 → 读原书字节 / 惰性合成 EPUB → 切视图），原实现既无 .catch
+  // 也无时序守卫——文件缺失/损坏、动态 import("./lib/epub") 或 buildSyntheticEpub 失败时
+  // 变成未处理拒绝，书架点了没反应；连点两本不同书则后解析者胜（可能落到先点的那本）。
+  // 参照 reader/ReaderEngine.tsx 的 disposed 守卫：每次开书领一个世代号，await 回来后
+  // 只有最新世代才允许切视图 / 报错；失败经既有 loadError 横幅显示（与启动失败同口径）。
+  const openBookGenRef = useRef(0);
   const openBook = useCallback((itemId: string) => {
-    libraryApi.getDocument(itemId).then(async (doc) => {
-      if (!doc) return;
-      const book = await loadReaderBook(itemId, doc);
-      changeView({ name: "reader", itemId, doc, book });
-    });
+    const gen = ++openBookGenRef.current;
+    void (async () => {
+      try {
+        const doc = await libraryApi.getDocument(itemId);
+        if (gen !== openBookGenRef.current) return; // 已被更新的开书请求取代
+        if (!doc) return;
+        const book = await loadReaderBook(itemId, doc);
+        if (gen !== openBookGenRef.current) return;
+        changeView({ name: "reader", itemId, doc, book });
+      } catch (err) {
+        if (gen !== openBookGenRef.current) return; // 过期请求的失败不该盖掉新请求的结果
+        setLoadError(err instanceof Error ? err.message : String(err));
+      }
+    })();
   }, [changeView, loadReaderBook]);
 
   const backToShelf = useCallback(() => changeView({ name: "shelf" }), [changeView]);

@@ -69,6 +69,13 @@ function createOverlay(display) {
   });
   win.on("closed", () => finish(null));
   win.webContents.on("did-fail-load", () => finish(null));
+  // 导航防护（审计 #80：与主窗口 / 快速记录 / 制卡台同规则）——遮罩只加载本地静态
+  // captureOverlay.html，此处是纵深防御：任何页面级跳转一律拦截，window.open 一律拒绝。
+  win.webContents.on("will-navigate", (event, url) => {
+    if (url.split("#")[0] === win.webContents.getURL().split("#")[0]) return;
+    event.preventDefault();
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.loadFile(path.join(__dirname, "captureOverlay.html")).catch(() => finish(null));
   // 兜底：整个流程 40 秒无结果自动放弃，避免全屏罩死
   const guard = setTimeout(() => finish(null), 40000);

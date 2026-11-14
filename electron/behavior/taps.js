@@ -97,6 +97,8 @@ const TAPS = {
   "cards:resolveLeech": { type: "card.leech_resolved", ok: okNotFalse, project: (a) => ({ entity_type: "card", entity_id: a[0] ? String(a[0]) : null, card_id: a[0] ? String(a[0]) : null, props: { resolution: a[1] ? String(a[1]).slice(0, 40) : null } }) },
   "cards:updateLeech": { type: "card.edited", ok: okNotFalse, project: (a) => ({ entity_type: "card", entity_id: a[0] ? String(a[0]) : null, card_id: a[0] ? String(a[0]) : null, props: { fields: ["leech"] } }) },
   "issues:add": { type: "card.issue", ok: okNotFalse, project: (a) => ({ entity_type: "card", card_id: a[0]?.cardId ? String(a[0].cardId) : null, props: { op: "add", ruleId: a[0]?.ruleId ? String(a[0].ruleId).slice(0, 24) : null, severity: a[0]?.severity === "error" ? "error" : "warn" } }) },
+  // D276：批量写与单写同一语义动作（card.issue / op=add）；投影取首条（props 白名单与 issues:add 同），空批 no-op 不发事件
+  "issues:addMany": { type: "card.issue", ok: (r) => okNotFalse(r) && arrLen(r) > 0, project: (a) => { const first = Array.isArray(a[0]) && a[0][0] && typeof a[0][0] === "object" ? a[0][0] : {}; return { entity_type: "card", card_id: first.cardId ? String(first.cardId) : null, props: { op: "add", ruleId: first.ruleId ? String(first.ruleId).slice(0, 24) : null, severity: first.severity === "error" ? "error" : "warn" } }; } },
   "issues:resolve": { type: "card.issue", ok: okNotFalse, project: () => ({ props: { op: "resolve" } }) },
   "batches:create": { type: "ai_batch.created", ok: (r) => !!idOf(r), project: (a, r) => ({ entity_type: "batch", entity_id: idOf(r), props: { scope: a[0]?.scope ? String(a[0].scope).slice(0, 40) : null, draftCount: numOf(a[0]?.draftCount) } }) },
   "batches:setStatus": { type: "ai_batch.resolved", ok: okNotFalse, project: (a, r) => ({ entity_type: "batch", entity_id: a[0] ? String(a[0]) : null, props: { status: a[1] ? String(a[1]).slice(0, 40) : null, accepted: numOf(r?.accepted), rejected: numOf(r?.rejected), editedBeforeAccept: numOf(r?.editedBeforeAccept) } }) },
@@ -127,9 +129,7 @@ const TAPS = {
   "learner:logEvent": { type: "learner.exercise", ok: okNotFalse, project: (a) => ({ props: { kind: a[0]?.kind ? String(a[0].kind).slice(0, 40) : null, outcome: a[0]?.payload && typeof a[0].payload === "object" && a[0].payload.outcome ? String(a[0].payload.outcome).slice(0, 40) : null } }) },
 
   // ---- 导图 / 日记 / 记忆 / 洞察 / 意义 ----
-  "mindmap:generate": { type: "mindmap.generated", ok: (r) => okNotFalse(r) && !!r, project: (a) => ({ entity_type: "library_item", entity_id: a[0] ? String(a[0]) : null, library_item_id: a[0] ? String(a[0]) : null, props: { kind: "section", ok: true } }) },
   "mindmap:graphGenerate": { type: "mindmap.generated", ok: (r) => okNotFalse(r) && !!r, project: (a) => ({ entity_type: "library_item", entity_id: a[0] ? String(a[0]) : null, library_item_id: a[0] ? String(a[0]) : null, props: { kind: "graph", ok: true } }) },
-  "mindmap:deepen": { type: "mindmap.node_action", ok: okNotFalse, project: () => ({ entity_type: "map_node", props: { action: "deepen" } }) },
   "mindmap:graphExpand": { type: "mindmap.node_action", ok: okNotFalse, project: () => ({ entity_type: "map_node", props: { action: "expand" } }) },
   "mindmap:graphExpandAll": { type: "mindmap.node_action", ok: okNotFalse, project: () => ({ entity_type: "map_node", props: { action: "expand_all" } }) },
   "mindmap:graphExplain": { type: "mindmap.node_action", ok: okNotFalse, project: () => ({ entity_type: "map_node", props: { action: "explain" } }) },
@@ -188,7 +188,7 @@ const COUNT_ONLY = {
     "learner:placementSample", "learner:lexStats", "learner:rebuild",
     "insights:buildPackage", "insights:get", "insights:list", "meaning:list",
     "memory:status", "memory:backfillPreview", "memory:openFolder", "memory:openFile", "memory:retrieve",
-    "mindmap:preview", "mindmap:pendingRuns", "mindmap:list", "mindmap:get", "mindmap:getActive",
+    "mindmap:pendingRuns", "mindmap:list", "mindmap:get", "mindmap:getActive",
     "mindmap:mapTree", "mindmap:runs", "mindmap:learningStatus", "mindmap:graphLoad", "mindmap:graphFeed",
     "mindmap:graphEstimate", "mindmap:graphMetrics", "mindmap:graphNodeText", "mindmap:graphEnsureMap",
     "mindmap:graphNodeAnchors", "shortcuts:status", "backup:info", "backup:list", "backup:meta",
@@ -208,8 +208,8 @@ const COUNT_ONLY = {
     "plugins:setActive", "plugins:openFolder", "plugins:rescan",
   ],
   "窗口 / 壳层 / 日志（非学习行为）": [
-    "win:minimize", "win:maximize", "win:close", "win:dockExtend", "win:dockRestore",
-    "win:workbench", "win:cardsChanged", "shell:openExternal", "app:relaunch",
+    "win:minimize", "win:maximize", "win:close",
+    "win:workbench", "win:workbenchResize", "win:cardsChanged", "shell:openExternal", "app:relaunch",
     "logs:rendererError", "logs:openFolder",
     "capture:hide", "capture:ready", "library:requestAdd", "shortcuts:apply",
   ],
@@ -220,7 +220,7 @@ const COUNT_ONLY = {
   "草稿节流自动保存（不计行为）": ["journal:draftSave", "journal:flush"],
   "应用更新（联网面在 D180 登记，不是学习行为）": ["update:check", "update:download", "update:install"],
   "导图视图/运行控制（无独立行为语义）": [
-    "mindmap:cancel", "mindmap:repairConfirm", "mindmap:delete", "mindmap:setActive",
+    "mindmap:cancel", "mindmap:delete", "mindmap:setActive",
     "mindmap:graphCancel", "mindmap:graphResume", "mindmap:graphSetView",
   ],
   "知识点批量采纳 / 引用删除（并入 knowledge.op 预留）": ["knowledge:acceptAllPending", "knowledge:deleteRef"],

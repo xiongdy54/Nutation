@@ -31,6 +31,12 @@ const MARK_TAGS = ["已被取代", "已结束", "已移至"];
 // add op 的合法 target：core 或 topics/<生活域>/<主题>.md（index.md 由系统自动登记，AI 不可写）
 const TARGET_CORE = "core";
 const TARGET_TOPIC_RE = /^topics\/([^/]+)\/([^/]+)\.md$/;
+// 审计 #20：主题文件名的字符白名单之外的硬拒绝。Windows 下 path.win32.join 把 `\` 当分隔符——
+// `foo\bar` 会让 appendLine 的 mkdirSync(recursive) 建出嵌套目录，而 rebuildIndex / usageStats
+// 只枚举生活域下**一层** .md，该文件从此不被登记、不被整理、不被回收（AI 输出可驱动的无界增长）。
+// 同理 `:` 在 Windows 上写的是 NTFS 交换数据流（同样永不入索引），控制字符与保留设备名不可作文件名。
+const TOPIC_ILLEGAL_RE = /[\\<>:"|?*\u0000-\u001f\u007f]/;
+const TOPIC_RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
 // token 粗估：与 db.js estimateTokens 同源（CJK ≈ 0.7 token/字，ASCII ≈ 0.25/字符；仅预算用）
 function estimateTokens(text) {
@@ -231,6 +237,13 @@ function validateTarget(raw) {
   }
   if (topic.includes("..") || topic.trim() !== topic || !topic.trim()) {
     return { ok: false, reason: `主题文件名非法：${topic}` };
+  }
+  // 审计 #20：反斜杠会被 Windows 当路径分隔符 → 文件落进嵌套目录，索引/整理/回收都看不见它
+  if (TOPIC_ILLEGAL_RE.test(topic)) {
+    return { ok: false, reason: `主题文件名含非法字符（\\ / 控制字符等）：${topic}` };
+  }
+  if (TOPIC_RESERVED_RE.test(topic)) {
+    return { ok: false, reason: `主题文件名是系统保留名：${topic}` };
   }
   return { ok: true, rel: `${TOPICS_DIR}/${domain}/${topic}.md`, domain, topic };
 }

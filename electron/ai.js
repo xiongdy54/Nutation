@@ -348,11 +348,66 @@ function redact(s) {
     .replace(/\b(sk|ak|pk|key)[-_][A-Za-z0-9_\-]{6,}/gi, "$1-***");
 }
 
+// C-07：错误文案只保留 HTTP 状态 + 简短可读原因——服务端正文（常为网关 HTML/请求头回显）不得进 UI。
+// 机读信息仍在 err.status / err.code 上，调用方不需要从文案里解析。
+const HTTP_REASON_ZH = {
+  400: "请求格式有误",
+  401: "认证失败（API Key 无效或已过期）",
+  402: "账户余额不足",
+  403: "无权访问该模型或接口",
+  404: "接口路径不存在",
+  408: "请求超时",
+  413: "请求体过大",
+  415: "请求内容类型不受支持",
+  422: "请求参数无法处理",
+  429: "请求过于频繁（已限流）",
+  500: "服务端内部错误",
+  502: "网关错误",
+  503: "服务暂不可用",
+  504: "网关超时"
+};
+const ERROR_DETAIL_MAX = 200;
+
+/** 任意错误正文 → 一行可读文本：解实体、剥标签、去请求头片段、压缩空白、截断 */
+function scrubErrorText(s) {
+  return redact(String(s || ""))
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, "&")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\b(?:request|req)[\s-]*headers?\b[\s\S]*/i, " ")
+    .replace(/\bauthorization\b\s*[:=][^\s,;]*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, ERROR_DETAIL_MAX);
+}
+
+/** 只从 JSON 错误体里取结构化 message（HTML/纯文本正文一律不回显，避免网关页与请求头进 UI） */
+function errorDetailFromBody(errText) {
+  try {
+    const j = JSON.parse(String(errText || "").slice(0, 8192).trim());
+    const msg = j?.error?.message ?? j?.error?.detail ?? j?.message ?? null;
+    if (typeof msg === "string" && msg.trim()) return scrubErrorText(msg);
+    const code = j?.error?.code ?? j?.code ?? null;
+    if (typeof code === "string" && code.trim()) return scrubErrorText(code);
+  } catch {
+    /* 非 JSON 响应体：不回显 */
+  }
+  return "";
+}
+
 // v48 批2（M15 §4.19-8）：机读错误码——超时/限流/网络/HTTP/无 Key/取消，多级管线重试与失败状态机需要；
 // 中文 message 不变（渲染层展示不受影响），仅附 .code。
 // v48.11（§3.7）：附 status / retryAfterMs（供 429 退避优先遵循 Retry-After）。
 function classifyHttpError(status, errText, headers) {
-  const err = new Error(`AI 服务错误 ${status}: ${redact(errText).slice(0, 300)}`);
+  const detail = errorDetailFromBody(errText);
+  const reason = detail || HTTP_REASON_ZH[status] || "服务端拒绝了请求";
+  const err = new Error(`AI 服务错误 ${status}：${reason}`);
   err.code = status === 429 ? "rate_limit" : "http";
   err.status = status;
   err.retriable = status === 429 || status === 408 || (status >= 500 && status <= 599);
@@ -378,10 +433,32 @@ function parseRetryAfter(headers) {
 /** abort 归因：优先还原 abortSignal.reason 携带的机读 code（看门狗=timeout vs 用户取消=cancelled） */
 function abortErrorOf(abortSignal) {
   const reason = abortSignal && abortSignal.reason;
-  if (reason && typeof reason === "object" && reason.code) return reason;
+  // C-10：只透传带**字符串**机读码的显式 reason（如 main.js 的 cancelled、看门狗的 timeout）。
+  // DOMException 的 code 是数字 20（AbortError），原样透传会让调用方把「用户取消」当成未知错误。
+  if (reason && typeof reason === "object" && typeof reason.code === "string" && reason.code) return reason;
   const err = new Error("已取消");
   err.code = "cancelled";
   return err;
+}
+
+// C-12：usage 只保留有限、非负、量级合理的数值字段。服务端给负数 / 1e18 / 非数值时丢弃，
+// 不得原样交给调用方（费用、预算与「预计 ¥X / 实际 ¥Y」都会失真）。
+const USAGE_MAX = 1e9;
+function sanitizeUsage(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { usage: null, invalid: raw != null };
+  const out = {};
+  let invalid = false;
+  for (const [k, v] of Object.entries(raw)) {
+    if (v && typeof v === "object") continue; // 嵌套明细（如 completion_tokens_details）不参与平铺校验
+    if (typeof v !== "number" && typeof v !== "string") continue;
+    const n = typeof v === "number" ? v : v.trim() === "" ? NaN : Number(v);
+    if (!Number.isFinite(n) || n < 0 || n > USAGE_MAX) {
+      invalid = true;
+      continue;
+    }
+    out[k] = n;
+  }
+  return { usage: Object.keys(out).length > 0 ? out : null, invalid };
 }
 
 /** 退避时长：Retry-After 优先；否则指数退避 + 抖动（§3.6） */
@@ -554,6 +631,7 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
 
     let buf = "";
     let usage = null; // v48：末块 usage（prompt/completion tokens；GLM 计入 reasoning）
+    let usageInvalid = false; // C-12：服务端给过非法 usage（已丢弃，仅留痕）
     let finishReason = null; // v48.11：截断判定（length）所需
     // 思考模型（GLM 等）先输出 reasoning_content 再输出正文；thinking 计数节流转发（v10.4）
     let thinkAcc = 0;
@@ -567,6 +645,9 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
       doneSent = true;
       send({ done: true, ...p });
     };
+    // C-11：同一帧被重复投递（重连重放 / 代理复制）时，同一批 data 只喂一次解析器。
+    // 只抑制与**紧邻上一帧**完全相同的帧：重放必然相邻重复，而正常流里相邻 token 整帧相同的概率极低。
+    let lastFrame = null;
     const handleLine = (line) => {
       // 返回 true 表示遇到 [DONE]
       if (!line.startsWith("data:")) return false;
@@ -575,9 +656,15 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
         sawDone = true;
         return true;
       }
+      if (data === lastFrame) return false;
+      lastFrame = data;
       try {
         const json = JSON.parse(data);
-        if (json.usage) usage = json.usage;
+        if (json.usage) {
+          const s = sanitizeUsage(json.usage);
+          if (s.usage) usage = s.usage;
+          usageInvalid = usageInvalid || s.invalid;
+        }
         const choice = json.choices?.[0] || {};
         if (choice.finish_reason) finishReason = choice.finish_reason;
         const d = choice.delta || {};
@@ -613,8 +700,7 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
         }
       } catch (err) {
         if (abortSignal && abortSignal.aborted) throw abortErrorOf(abortSignal);
-        err.streamStarted = true;
-        throw err;
+        throw classifyNetError(err, { cfg, host: url.host, streamStarted: true });
       }
       if (contentType.includes("application/json")) {
         let json = null;
@@ -627,14 +713,20 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
         if (typeof content === "string" && content) {
           // 整包 JSON：作为一次 delta 发出并正常结束
           if (ttftMs == null) ttftMs = Date.now() - startedAt;
-          if (json.usage) usage = json.usage;
+          if (json.usage) {
+            const s = sanitizeUsage(json.usage);
+            if (s.usage) usage = s.usage;
+            usageInvalid = usageInvalid || s.invalid;
+          }
           if (json.choices[0].finish_reason) finishReason = json.choices[0].finish_reason;
           send({ delta: content });
-          sendDoneOnce({ usage, finishReason, ttftMs, firstByteMs });
-          return { usage, finishReason, ttftMs, firstByteMs };
+          sendDoneOnce({ usage, finishReason, ttftMs, firstByteMs, usageInvalid });
+          return { usage, finishReason, ttftMs, firstByteMs, usageInvalid };
         }
       }
-      const e = new Error(`AI 服务返回了非流式内容（content-type: ${contentType || "缺失"}）：${redact(whole).slice(0, 200)}`);
+      const e = new Error(
+        `AI 服务返回了非流式内容（content-type: ${contentType || "缺失"}）：${scrubErrorText(whole.slice(0, 4000)) || "未提供可读原因"}`
+      );
       e.code = "bad_content_type";
       e.retriable = false;
       e.streamStarted = true;
@@ -651,24 +743,21 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
           const line = buf.slice(0, idx).trim();
           buf = buf.slice(idx + 1);
           if (handleLine(line)) {
-            sendDoneOnce({ usage, finishReason, ttftMs, firstByteMs });
-            return { usage, finishReason, ttftMs, firstByteMs }; // [DONE] 之后的残余数据不再消费
+            sendDoneOnce({ usage, finishReason, ttftMs, firstByteMs, usageInvalid });
+            return { usage, finishReason, ttftMs, firstByteMs, usageInvalid }; // [DONE] 之后的残余数据不再消费
           }
         }
       }
     } catch (err) {
       if (abortSignal && abortSignal.aborted) throw abortErrorOf(abortSignal);
-      if (err && err.code === "timeout") {
-        err.streamStarted = true; // 正文读到一半超时 = 结果未知（v45 语义：不重试）
-        throw err;
-      }
-      err.streamStarted = true; // 正文读到一半失败 = 结果未知（§3.7）
-      throw err;
+      // C-23：正文读到一半的失败同样走统一归类——ECONNRESET / net::ERR_CONNECTION_RESET → code:"network"；
+      // 看门狗空闲超时保持 code:"timeout"。流已开始 = 结果未知（§3.7），retriable=false。
+      throw classifyNetError(err, { cfg, host: url.host, streamStarted: true });
     }
     if (buf.trim()) handleLine(buf.trim()); // 末行没有换行符
     if (sawDone || finishReason) {
-      sendDoneOnce({ usage, finishReason, ttftMs, firstByteMs });
-      return { usage, finishReason, ttftMs, firstByteMs };
+      sendDoneOnce({ usage, finishReason, ttftMs, firstByteMs, usageInvalid });
+      return { usage, finishReason, ttftMs, firstByteMs, usageInvalid };
     }
     // C-19a 第 2 步：既没有 [DONE] 也没有 finish_reason 的提前收尾 = 截断，不是成功
     const e = new Error("AI 响应在完成前中断：没有收到结束标记，结果可能不完整");

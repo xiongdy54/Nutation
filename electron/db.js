@@ -15,7 +15,7 @@ function dataDir() {
   return DATA_DIR;
 }
 const Database = require("better-sqlite3");
-const { attachRun, applyStandardPragmas, normParams } = require("./sqliteCompat");
+const { attachRun, applyStandardPragmas, normParams, cachedPrepare, sqliteOpenPath } = require("./sqliteCompat");
 const {
   CARD_GEN_PROMPT,
   CARD_FORMULA_PROMPT,
@@ -79,8 +79,10 @@ const {
   DEFAULT_CONFIG_ID,
   ALGORITHM,
   ALGORITHM_VERSION,
+  FSRS_WEIGHTS_LEN,
   FSRS6_DEFAULT_WEIGHTS,
   DEFAULT_SCHEDULER_OPTIONS,
+  isValidWeights,
   configFingerprint
 } = require("./fsrsConfig");
 
@@ -412,7 +414,7 @@ async function initDb(opts = {}) {
   try { fs.rmSync(dbFile + ".tmp", { force: true }); } catch { /* 忽略 */ }
   const fileExisted = fs.existsSync(dbFile) && fs.statSync(dbFile).size > 0;
   if (db && db.open) closeDb();
-  db = attachRun(new Database(dbFile));
+  db = attachRun(new Database(sqliteOpenPath(dbFile)));
   // C-10：库比程序新 → 拒绝打开，不读不写（快照/基线/迁移全部不执行）
   const schema = require("./schemaVersion");
   let startVersion;
@@ -564,7 +566,7 @@ async function initDb(opts = {}) {
   // 中途崩溃也安全：行已提交而 settings 未写时，旧字段仍在，下次启动重跑，insertFsrsConfig 按指纹返回同一行。
   try {
     const s0 = readSettings();
-    if (Array.isArray(s0.app?.fsrsWeights) && s0.app.fsrsWeights.length === 21 && !s0.app?.fsrsConfigId) {
+    if (Array.isArray(s0.app?.fsrsWeights) && s0.app.fsrsWeights.length === FSRS_WEIGHTS_LEN && !s0.app?.fsrsConfigId) {
       const id = insertFsrsConfig(s0.app.fsrsWeights, DEFAULT_SCHEDULER_OPTIONS, "optimizer");
       s0.app.fsrsConfigId = id;
       delete s0.app.fsrsWeights;
@@ -986,6 +988,7 @@ async function initDb(opts = {}) {
   // 再把 settings 里的库内事实搬进 app_meta。必须在 mark() 之前——标记落点依赖 app_meta 已建。
   if (schema.readUserVersion(db) < 1) db.pragma("user_version = 1");
   schema.runMigrations(db);
+  repairNullReviewSeq();
   // C-38b（审计）：同步触发器——sync_version 自动递增 + 删除墓碑。依赖列清单，每次启动先删后建
   // 幂等重建（毫秒级）；是 C-10「结构变化只走 MIGRATIONS」规则的唯一登记例外（派生对象，不承载数据）。
   require("./syncTriggers").installSyncTriggers(db);
@@ -1081,7 +1084,7 @@ function connPragmas() {
 
 // 读取某配置行（解析后的完整快照）；不存在返回 null
 function getConfigRow(id) {
-  const rows = queryAll("SELECT * FROM fsrs_configs WHERE id = ?", [id]);
+  const rows = queryAll("SELECT * FROM fsrs_configs WHERE id = ?", [asTextKey(id)]);
   const r = rows[0];
   if (!r) return null;
   let weights = null;
@@ -1127,8 +1130,14 @@ function insertFsrsConfig(weights, schedulerOptions, source) {
 
 // 移动活跃指针（切换配置只改变指针，绝不修改配置内容；§4.4.10 不可变约束）
 // C-10：指针存 app_meta（库内事实与库同恢复）；v2 迁移前表不存在时 writeAppMeta 回落 settings。
+// D290（F43 G1）：写指针前按引擎同一口径校验快照（isValidWeights + enableFuzz===false，与
+// src/lib/fsrs.ts buildEngineFromConfig 一致）。不合格抛错且不写 app_meta——否则指针指向引擎不认的
+// 配置，渲染层静默回落默认引擎，而 review_logs.fsrs_config_id 仍盖这个 id，§4.4.10 按 config 分段重放被误导。
 function setActiveFsrsConfig(id) {
-  if (!getConfigRow(id)) throw new Error(`FSRS 配置不存在: ${id}`);
+  const row = getConfigRow(id);
+  if (!row) throw new Error(`FSRS 配置不存在: ${id}`);
+  if (!isValidWeights(row.weights)) throw new Error(`FSRS 配置权重形状不合法（需 ${FSRS_WEIGHTS_LEN} 维有限数值）: ${id}`);
+  if ((row.schedulerOptions || {}).enableFuzz !== false) throw new Error(`FSRS 配置调度选项不合法（enableFuzz 必须为 false）: ${id}`);
   writeAppMeta("fsrsConfigId", id);
   return id;
 }
@@ -1609,6 +1618,23 @@ function clampOffset(offset) {
   return Number.isFinite(n) ? Math.max(0, Math.min(1e9, Math.floor(n))) : 0;
 }
 
+// C-06：读口第一参数可能是对象/数组/布尔（分页抖动、渲染层传错形状）。
+// better-sqlite3 只接受 number/string/bigint/buffer/null，原样绑定会抛
+// "SQLite3 can only bind numbers..." → 整个页面白屏。统一转成可绑定的字符串；
+// 不存在的 key 自然查不到行，读口保持"返回空/ null"而不是抛错。
+function asTextKey(v) {
+  if (v === null || v === undefined) return "";
+  return typeof v === "string" ? v : String(v);
+}
+
+// C-08：真实主键都是 UUID（crypto.randomUUID）。旧版遗留的 knowledgePointId
+// 允许是 canonicalLabel（K1/K2 迁移路径在用），那种值不按主键校验。
+// 只对"看起来像主键"的值做存在性校验，避免把遗留 label 卡误拒。
+const ID_LOOKING_RE = /^[0-9a-f]{8}-[0-9a-f-]{8,}$/i;
+function looksLikeId(v) {
+  return typeof v === "string" && ID_LOOKING_RE.test(v);
+}
+
 // 卡片 JSON 列的单列解析口径（批次 A；D236 起抽出，供 mapCardRow 与统计精简扫描共用）：
 // 空（NULL / undefined / ""）→ fallback；解析结果为 null → fallback；解析失败 → JSON_BROKEN（调用方记损坏列）。
 const JSON_BROKEN = Symbol("json-broken");
@@ -1639,16 +1665,42 @@ function fsrsValueDamaged(f) {
   // 用**同一表达式**，两处互为镜像——改一处必改另一处（漂移＝回填认新卡而本闸门认非新卡，
   // S/D=0 基线行会被判 damaged 从队列静默缺席）。
   const isNewState = f.state === "new" || f.state === undefined || f.state === null;
+  // 审计 #7（A-2/F34 同一输入类：手改库 / 迁移脚本 / 恢复备份）：数值字段必须是 JSON number 类型。
+  // 数字字符串（"3.5"）经 Number() 强转能溜过值域闸门，但渲染层 f.stability.toFixed(2) 直接抛
+  // TypeError → 根错误边界接管、整应用停止渲染；布尔 / 数组 / 对象同理一律拒收。
+  // null / undefined 维持既有语义不另收紧（null 按 Number(null)=0 参与下方值域判定：新态 S/D=0 合法、
+  // 非新态 S=0 仍 damaged）——只新增类型拒收，不改变任何原本合法行的判定。
+  const numTypeOk = (v) => v === undefined || v === null || typeof v === "number";
   return (
+    !numTypeOk(f.stability) ||
     (f.stability !== undefined && !(Number.isFinite(S) && (isNewState ? S >= 0 : S > 0))) ||
+    !numTypeOk(f.difficulty) ||
     (f.difficulty !== undefined && !(Number.isFinite(D) && D >= (isNewState ? 0 : 1) && D <= 10)) ||
+    !numTypeOk(f.due) ||
     (f.due !== undefined && !Number.isFinite(due)) ||
+    !numTypeOk(f.lastReview) ||
     (lr !== null && !Number.isFinite(lr)) ||
+    !numTypeOk(f.lapses) ||
     (f.lapses !== undefined && !(Number(f.lapses) >= 0)) ||
+    !numTypeOk(f.reps) ||
     (f.reps !== undefined && !(Number(f.reps) >= 0)) ||
     // 未来 lastReview（时钟回拨留下的存量形态）会让调度器算负 delta_t 直接抛错 → 视为损坏
     (lr !== null && lr > Date.now() + 24 * 3600 * 1000)
   );
+}
+
+// C-14（F38）：写侧最小形状闸门——`fsrsValueDamaged` 是给读侧存量行用的宽容判据
+// （缺 due 会被 normalizeFsrs 伪装成 now），不能拿来验收新写入。写口至少要求
+// due 为有限数；state 若给出则必须是 FSRS 四态（大小写不敏感，兼容旧测试的 "Review"）。
+// 不合法返回 true（调用方据此抛可判错误，零落盘）。
+const FSRS_WRITE_STATES = new Set(["new", "learning", "relearning", "review"]);
+function fsrsWriteShapeInvalid(f) {
+  if (!f || typeof f !== "object" || Array.isArray(f)) return true;
+  if (!Number.isFinite(Number(f.due))) return true;
+  if (f.state !== undefined && f.state !== null) {
+    if (typeof f.state !== "string" || !FSRS_WRITE_STATES.has(f.state.toLowerCase())) return true;
+  }
+  return false;
 }
 
 function mapCardRow(r) {
@@ -1787,6 +1839,17 @@ function createCard(card) {
     (Array.isArray(c.clozeOrds) ? c.clozeOrds.length > 0 : Boolean(c.clozeOrds)) ||
     Boolean(c.cloze);
   if (!hasContent) return false;
+  // C-08（F38）：写前验父行——幽灵 knowledgePointId / contextRef.documentId 会留下
+  // 知识图谱与「跳转原文」都踩不到的悬空引用。与 T1/T2 档同一口径：返回 false 不抛错
+  // （AI 批量制卡是多草稿循环，抛错会中断整批）。遗留 label 形态的 KP 引用走 K1/K2
+  // 迁移归一链，不按 UUID 主键校验（否则会误拒迁移夹具）。
+  const kpRef = c.knowledgePointId ?? c.knowledge_point_id;
+  if (kpRef !== null && kpRef !== undefined && typeof kpRef === "object") return false;
+  if (looksLikeId(kpRef) && !rowExists("knowledge_points", kpRef)) return false;
+  const contextRef = c.contextRef && typeof c.contextRef === "object" ? c.contextRef : null;
+  const docRef = contextRef?.documentId;
+  if (docRef !== null && docRef !== undefined && typeof docRef === "object") return false;
+  if (looksLikeId(docRef) && !rowExists("documents", docRef)) return false;
   const id = insertCard({
     ...card,
     // 新卡初始 FSRS 状态：due=now 即立即到期（修复 NULL 导致的调度竞争）
@@ -1802,6 +1865,31 @@ function updateCard(card) {
   // 批次 E（D-TEST-15 T1 档）：卡不存在（或已软删）时 UPDATE 影响 0 行却仍然 return true 是假成功。
   // 复用上面已经取出的 prev，不额外查一次库；返回 false，调用方零改动。
   if (!prev) return false;
+  // C-14：整卡写回的 fsrs 必须是可调度的完整形状（至少 due 为有限数）。
+  // 不校验的话，缺 due 的值会先落库，再由读口 normalizeFsrs 伪装成 now——
+  // 写侧说谎、读侧补锅，卡片何时到期就没人说得清。
+  if (card.fsrs !== undefined && card.fsrs !== null && fsrsWriteShapeInvalid(card.fsrs)) {
+    throw new Error("保存被拒：fsrs 状态缺少有效 due。");
+  }
+  // 审计 A-1（澄清二）：整行写回挡住「陈旧快照」——判据照 saveReview A-7：库内卡态是否已比入参前进
+  // （reps 更大 / lastReview 更晚）。只拒「后退」，不拒未来值，故不触及 §4.4.3 时间注入（见 saveReview 注释）；
+  // 入参缺该字段则不比较（不改变缺字段载荷的既有行为）。
+  // 豁免：显式意图 resetToNew === true **且** 入参恰为八字段新卡基线（freshNewCardFsrs 形状）＝用户「重置为新卡」，
+  // 合法的有意后退。不能只凭形状判定：「从未复习的新卡」的陈旧快照与重置基线同形，会借豁免覆盖刚做的评分。
+  // resetToNew 只是本次调用的意图标记，不落库。
+  if (card.fsrs && typeof card.fsrs === "object" && !card.fsrs_json) {
+    const inc = card.fsrs;
+    const cur = prev.fsrs || {};
+    const has = (k) => Object.prototype.hasOwnProperty.call(inc, k);
+    const isReset =
+      card.resetToNew === true && inc.state === "new" && Number(inc.reps) === 0 && Number(inc.stability) === 0 &&
+      Number(inc.difficulty) === 0 && has("lastReview") && inc.lastReview == null;
+    const stale =
+      !isReset &&
+      ((has("reps") && (Number(cur.reps) || 0) > (Number(inc.reps) || 0)) ||
+        (has("lastReview") && (Number(cur.lastReview) || 0) > (Number(inc.lastReview) || 0)));
+    if (stale) throw new Error("保存被拒：该卡的调度状态已前进（写入的是旧快照）。请刷新后重试。");
+  }
   db.run(
     `UPDATE cards SET note_text=?, card_type=?, cloze_ords=?, card_ord=?, front_markdown=?, back_markdown=?,
       context_prefix=?, context_ref_json=?, mnemonic=?, example=?, source_ref_json=?, date_stamp=?, priority=?,
@@ -1836,7 +1924,7 @@ function updateCard(card) {
 }
 
 function getCard(id) {
-  const rows = queryAll("SELECT * FROM cards WHERE id = ? AND is_deleted = 0", [id]);
+  const rows = queryAll("SELECT * FROM cards WHERE id = ? AND is_deleted = 0", [asTextKey(id)]);
   return mapCardRow(rows[0]);
 }
 
@@ -1889,8 +1977,12 @@ function computeSiblingDeferred(cards, now) {
   const deferred = new Map();
   const cfg = siblingBuryConfig();
   if (!cfg.enabled) return deferred;
-  const day0 = dayStartMs(now);
-  const day1 = day0 + 86400000;
+  // 审计 #5（D236 同款习语，见 learningDayStarts 注释）：日界逐日用 learningDayStartMs 推导，
+  // 不再 +86400000 硬步进——夏令时回拨日只有 25 小时，硬步进窗口止于本地 23:00，23:00–24:00 的
+  // 评分不进 reviewedByKey → remaining 多算 1，同源兄弟卡当日被再次放行（泄题）。日切点只读一次。
+  const cutoff = getCutoffHour();
+  const day0 = learningDayStartMs(now, cutoff);
+  const day1 = learningDayStartMs(day0 + 36 * 3600_000, cutoff); // 学习日长 23–25 小时：+36h 必落在下一学习日内
   // 组内今日已评分卡（按 sibling_key 汇总；已删卡不计入——删除即该卡一切事实退出）
   const reviewedRows = queryAll(
     `SELECT DISTINCT r.card_id AS id, c.sibling_key AS key
@@ -2335,9 +2427,46 @@ function deleteCard(id) {
 // review 成功边界 = COMMIT + persist 成功 + IPC 成功；persist 失败语义已按 C-17 修订（见 persist() 上方
 // 注释）：checkpoint 忙碌不再 throw，评分成功返回；「重试保存」走 persistNow 的严格 checkpoint。
 // 快照集：before（v22）/after/leech_before/评分所用 config/评分前 config/review_seq。
+// C-13：review_logs 是 FSRS 参数优化的训练数据，四档之外的评级一入库就成了优化器
+// 不认识（RATING_MAP 只认 Again/Hard/Good/Easy）的噪声。写侧只收规范枚举，
+// 大小写不做折叠（F38 明确要求小写 again 被拒）。
+const REVIEW_RATINGS = new Set(["Again", "Hard", "Good", "Easy"]);
+// 审计 C-8（F43 C3，§4.4.9 排序不变量：review_seq 表内唯一且非空）：基线里的 rowid 回填只在「列首次新增」时跑一次；
+// 之后若有旧构建（回滚期间）写入不带 review_seq 的日志行，这些 NULL 行在 DESC 序里沉底 →「最近一次可撤销评分」
+// 指向别的卡、日志清单顺序错乱。每次启动在迁移之后修一次：NULL 行按 rowid（插入序）接在当前最大序号之后编号——
+// 这类行只可能产生于升级之后的回滚窗口，排在既有序号之后与真实时序一致。无 NULL 行时只有一次索引查询，零写入。
+function repairNullReviewSeq() {
+  const nulls = queryAll("SELECT rowid AS r FROM review_logs WHERE review_seq IS NULL ORDER BY rowid ASC");
+  if (!nulls.length) return 0;
+  let seq = Number(queryAll("SELECT COALESCE(MAX(review_seq), 0) AS m FROM review_logs")[0]?.m) || 0;
+  db.transaction(() => {
+    for (const { r } of nulls) db.run("UPDATE review_logs SET review_seq = ? WHERE rowid = ?", [++seq, r]);
+  })();
+  persist();
+  return nulls.length;
+}
+// 审计 C-8（F43 A4，§7.2 数据完整性 / 向前兼容）：评分写回的是引擎出层的八字段新状态，会把**本版本不认识**的
+// fsrs 字段（更新版本写入的扩展）静默洗掉——回滚到写它的版本后用户的数据就没了。这里只把「旧状态里有、
+// 新状态里没有、且不属于八字段契约」的键原样带上；八字段一律以新状态为准（含新状态有意置 null 的字段）。
+const FSRS_CONTRACT_KEYS = new Set(["state", "due", "lapses", "stability", "difficulty", "reps", "learningSteps", "lastReview"]);
+function withUnknownFsrsFields(prev, next) {
+  if (!prev || typeof prev !== "object" || !next || typeof next !== "object") return next;
+  let out = null;
+  for (const k of Object.keys(prev)) {
+    if (FSRS_CONTRACT_KEYS.has(k) || Object.prototype.hasOwnProperty.call(next, k)) continue;
+    if (!out) out = { ...next };
+    out[k] = prev[k];
+  }
+  return out || next;
+}
 function saveReview(cardId, fsrsState, rating, durationMs, fsrsBefore) {
   const card = getCard(cardId);
   if (!card) throw new Error("卡片不存在");
+  if (!REVIEW_RATINGS.has(rating)) {
+    throw new Error("评分被拒：评级必须是 Again/Hard/Good/Easy。");
+  }
+  // C-14 / A-06：评分后的调度状态同样必须可调度（至少 due 有限）。
+  if (fsrsWriteShapeInvalid(fsrsState)) throw new Error("评分被拒：fsrs 状态缺少有效 due。");
   // A-7（审计 F35）：写入口必须挡住「同一次呈现被计入两次」。
   // persist() 是在 COMMIT **之后**才调的（见本函数尾部），磁盘满/杀软占用会让它抛错，而那时行已提交；
   // 渲染层据此停在原卡，用户点「重试保存」清掉错误位后能再评一次 —— 它手里握的还是**评分前**快照，
@@ -2395,7 +2524,7 @@ function saveReview(cardId, fsrsState, rating, durationMs, fsrsBefore) {
       now
     ]);
     db.run("UPDATE cards SET fsrs_json = ?, fsrs_config_id = ?, updated_at = ? WHERE id = ?", [
-      JSON.stringify(fsrsState),
+      JSON.stringify(withUnknownFsrsFields(card.fsrs, fsrsState)),
       getActiveConfigId(),
       now,
       cardId
@@ -2605,6 +2734,23 @@ function updateCardLeech(cardId, leechPatch) {
   return true;
 }
 
+// 审计 #19（§4.4.1 全字段持久化契约）：leech reset = 一张全新卡。形状与渲染层 canonical 序列化
+// fromFsrsCard(createEmptyCard(now))（src/lib/fsrs.ts）逐字段一致：S/D/reps/learningSteps=0、lastReview=null。
+// 主进程不 import ts-fsrs（§4.4.11 边界），此处复刻同一基线；禁止截断成 {state,due,lapses} 三字段——
+// 那会给同一调度事实造出第二套形状（§4.4 最高不变量），八字段缺一即违约（FSRS_PERSIST_FIELDS 同集）。
+function freshNewCardFsrs(now) {
+  return {
+    state: "new",
+    due: now,
+    lapses: 0,
+    stability: 0,
+    difficulty: 0,
+    reps: 0,
+    learningSteps: 0,
+    lastReview: null
+  };
+}
+
 function resolveLeech(cardId, resolution, updates) {
   const card = getCard(cardId);
   if (!card) return null;
@@ -2626,7 +2772,7 @@ function resolveLeech(cardId, resolution, updates) {
       updates?.mnemonic || null,
       updates?.priority ?? null,
       JSON.stringify(updates?.tags || card.tags || []),
-      ...(leechResetsSchedule ? [JSON.stringify({ state: "new", due: Date.now(), lapses: 0 }), getActiveConfigId()] : []),
+      ...(leechResetsSchedule ? [JSON.stringify(freshNewCardFsrs(Date.now())), getActiveConfigId()] : []),
       Date.now(),
       cardId
     ]
@@ -2635,8 +2781,36 @@ function resolveLeech(cardId, resolution, updates) {
   return true;
 }
 
+// 审计 #48：leech/suspended 谓词下推 SQL——主进程不再随库规模对每张卡解析 9 个 JSON 列再 JS 过滤。
+// SQL 侧是**严格超集**粗筛，最终结果仍由下方原 JS 谓词复判，任何输入下与旧全量实现逐值等价：
+//  - 用 json_each 枚举顶层键而非 json_extract：SQLite 对重复键取首值、JSON.parse 取末值，
+//    json_each 输出全部出现 →「任一次出现为真」⊇ JS「末值为真」（重复键病态行不漏）。
+//  - 真值按 JSON 类型逐支对齐 JS：true / 整数≠0 / 实数≠0 / 非空 text / object / array 为真，
+//    false / null / 0 / 空串 / 缺键为假（无重复键的合法行上 SQL ≡ JS，测试对拍把守）。
+//  - NOT json_valid 兜底放行 SQLite 判非法的行（含 SQLite 与 V8 解析器差异：孤代理对 / 1e999 /
+//    超深嵌套等）——这些行交 JS 按 JSON.parse 语义复判；leech_json 为 NULL 时两臂皆 NULL/假 → 排除。
+//  - instr(\u0000) 兜底：SQLite 接受 \u0000 转义（json_valid=1）但 length() 在内嵌 NUL 处截断 →
+//    非空串被误判空；凡原文含 \u0000 转义的行一律放行交 JS 复判（JS 串长≥1 恒真）。
+const LEECH_CANDIDATE_SQL = `SELECT * FROM cards
+     WHERE is_deleted = 0
+       AND (NOT json_valid(leech_json) OR instr(leech_json, '\\u0000') > 0 OR EXISTS (
+         SELECT 1 FROM json_each(leech_json) je
+         WHERE je.key IN ('isLeech', 'suspended')
+           AND CASE je.type
+                 WHEN 'true' THEN 1
+                 WHEN 'integer' THEN je.value != 0
+                 WHEN 'real' THEN je.value != 0
+                 WHEN 'text' THEN length(je.value) > 0
+                 WHEN 'object' THEN 1
+                 WHEN 'array' THEN 1
+                 ELSE 0
+               END
+       ))`;
+
 function listLeechCards() {
-  const rows = queryAll("SELECT * FROM cards WHERE is_deleted = 0");
+  const rows = queryAll(LEECH_CANDIDATE_SQL);
+  // 原谓词复判（与旧实现同一表达式）：超集可能放进「首值真、末值假」的重复键病态行，
+  // 此处按 JSON.parse 末值语义过滤，保证返回集与旧 SELECT * 全量实现完全一致。
   return rows.map(mapCardRow).filter((c) => c.leech?.isLeech || c.leech?.suspended);
 }
 
@@ -2653,8 +2827,30 @@ function addCardIssue(issue) {
   return { id };
 }
 
+// D276（v49.110，审计 #56）：卡片问题批量写入口——N 条 lint 问题一个事务、恰一次 persist()（checkpoint）。
+// 逐条语义与 addCardIssue 逐字一致：幽灵父卡（含 null 项，同一 `issue && issue.cardId` 守卫）返回 false
+// 不抛错、source 缺省 "lint"、status 恒 'open'、id=crypto.randomUUID()、created_at=Date.now()、成功返回 {id}；
+// 结果按入参顺序返回数组（{id} | false）。任一条抛错（如不可绑定字段）→ withTransaction 整批回滚、
+// 零部分写入（单条循环路径没有此保证——批量是原子写）。空数组 / 非数组＝安全 no-op（零事务零 checkpoint）。
+// 单条 addCardIssue 与 issues:add 通道原样保留（ReviewView 等单发调用方仍在用）。
+function addCardIssues(issues) {
+  const list = Array.isArray(issues) ? issues : [];
+  if (list.length === 0) return [];
+  return withTransaction(() =>
+    list.map((issue) => {
+      if (!rowExists("cards", issue && issue.cardId)) return false;
+      const id = crypto.randomUUID();
+      db.run(
+        "INSERT INTO card_issues (id, card_id, rule_id, severity, message, source, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)",
+        [id, issue.cardId, issue.ruleId, issue.severity, issue.message, issue.source || "lint", Date.now()]
+      );
+      return { id };
+    })
+  );
+}
+
 function listCardIssues(cardId) {
-  return queryAll("SELECT * FROM card_issues WHERE card_id = ? ORDER BY created_at DESC", [cardId]);
+  return queryAll("SELECT * FROM card_issues WHERE card_id = ? ORDER BY created_at DESC", [asTextKey(cardId)]);
 }
 
 function resolveCardIssue(id) {
@@ -3141,7 +3337,7 @@ function ensurePromptTemplates() {
 function getPromptTemplate(scope) {
   const rows = queryAll(
     "SELECT * FROM prompt_templates WHERE scope = ? ORDER BY is_default DESC, version DESC LIMIT 1",
-    [scope]
+    [asTextKey(scope)]
   );
   return rows[0] || null;
 }
@@ -3150,7 +3346,7 @@ function getPromptTemplate(scope) {
 function getPromptTemplateVersion(scope, version) {
   const rows = queryAll(
     "SELECT * FROM prompt_templates WHERE scope = ? AND version = ? LIMIT 1",
-    [scope, version]
+    [asTextKey(scope), asTextKey(version)]
   );
   return rows[0] || null;
 }
@@ -3298,7 +3494,7 @@ function getDocument(itemId) {
     FROM library_items li
     JOIN documents d ON d.library_item_id = li.id AND d.is_deleted = 0
     WHERE li.id = ? AND li.is_deleted = 0
-  `).get([itemId]) || null;
+  `).get([asTextKey(itemId)]) || null;
 }
 
 // v12.2：复习卡「跳转原文」——documentId 反查书架条目 id
@@ -3306,7 +3502,7 @@ function getItemIdByDocumentId(documentId) {
   const rows = queryAll(
     `SELECT li.id FROM documents d JOIN library_items li ON li.id = d.library_item_id
      WHERE d.id = ? AND d.is_deleted = 0 AND li.is_deleted = 0`,
-    [documentId]
+    [asTextKey(documentId)]
   );
   return rows[0]?.id || null;
 }
@@ -3340,7 +3536,7 @@ function updateProgress(itemId, progress) {
 function queryAll(sql, params = []) {
   // D137（§3.1 映射表）：prepare→bind→step→getAsObject→free 循环 → .all() 一处替换；
   // 207 处调用点零改动。undefined 绑定在 sqliteCompat.normParams 归一。
-  return db.prepare(sql).all(normParams(params));
+  return cachedPrepare(db, sql).all(normParams(params)); // E-3：语句缓存
 }
 
 function createExtract({ parentType, parentId, documentId, contentMarkdown, priority, contextRef,
@@ -3541,7 +3737,7 @@ function getExtract(id) {
      JOIN documents d ON d.id = e.document_id AND d.is_deleted = 0
      JOIN library_items li ON li.id = d.library_item_id AND li.is_deleted = 0
      WHERE e.id = ? AND e.is_deleted = 0`,
-    [id]
+    [asTextKey(id)]
   );
   if (rows.length === 0) return null;
   return { ...rows[0], chain: parentChain(rows[0]) };
@@ -5186,9 +5382,15 @@ function getStatsTimeline(opts) {
   const now = Date.now();
   const days = Math.min(31, Math.max(1, Math.floor(Number(opts?.days) || 1)));
   const endTs = Number.isFinite(Number(opts?.endDay)) && Number(opts?.endDay) > 0 ? Number(opts.endDay) : now;
-  const endDay0 = dayStartMs(endTs);
-  const start0 = endDay0 - (days - 1) * 86400_000;
-  const to = endDay0 + 86400_000;
+  // 审计 #6（D236 同款习语）：日界逐日用 learningDayStarts 推导，不再 ±86400000 硬步进——
+  // 夏令时回拨日只有 25 小时：硬步进窗口止于本地 23:00，23:00–24:00 的事件整段丢失；
+  // days>1 时最早一天的日界也错一小时（春进日多收前一日末尾一小时、回拨日丢首小时）。
+  // 日切点只读一次；bounds 共 days+1 项：[0..days-1] = 各学习日起点、[days] = 末日终点。
+  const cutoff = getCutoffHour();
+  const endDay0 = learningDayStartMs(endTs, cutoff);
+  const bounds = learningDayStarts(endDay0, days - 1, 1, cutoff);
+  const start0 = bounds[0];
+  const to = bounds[days];
   const events = [];
 
   // 复习（卡片）
@@ -5243,8 +5445,8 @@ function getStatsTimeline(opts) {
   // v48.114（D159）：日记（journal）维度随功能暂时移除——journal_entries 表与数据保留，
   // 重实装时按原口径回插（SELECT created_at FROM journal_entries WHERE is_deleted=0 AND is_draft=0 ...）。
 
-  const built = statsTimeline.buildTimeline(events, { dayStart0: start0, days });
-  return { now, cutoffHour: getCutoffHour(), ...built };
+  const built = statsTimeline.buildTimeline(events, { dayStart0: start0, days, dayStarts: bounds });
+  return { now, cutoffHour: cutoff, ...built };
 }
 
 // ---------- v48.85（D129，§4.2-22 / §4.17）：成长反馈只读聚合出口（GrowthReadModel 数据面） ----------
@@ -6255,7 +6457,7 @@ function listKpClusters() {
 function kpExtractionCandidates(limit = 60) {
   return queryAll(
     "SELECT id, canonical_label, alias_json, domain_id FROM knowledge_points WHERE status = 'active' AND is_deleted = 0 ORDER BY updated_at DESC LIMIT ?",
-    [Math.max(1, Math.min(200, Number(limit) || 60))]
+    [clampLimit(limit, 60, 200)]
   ).map((r) => ({ id: r.id, canonicalLabel: r.canonical_label, aliases: parseJsonSafe(r.alias_json, []), domainId: r.domain_id ?? null }));
 }
 
@@ -6599,7 +6801,7 @@ function buildKnowledgeMigrationSuggestions({ minSimilarity = 0.5, limit = 200 }
   let created = 0;
   let skipped = 0;
   let scanned = 0;
-  for (const cl of unnormalized.slice(0, Math.max(1, Math.min(2000, Number(limit) || 200)))) {
+  for (const cl of unnormalized.slice(0, clampLimit(limit, 200, 2000))) {
     if (isOpaqueClusterId(cl.legacyKey)) { skipped++; continue; } // 无语义编号（kp1…）交给 AI 整理
     scanned++;
     let best = null;
@@ -7831,7 +8033,7 @@ function listMindmapLearningStatus(documentId, nodeIds) {
 function listMaterialMapRuns(documentId, limit = 20) {
   const rows = queryAll(
     "SELECT * FROM material_map_runs WHERE document_id = ? AND is_deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT ?",
-    [String(documentId), Math.max(1, Number(limit) || 20)]
+    [String(documentId), clampLimit(limit, 20, 5000)]
   );
   return rows.map(mapMaterialMapRunRow);
 }
@@ -7914,7 +8116,7 @@ function saveMaterialMapCall({
 function listMaterialMapCalls(runId, limit = 2000) {
   return queryAll(
     "SELECT * FROM material_map_calls WHERE run_id = ? ORDER BY created_at, rowid LIMIT ?",
-    [String(runId), Math.max(1, Number(limit) || 2000)]
+    [String(runId), clampLimit(limit, 2000, 10000)]
   ).map((r) => ({
     id: r.id,
     runId: r.run_id,
@@ -8013,7 +8215,7 @@ function listResumableMaterialMapRuns(limit = 20) {
       WHERE r.is_deleted = 0 AND r.status IN ('interrupted','section_ready')
       ORDER BY r.updated_at DESC
       LIMIT ?`,
-    [Math.max(1, Number(limit) || 20)]
+    [clampLimit(limit, 20, 1000)]
   );
   return rows.map((r) => ({ ...mapMaterialMapRunRow(r), materialTitle: r.material_title || null }));
 }
@@ -8427,7 +8629,9 @@ function learnerFacts(opts) {
     cards: queryAll(
       "SELECT id, card_type AS cardType, knowledge_point_id AS knowledgePointId, gen_batch_id AS genBatchId, context_ref_json AS contextRefJson, dict_json AS dictJson, domain, generated_by AS generatedBy, created_at AS createdAt, updated_at AS updatedAt, fsrs_json AS fsrsJson, fsrs_config_id AS fsrsConfigId FROM cards WHERE is_deleted = 0"
     ),
-    reviewLogs: queryAll("SELECT card_id AS cardId, rating, reviewed_at AS reviewedAt FROM review_logs ORDER BY reviewed_at ASC"),
+    // C-16（F29 / §4.4.9）：学习者日志同样必须按 review_seq（插入序）排，
+    // 墙钟会因校时/时区/恢复旧备份倒退，按它排会让分段与「首次达成」重算错序。
+    reviewLogs: queryAll("SELECT card_id AS cardId, rating, reviewed_at AS reviewedAt, review_seq AS reviewSeq FROM review_logs ORDER BY review_seq ASC"),
     extracts: queryAll(
       `SELECT e.id, d.library_item_id AS libraryItemId, e.document_id AS documentId, COALESCE(e.status,'open') AS status,
               e.priority, e.topic_next_at AS topicNextAt, e.process_count AS processCount,
@@ -8624,6 +8828,7 @@ module.exports = {
   listDueCards,
   computeTodayQueue,
   TODAY_QUEUE_DUE_SQL, // C-18b：快速路径 SQL（EXPLAIN QUERY PLAN 验证 idx_cards_due 命中用）
+  LEECH_CANDIDATE_SQL, // 审计 #48：leech 超集粗筛 SQL（测试对拍 SQL≡JS 等价性用）
   STATS_DAY_PROBE_SQL, // D236：连续天数逐日探测 SQL（EXPLAIN QUERY PLAN 验证 idx_review_logs_reviewed_at 命中用）
   STATS_CARD_SCAN_SQL, // D236：统计卡片侧精简扫描 SQL（测试对照用）
   learningDayStarts, // D236：统计学习日轴（DST 安全；测试直接验证）
@@ -8674,6 +8879,7 @@ module.exports = {
   resolveLeech,
   listLeechCards,
   addCardIssue,
+  addCardIssues,
   listCardIssues,
   addCardLink,
   updateCardLink,

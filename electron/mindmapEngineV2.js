@@ -222,6 +222,21 @@ function createMindmapEngineV2(deps) {
   let jobSeq = 0;
   const newJobId = () => `j${now().toString(36)}${(++jobSeq).toString(36)}`;
 
+  /**
+   * 审计 #22：jobs 记录的唯一消费者是 graphCancel({jobId})（取 key 后 scheduler.cancel）。
+   * 任务一到终态（完成 / 失败 / 排队中被取消），scheduler.cancel(key) 恒 false，记录再无用处；
+   * 原实现只 set 不 delete，Map 随进程生命周期只增不减。故在调度器 promise 落定时回收
+   * （三种终态都会落定：finish 的 resolve/reject、cancelEntry 的 reject）。
+   * 按**记录身份**删除：同一 jobId 可能被 waiter 复用重排（planExpand / planExplain 传 presetJobId），
+   * 旧任务的终态回调不得删掉新记录。
+   * 续跑/修复不读 jobs——graphResume 走 gens / alls + store.getMaterialMapRun，故回收不影响 resume。
+   */
+  function trackJob(jobId, rec, promise) {
+    jobs.set(jobId, rec);
+    const drop = () => { if (jobs.get(jobId) === rec) jobs.delete(jobId); };
+    promise.then(drop, drop);
+  }
+
   // ---------- AI 配置 / 提示词 ----------
   // C-24（Electron 45）：safeStorage 异步化后 getAIConfig 为 async——aiInfo 及其宿主
   // （runOutline/graphGenerate/graphResume/runExpand/graphExpand/graphExpandAll/graphEstimate/
@@ -646,7 +661,7 @@ function createMindmapEngineV2(deps) {
       key, priority: opts.priority, lockKey: `${mapId}|${sc.scopeId}`, meta,
       run: (signal, ctl) => runOutline(mapId, S, sc, Object.assign({}, opts, { jobId }), signal, ctl),
     });
-    if (r.status === "queued") jobs.set(jobId, { key, kind: "outline", mapId, nodeId: sc.nodeId, runId: opts.runId });
+    if (r.status === "queued") trackJob(jobId, { key, kind: "outline", mapId, nodeId: sc.nodeId, runId: opts.runId }, r.promise);
     return { jobId: r.meta.jobId, status: r.status, promise: r.promise };
   }
 
@@ -911,7 +926,7 @@ function createMindmapEngineV2(deps) {
       meta: { jobId, kind: "expand", mapId, documentId: docId, nodeId: row.nodeId, runId },
       run: (signal, ctl) => runExpand(mapId, row.nodeId, { jobId, runId, trigger: o.trigger, force: !!o.force }, signal, ctl),
     });
-    if (r.status === "queued") jobs.set(jobId, { key, kind: "expand", mapId, nodeId: row.nodeId, runId });
+    if (r.status === "queued") trackJob(jobId, { key, kind: "expand", mapId, nodeId: row.nodeId, runId }, r.promise);
     return { jobId: r.meta.jobId, status: r.status, promise: r.promise };
   }
 
@@ -1090,7 +1105,7 @@ function createMindmapEngineV2(deps) {
       meta: { jobId, kind: "explain", mapId, documentId: docId, nodeId: row.nodeId, runId },
       run: (signal) => runExplain(mapId, row.nodeId, { jobId, runId }, signal),
     });
-    if (r.status === "queued") jobs.set(jobId, { key, kind: "explain", mapId, nodeId: row.nodeId, runId });
+    if (r.status === "queued") trackJob(jobId, { key, kind: "explain", mapId, nodeId: row.nodeId, runId }, r.promise);
     return { jobId: r.meta.jobId };
   }
 
@@ -1457,6 +1472,8 @@ function createMindmapEngineV2(deps) {
     graphLoad, graphFeed, graphEstimate, graphGenerate, graphExpand, graphExpandAll, graphExplain, graphCancel,
     graphResume, graphSetView, graphMetrics, graphNodeText, graphLocate, graphEnsureMap, graphNodeAnchors,
     readMindmapSettings, idle, scheduler,
+    // 审计 #22 回归用只读诊断：在登记（未终态）的任务记录数——终态即回收，故反复跑不应单调增长
+    pendingJobCount: () => jobs.size,
   };
 }
 

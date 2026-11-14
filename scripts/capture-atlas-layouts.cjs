@@ -1,4 +1,9 @@
 // 截图生成脚本：7 种结构全景版式高清图独立捕获（纯图特写，无软件外框）
+// 用途：docs/assets/readme/*.png 的唯一生成器（README 的结构版式示意截图）。
+// 依赖：tests/flows/lib/harness.cjs（临时 userData + 启动应用）、tests/flows/lib/guienv.cjs（CDP 连接）。
+// 产物：docs/assets/readme/<key>.png（7 张，key 见下方 DATA_SPECS；deviceScaleFactor=2）。
+// 运行：npm run docs:atlas-shots（= node scripts/capture-atlas-layouts.cjs）。
+// 注意：会写入受保护目录 docs/assets/，仅在需要更新截图时手工运行，不纳入常规回归。
 const path = require("path");
 const fs = require("fs");
 

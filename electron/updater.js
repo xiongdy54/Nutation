@@ -48,7 +48,13 @@ function loadAutoUpdater() {
 }
 
 // 更新渠道判定（D180）：dev / store / unconfigured / github；C-30 增 unsupported（Linux deb/rpm）
-function source() {
+// 审计 #81：判定只在 init 时解析一次并记忆化——原先每次快照（update:status / check / download）
+// 都同步读 resources 内 app-update.yml，是热路径上的无谓同步 I/O。运行期这些输入
+// （isPackaged / windowsStore / platform / APPIMAGE / resourcesPath / yml 内容）不会变，
+// 故记忆化不改判定口径；未 init（单测直调 source()）时仍按原逻辑即时解析。
+let resolvedSource = null;
+
+function computeSource() {
   if (!app.isPackaged) return "dev";
   if (process.windowsStore) return "store";
   // C-30（2026-10-24，报告第 4 步）：Linux 只有 AppImage 是 electron-updater 的更新目标；
@@ -62,6 +68,10 @@ function source() {
   } catch {
     return "unconfigured";
   }
+}
+
+function source() {
+  return resolvedSource === null ? computeSource() : resolvedSource;
 }
 
 // 渲染层状态快照（update:status 响应；info/progress 均为纯 JSON 可跨 IPC）
@@ -186,6 +196,7 @@ function install() {
 function init(opts) {
   sendToMain = opts.sendToMain;
   appLogRef = opts.log;
+  resolvedSource = computeSource(); // 审计 #81：渠道只解析一次（此后快照/检查/下载零同步读盘）
   ipcMain.handle("update:status", () => snapshot());
   ipcMain.handle("update:check", () => check());
   ipcMain.handle("update:download", () => download());

@@ -37,8 +37,10 @@ import { annotSoft, annotSolid } from "../annotColor";
 import { pxShapeToPct } from "../../occlusion";
 import { PDF_ENGINE_VERSION } from "../foliate/version";
 
-// 兼容层（pdf.js v6 要求 ES2025，Electron 31/Chromium 126 缺失，清单见 tests/pdf.compat.js）。
-// 与 Array.prototype.at 之类的 polyfill 同性质：只补缺失方法，不改语义；Electron 升级后自动失效（if 守卫）。
+// 兼容层（pdf.js v6 要求 ES2025；起于 Electron 31/Chromium 126 缺失，清单见 tests/pdf.compat.js）。
+// 与 Array.prototype.at 之类的 polyfill 同性质：只补缺失方法，不改语义；原生补齐后 if 守卫自动失效。
+// **不可删**（GUIDE §8.1 D198 实测）：Electron 42.11.15 = Chromium 148 的渲染进程里
+// Map.prototype.getOrInsertComputed **仍缺失**，D198 明记「该兼容层不可删」；当前 electron 45.0.0。
 if (typeof Promise !== "undefined" && typeof (Promise as unknown as { try?: unknown }).try !== "function") {
   (Promise as unknown as Record<string, unknown>).try = function <T, A extends unknown[]>(fn: (...args: A) => T | PromiseLike<T>, ...args: A): Promise<T> {
     return new Promise<T>((resolve) => resolve(fn(...args)));

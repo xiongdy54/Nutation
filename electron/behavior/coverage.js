@@ -2,7 +2,7 @@
 // 唯一实现依据：docs/design/BEHAVIOR-DATA-INFRA-D248-v3.md §9.3。
 // 纪律：应用没运行不等于没在别处学习；本产品的 0 只表示「本应用内无已知动作」；缺数据不补 0。
 "use strict";
-const { learningDayStartMs } = require("../fsrsTime");
+const { learningDayStartForKey } = require("../fsrsTime");
 
 const KEYS = ["events", "attention", "review", "reading", "domains", "sessions", "ipc"];
 
@@ -16,12 +16,10 @@ function createCoverage(opts) {
     ON CONFLICT(day, metric_key) DO UPDATE SET state = excluded.state, lost_n = excluded.lost_n, flags_json = excluded.flags_json`);
 
   function dayBounds(day) {
-    const [y, m, d] = String(day).split("-").map(Number);
-    const noon = Date.UTC(y, m - 1, d, 12, 0, 0);
-    const start = learningDayStartMs(noon, cutoffHour());
+    const start = learningDayStartForKey(day, cutoffHour());
     const nd = new Date(start + 36 * 3600000);
     const next = `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, "0")}-${String(nd.getDate()).padStart(2, "0")}`;
-    const end = learningDayStartMs(Date.UTC(nd.getFullYear(), nd.getMonth(), nd.getDate(), 12, 0, 0), cutoffHour());
+    const end = learningDayStartForKey(next, cutoffHour());
     return { start, end };
   }
 

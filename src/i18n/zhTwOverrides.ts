@@ -2,37 +2,10 @@
 // 只覆盖 opencc 词库缺项、或本项目需要特定译法的词；其余交给 opencc 常规转换
 //（软件→軟體、设置→設定、文件→檔案、界面→介面、队列→佇列、标签→標籤 等由 twp 词库承担）。
 // 值侧允许直接写繁体（该片段原样通过 opencc——已是繁体不再变化）。
-export const zhTwOverrides: Record<string, string> = {
-  // —— 领域专名 ——
-  "材料导图": "材料心智圖",
-  "导图": "心智圖",
-  "知识图谱": "知識圖譜",
-  "制卡": "製卡",
-  "批注": "註解",
-  "就地批注": "就地註解",
-  "皮肤": "佈景",
-  "数据": "資料",
-  // —— 软件惯用语（台湾用法与 opencc 直转不同处） ——
-  "保存": "儲存",
-  "打开": "開啟",
-  "本地": "本機",
-  "日志": "日誌",
-  "源代码": "原始碼",  /* D223：台湾惯用「原始碼」而非 opencc 直转「源代碼」 */
-  "音频": "音訊",
-  "拼写": "拼字",
-  "复选框": "核取方塊",
-  "快捷键": "快速鍵",
-  "折叠": "摺疊",
-  "滚动": "捲動",
-  "刷新": "重新整理",
-  "粘贴": "貼上",
-  "剪贴板": "剪貼簿",
-  "撤销": "復原",
-  "新建": "新增",
-  "重命名": "重新命名",
-  "文件夹": "資料夾",
-  "图标": "圖示",
-  "菜单": "選單",
-  "恢复": "還原",
-  "备份": "備份"
-};
+// F-9：三套表格合并为 electron/zhTwOverrides.json——主进程与渲染层共读同一份事实。
+// 放在 electron/ 下是因为 electron-builder 只打包 dist/、electron/、vendor/；
+// 渲染层经 Vite / tsc 的 resolveJsonModule 直接 import 该 JSON。
+// 注：源代码→原始碼 为 D223 台湾惯用取词，值随表迁入 JSON。
+import sharedOverrides from "../../electron/zhTwOverrides.json";
+
+export const zhTwOverrides: Record<string, string> = sharedOverrides;

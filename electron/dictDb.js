@@ -5,7 +5,7 @@
 const path = require("path");
 const fs = require("fs");
 const Database = require("better-sqlite3");
-const { attachRun, applyStandardPragmas, rmDbFileAndSidecars } = require("./sqliteCompat");
+const { attachRun, applyStandardPragmas, rmDbFileAndSidecars, sqliteOpenPath } = require("./sqliteCompat");
 
 // C-40a（审计：业务核心与 Node/Electron 解耦）：数据目录惰性解析——模块加载不再触碰 electron。
 // 桌面态首次 open() 时回落 Electron userData（首次即定格）；纯 Node 宿主先 configure({ dataDir })
@@ -33,7 +33,7 @@ async function open() {
       try {
         rmDbFileAndSidecars(dbFile + ".tmp");
       } catch { /* 忽略 */ }
-      db = attachRun(new Database(dbFile)); // 文件不存在即创建；崩溃恢复（WAL 回放）由 SQLite 打开时自动完成
+      db = attachRun(new Database(sqliteOpenPath(dbFile))); // 文件不存在即创建；崩溃恢复（WAL 回放）由 SQLite 打开时自动完成
       applyStandardPragmas(db);
       // D143（v48.98，T1）：原 D137 §3.5 的启动 `PRAGMA quick_check` 已移除——835MB dictionary.db
       // 实测 1.2s（热态稳定）~21.6s（一次性极值），且发生在**启动链与「首次查词」同步路径**上

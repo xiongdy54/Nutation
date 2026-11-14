@@ -1,7 +1,10 @@
 // D124 学习者模型 LM-1（设计稿 §11.9）：主进程侧用户可见文字表（纯常量）。
-// 结构 { zh, en }，两种语言的键必须完全相同（tests/lm-recommend.test.cjs 断言）。
+// 结构 { zh, en, ja } 三张语言表，键集合应完全一致（tests/lm-recommend.test.cjs 断言 zh/en 一致）；
+// zh-TW 不单独维护表，由 pick() 走 zhTwTable() 从 zh 深转换（opencc cn→twp + 领域词覆盖，D182）。
 // 代码中不得出现硬编码的用户可见文字——推荐标题/理由/种类名/等级名/覆盖带名/mode 名只从这里取。
 "use strict";
+
+const zhTwOverrides = require("./zhTwOverrides.json");
 
 const zh = {
   kindNames: {
@@ -239,7 +242,10 @@ const ja = {
 let twTable = null;
 function zhTwTable() {
   if (twTable) return twTable;
-  const OV = [["材料导图", "材料心智圖"], ["导图", "心智圖"], ["制卡", "製卡"], ["摘录", "摘錄"]];
+  // F-9：与渲染层 / electron/i18n.js 共用同一份覆盖表（最长优先）
+  const OV = Object.keys(zhTwOverrides)
+    .sort((a, b) => b.length - a.length)
+    .map((k) => [k, zhTwOverrides[k]]);
   try {
     const OpenCC = require("opencc-js");
     const conv = OpenCC.Converter({ from: "cn", to: "twp" });

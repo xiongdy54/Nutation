@@ -8,6 +8,11 @@ tmp-l2-*.png
 # 测试运行期临时产物（userdata 隔离目录 / 运行时下载与生成的 fixture / 打包产物）
 tests/tmp-*
 tests/.results/
+# 测试用 esbuild bundle：一律由消费它的测试经 tests/lib/ensureBundle.cjs 按需重建（审计 F-1），不入库
+tests/*.bundle.*
+tests/**/*.bundle.*
+tests/.*.bundle.*.tmp
+tests/**/.*.bundle.*.tmp
 
 # electron-builder 打包产物（renderer 构建产物在 dist/，勿混用）
 release/
@@ -18,3 +23,26 @@ tests/__skin-*/
 
 # 设计研讨的本地临时会话（正式样张仍放 design-samples/）
 .superpowers/
+
+# 宣传片渲染工作区（本机正在渲染，≈9.2GB 媒体）——绝不入库，也绝不移动/删除
+promo/
+
+# Claude Code 桌面端本地会话与临时产物（≈6.4MB，含下面那批提取出来的私有 bundle）
+.claude/
+
+# 日志一律不入库（诊断/运行/崩溃日志）。
+# 例外：D143 落盘语义实测的证据日志是**故意跟踪**的审计产物，必须显式放行，
+# 否则 git ls-files -i -c --exclude-standard 会报「已跟踪文件被忽略」。
+*.log
+!docs/design/d143-artifacts/**/*.log
+
+# 根目录泄漏的 Claude Desktop 私有 bundle —— **不是 Vite 构建产物**（Vite 产物在 dist/）。
+# 它们由 .claude/tmp/claude-ui/extract.cjs 从 Anthropic Claude Desktop 应用包提取，
+# 与 .claude/tmp/claude-ui/ 下的副本逐字节相同，属第三方私有代码，不得入库。
+# 全部锚定根目录（前导 /），避免误伤子目录里已跟踪的同类命名文件（如 vendor/foliate-js/comic-book.js）。
+/MainWindowPage-*.js
+/MainWindowPage-*.css
+/index-*.js
+/shared-*.js
+/shared-*.css
+/c*-*.js

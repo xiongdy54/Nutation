@@ -60,7 +60,7 @@ async function extractAll(file, destDir) {
       if (!dest.startsWith(root + path.sep)) throw new Error(`条目路径越界：${name}`);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       const s = await openStream(zip, e);
-      await new Promise((res, rej) => {
+      await new Promise(/** @param {(v?: unknown) => void} res */ (res, rej) => {
         const out = fs.createWriteStream(dest);
         s.on("error", rej); out.on("error", rej); out.on("close", res);
         s.pipe(out);
@@ -72,4 +72,28 @@ async function extractAll(file, destDir) {
   return written;
 }
 
-module.exports = { openZip, forEachEntry, readEntryText, readBackupMeta, extractAll };
+/** 读整个条目为 Buffer（无大小上限；调用方负责只对需要的单个条目调用） */
+async function readEntryBuffer(zip, entry) {
+  const s = await openStream(zip, entry);
+  const chunks = [];
+  for await (const c of s) chunks.push(c);
+  return Buffer.concat(chunks);
+}
+
+// 审计 E-6（D283）：词典 .zip 导入不再 JSZip.loadAsync(fs.readFileSync(整包))——那会同步读整包（阻塞主进程、
+// >2GiB 直接抛错）且整包常驻内存。改为 yauzl 只读中央目录挑条目，再只解出被选中的那一个条目。
+// 选择优先级与旧实现一致：sqlite(.db/.sqlite) > CC-CEDICT(.u8) > ECDICT(.csv)；均无 → 抛错。
+async function readDictZipEntry(file) {
+  const zip = await openZip(file);
+  try {
+    const entries = [];
+    await forEachEntry(zip, (e) => { if (!/\/$/.test(e.fileName)) entries.push(e); return true; });
+    const pick = (re) => entries.find((e) => re.test(e.fileName));
+    const chosen = pick(/\.(db|sqlite)$/i) || pick(/\.u8$/i) || pick(/\.csv$/i);
+    if (!chosen) throw new Error("zip 内未找到可识别的词典文件（.db/.u8/.csv）");
+    const kind = /\.(db|sqlite)$/i.test(chosen.fileName) ? "sqlite" : /\.u8$/i.test(chosen.fileName) ? "cedict" : "ecdict-csv";
+    return { name: chosen.fileName, kind, buf: await readEntryBuffer(zip, chosen) };
+  } finally { try { zip.close(); } catch { /* 已关闭 */ } }
+}
+
+module.exports = { openZip, forEachEntry, readEntryText, readEntryBuffer, readDictZipEntry, readBackupMeta, extractAll };
