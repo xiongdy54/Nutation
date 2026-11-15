@@ -883,6 +883,12 @@
   },
   {
     "bridge": "libraryAPI",
+    "method": "createExtractFromPaste",
+    "channel": "library:createExtractFromPaste",
+    "kind": "invoke"
+  },
+  {
+    "bridge": "libraryAPI",
     "method": "createFromBookFile",
     "channel": "library:createFromBookFile",
     "kind": "invoke"
@@ -945,6 +951,12 @@
     "bridge": "libraryAPI",
     "method": "list",
     "channel": "library:list",
+    "kind": "invoke"
+  },
+  {
+    "bridge": "libraryAPI",
+    "method": "pasteAnchor",
+    "channel": "library:pasteAnchor",
     "kind": "invoke"
   },
   {

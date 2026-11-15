@@ -1,6 +1,7 @@
 // 雨林（Claude）皮肤清单 · v49.91 / D258（显示名「森林」→「雨林」；v49.90 / D257 显示名由「陶土」改「森林」，
 // 亮色＝设计系统「米白」、暗色＝设计系统「森林」配色；v49.1 / D175 显示名去前缀；v49.0 / D173 建；
-// v49.15 / D188 气质短标；v49.20 / D193 短标改「从容以赴」）
+// v49.15 / D188 气质短标；v49.20 / D193 短标改「从容以赴」；v49.126 / D292 短标改「沉潜往复」——
+// 前两版都在写「不着急」的心态，用户实测读不出雨林「米白纸面 + 深绿 + 柔和阴影」的沉入感）
 // 设计语言见 DESIGN.md；Token 两档与结构/动效规则见 claude.css。
 import { SKIN_API_VERSION, type SkinManifest } from "../types";
 
@@ -8,7 +9,7 @@ export const claudeManifest: SkinManifest = {
   id: "claude",
   name: "雨林",
   description: "米白纸面、雨林绿强调、柔和阴影与弹簧动效",
-  tagline: "从容以赴",
+  tagline: "沉潜往复",
   apiVersion: SKIN_API_VERSION,
   modes: ["light", "dark"],
   chrome: "solid", // 不做背景装饰层（D173：无玻璃拟态、无氛围光）

@@ -47,7 +47,8 @@ export interface ReaderImageRef {
   contextText?: string;
 }
 
-export type ReaderTheme = "paper" | "sepia" | "dark" | "custom";
+/** D297："auto"＝跟随应用明暗（只出现在存储层；resolveAppearance 输出与内核/adapter 永远拿到具体主题） */
+export type ReaderTheme = "auto" | "paper" | "sepia" | "dark" | "custom";
 
 /** 图片定位查询（v35）：按 alt/周边文字在正文中找回原图 */
 export interface ImageLocateQuery {

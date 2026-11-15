@@ -46,13 +46,26 @@ const TAPS = {
   "library:setPriority": { type: "library.meta_edited", ok: okNotFalse, project: (a) => ({ entity_type: "library_item", entity_id: a[0] ? String(a[0]) : null, props: { field: "priority" } }) },
 
   // ---- 摘录 / 批注 ----
+  // v49.125（D291 §4.2）：粘贴窗「存为摘录」——同一 extract.created 事实，via 记为 paste
+  // （锚 item 即该摘录的来源书，故 library_item_id 取返回体的 anchorId）。
+  "library:createExtractFromPaste": {
+    type: "extract.created", ok: (r) => !!idOf(r),
+    project: (a, r) => {
+      const md = typeof a[1] === "string" ? a[1] : "";
+      return {
+        entity_type: "extract", entity_id: idOf(r), extract_id: idOf(r),
+        library_item_id: r && r.anchorId ? String(r.anchorId) : null,
+        props: { num: charsOf(md), via: "paste", priority: numOf(r && r.priority), kind: "extract" },
+      };
+    },
+  },
   "extracts:create": {
     type: "extract.created", ok: (r) => !!idOf(r),
     project: (a, r) => {
       const p = a[0] && typeof a[0] === "object" ? a[0] : {};
       return {
         entity_type: "extract", entity_id: idOf(r), extract_id: idOf(r), library_item_id: p.libraryItemId ? String(p.libraryItemId) : null,
-        props: { num: charsOf(p.sourceText ?? p.text ?? ""), via: ["selection", "ai_next", "capture", "manual"].includes(p.via) ? p.via : "selection", priority: numOf(p.priority), kind: r && r.kind === "highlight" ? "highlight" : "extract" },
+        props: { num: charsOf(p.sourceText ?? p.text ?? ""), via: ["selection", "ai_next", "capture", "manual", "paste"].includes(p.via) ? p.via : "selection", priority: numOf(p.priority), kind: r && r.kind === "highlight" ? "highlight" : "extract" },
       };
     },
   },
@@ -168,6 +181,7 @@ const TAPS = {
 const COUNT_ONLY = {
   "只读查询（真源各自唯一，不重复记行为）": [
     "library:list", "library:doc", "library:itemByDoc", "library:readBookFile", "library:readPdfFile",
+    "library:pasteAnchor",
     "library:readFileBytes", "library:readContentImages", "library:readEbookFile",
     "extracts:listDue", "extracts:listAll", "extracts:get", "extracts:chain",
     "limits:usage", "limits:state", "limits:validate", "session:queue", "session:counts", "undo:info",

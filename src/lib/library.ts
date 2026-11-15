@@ -4,6 +4,17 @@ declare global {
     libraryAPI?: {
       list: () => Promise<unknown[]>;
       createFromPaste: (title: string, markdown: string) => Promise<{ id: string; title: string } | null>;
+      /** v49.125（D291 §4.2）：粘贴窗「存为摘录」——挂隐藏父锚「粘贴摘录」；空正文返回 null */
+      createExtractFromPaste?: (title: string, markdown: string) => Promise<{
+        id: string;
+        topicNextAt: number;
+        priority: number;
+        prioritySource: string;
+        anchorId: string;
+        documentId: string;
+      } | null>;
+      /** v49.125（D291 §4.4）：只读父锚（不存在返回 null） */
+      pasteAnchor?: () => Promise<{ id: string; documentId: string; title: string } | null>;
       createFromEpub: (payload: unknown) => Promise<{ id: string; title: string; cover: string | null } | null>;
       pickEpub: () => Promise<{ name: string; path: string; data: Uint8Array } | null>;
       remove: (id: string) => Promise<boolean>;
@@ -151,6 +162,14 @@ export const libraryApi = {
   async createFromPaste(title: string, markdown: string): Promise<{ id: string; title: string } | null> {
     if (!window.libraryAPI) return null;
     return await window.libraryAPI.createFromPaste(title, markdown);
+  },
+  /** v49.125（D291 §4.2）：粘贴窗「存为摘录」——失败 reject 由调用方留窗报错；空正文返回 null */
+  async createExtractFromPaste(title: string, markdown: string) {
+    return (await window.libraryAPI?.createExtractFromPaste?.(title, markdown)) ?? null;
+  },
+  /** v49.125（D291 §4.4）：只读父锚；不存在返回 null */
+  async pasteAnchor(): Promise<{ id: string; documentId: string; title: string } | null> {
+    return (await window.libraryAPI?.pasteAnchor?.()) ?? null;
   },
   async createFromEpub(payload: unknown): Promise<boolean> {
     if (!window.libraryAPI) return false;

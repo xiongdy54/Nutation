@@ -1156,12 +1156,14 @@ function getBackupCounts() {
 
 function listItems() {
   // D137：步进游标 → .all()（同 queryAll 映射）
+  // v49.125（D291 §4.3）：隐藏父锚「粘贴摘录」不进书架——`library:list` 是本函数的唯一出口，
+  // 一处过滤即让书架与其他 `library:list` 消费方自然看不到锚（书架 UI / shelf.ts 零改动）。
   return db.prepare(`
     SELECT li.id, li.title, li.source_type AS sourceType, li.cover, li.progress_json AS progressJson,
            li.lang, li.priority, li.author, li.created_at AS createdAt, li.updated_at AS updatedAt, d.markdown
     FROM library_items li
     LEFT JOIN documents d ON d.library_item_id = li.id AND d.is_deleted = 0
-    WHERE li.is_deleted = 0
+    WHERE li.is_deleted = 0 AND li.source_type <> 'paste-anchor'
     ORDER BY li.created_at DESC
   `).all();
 }
@@ -1256,6 +1258,105 @@ function createFromPaste(title, markdown) {
   });
   // v40：追加 documentId（增量字段，供洞察 Evidence Package 来源 JOIN 等使用；既有 {id,title} 不变）
   return { id: itemId, title: cleanTitle, documentId: docId };
+}
+
+// ---------- v49.125（D291 §4）：粘贴摘录的隐藏父锚 ----------
+// 唯一实施设计＝docs/design/PASTE-DESTINATION-D291.md。锚＝一行 library_items
+// （source_type='paste-anchor'，标题「粘贴摘录」，system 实体，UI 显示走四语映射）＋一行空
+// documents，作为「存为摘录」产物的 parent_type='book' 父与卡片浏览器来源书值。
+// 零 schema 改动（source_type 是自由 TEXT）；**无任何 UI 实体**：listItems 一处过滤即不进书架、
+// 不可被打开阅读、无封面/进度/统计（禁止给锚写进度/阅读事件）。
+const PASTE_ANCHOR_SOURCE_TYPE = "paste-anchor";
+const PASTE_ANCHOR_TITLE = "粘贴摘录";
+
+/** 幂等 ensure 父锚（先查后建，独立小事务；多次保存只有一锚）。返回 { id, documentId, title }。 */
+function ensurePasteAnchor() {
+  const existing = queryAll(
+    `SELECT li.id AS id, li.title AS title, d.id AS documentId, d.is_deleted AS docDeleted
+     FROM library_items li
+     LEFT JOIN documents d ON d.library_item_id = li.id
+     WHERE li.source_type = ? AND li.is_deleted = 0
+     ORDER BY li.created_at ASC, d.created_at ASC LIMIT 1`,
+    [PASTE_ANCHOR_SOURCE_TYPE]
+  )[0];
+  const now = Date.now();
+  if (existing) {
+    // 锚行在但文档被外部软删（异常态，正常流程不会走到）：**复活原文档**而不是再插一行——
+    // 一锚恒一文档，既有粘贴摘录（JOIN documents d.is_deleted = 0）因此不会掉线。
+    if (existing.documentId && Number(existing.docDeleted) === 0) {
+      return { id: String(existing.id), documentId: String(existing.documentId), title: String(existing.title || PASTE_ANCHOR_TITLE) };
+    }
+    const docId = existing.documentId ? String(existing.documentId) : crypto.randomUUID();
+    withTransaction(() => {
+      if (existing.documentId) {
+        db.run("UPDATE documents SET is_deleted = 0, updated_at = ? WHERE id = ?", [now, docId]);
+      } else {
+        db.run(
+          `INSERT INTO documents (id, library_item_id, markdown, blocks_json, toc_json, created_at, updated_at, sync_version, is_deleted)
+           VALUES (?, ?, '', '[]', NULL, ?, ?, 0, 0)`,
+          [docId, String(existing.id), now, now]
+        );
+      }
+    });
+    return { id: String(existing.id), documentId: docId, title: String(existing.title || PASTE_ANCHOR_TITLE) };
+  }
+  const itemId = crypto.randomUUID();
+  const docId = crypto.randomUUID();
+  withTransaction(() => {
+    db.run(
+      `INSERT INTO library_items (id, user_id, title, source_type, source_url, cover, created_at, updated_at, sync_version, is_deleted)
+       VALUES (?, 'local-user', ?, ?, NULL, NULL, ?, ?, 0, 0)`,
+      [itemId, PASTE_ANCHOR_TITLE, PASTE_ANCHOR_SOURCE_TYPE, now, now]
+    );
+    db.run(
+      `INSERT INTO documents (id, library_item_id, markdown, blocks_json, toc_json, created_at, updated_at, sync_version, is_deleted)
+       VALUES (?, ?, '', '[]', NULL, ?, ?, 0, 0)`,
+      [docId, itemId, now, now]
+    );
+  });
+  return { id: itemId, documentId: docId, title: PASTE_ANCHOR_TITLE };
+}
+
+/** 只读：当前父锚（不存在返回 null）。供卡片浏览器做来源名显示映射与测试取锚 id。 */
+function getPasteAnchor() {
+  const row = queryAll(
+    `SELECT li.id AS id, li.title AS title, d.id AS documentId
+     FROM library_items li
+     LEFT JOIN documents d ON d.library_item_id = li.id AND d.is_deleted = 0
+     WHERE li.source_type = ? AND li.is_deleted = 0
+     ORDER BY li.created_at ASC LIMIT 1`,
+    [PASTE_ANCHOR_SOURCE_TYPE]
+  )[0];
+  if (!row || !row.documentId) return null;
+  return { id: String(row.id), documentId: String(row.documentId), title: String(row.title || PASTE_ANCHOR_TITLE) };
+}
+
+/**
+ * v49.125（D291 §4.2）：粘贴窗「存为摘录」写通道。
+ * **两段写、不嵌套事务**——先 ensure 父锚（幂等小事务），再独立调用既有 createExtract
+ * （后者内部自带 persist()；若包进外层 withTransaction，内层 checkpoint 会在外层未提交时
+ * 撞 busy=1、记一条假「checkpoint 失败」日志并起重试计时器）。
+ * 失败语义：锚建成而摘录失败 → 锚留下（隐藏、空、下次幂等复用，无害）；摘录绝不留孤儿行。
+ * 正文组装（D3）：标题非空 → 前置 `# 标题` 与空行；留空 → 原样（不自动取首行做标题）。
+ * 调度事实（次日进队 / interval_days=1 / a_factor=1.6 / 优先级继承父书）全部由 createExtract 既有代码成立。
+ */
+function createExtractFromPaste(title, markdown) {
+  const md = String(markdown ?? "");
+  if (!md.trim()) return null; // 与 library:createFromPaste handler 同口径
+  const cleanTitle = String(title ?? "").trim();
+  const contentMarkdown = cleanTitle ? `# ${cleanTitle}\n\n${md}` : md;
+  const anchor = ensurePasteAnchor();
+  const created = createExtract({
+    parentType: "book",
+    parentId: anchor.id,
+    documentId: anchor.documentId,
+    contentMarkdown,
+    kind: "extract"
+  });
+  // createExtract 在父文档不存在时返回 false（不抛）——锚刚 ensure 过，走到这里说明库状态异常。
+  // 不许静默返回 null（渲染层会把它当成功、关窗并提示「已存为摘录」），必须让失败可观察。
+  if (!created || !created.id) throw new Error("粘贴摘录写入失败：父锚文档不可用");
+  return { ...created, anchorId: anchor.id, documentId: anchor.documentId };
 }
 
 function deleteItem(id) {
@@ -8622,7 +8723,10 @@ function learnerFacts(opts) {
   return {
     tracks: queryAll("SELECT * FROM learner_tracks WHERE is_deleted = 0 ORDER BY created_at ASC, id ASC"),
     overrides: queryAll("SELECT track_id AS trackId, library_item_id AS libraryItemId, member FROM track_materials WHERE is_deleted = 0"),
-    materials: queryAll("SELECT id, title, lang, priority, source_type AS sourceType, progress_json AS progressJson FROM library_items WHERE is_deleted = 0 ORDER BY created_at ASC, id ASC"),
+    // v49.125（D291 §4.1）：隐藏父锚「粘贴摘录」不是材料——与 listItems 同一处口径过滤，
+    // 否则它会被 learner:listTracks 列进「未归类的材料」、进入推荐轨道的材料元数据，
+    // 违反「锚无任何 UI 实体」。
+    materials: queryAll("SELECT id, title, lang, priority, source_type AS sourceType, progress_json AS progressJson FROM library_items WHERE is_deleted = 0 AND source_type <> 'paste-anchor' ORDER BY created_at ASC, id ASC"),
     documents: queryAll(
       "SELECT id, library_item_id AS libraryItemId, updated_at AS updatedAt, (markdown IS NOT NULL AND markdown != '') AS hasMarkdown, LENGTH(COALESCE(markdown,'')) AS markdownLen FROM documents WHERE is_deleted = 0 ORDER BY id ASC"
     ),
@@ -8770,6 +8874,10 @@ module.exports = {
   getBackupCounts,
   listItems,
   createFromPaste,
+  // v49.125（D291）：粘贴摘录的隐藏父锚（ensure 幂等 / 只读查询）与「存为摘录」写通道
+  ensurePasteAnchor,
+  getPasteAnchor,
+  createExtractFromPaste,
   createFromEpub,
   createImportedDoc,
   deleteItem,

@@ -43,7 +43,7 @@
 
 | 事件 | 采集 | 关键字段 / props |
 | --- | --- | --- |
-| `extract.created` | M | extract_id；num=字数；via(selection/ai_next/capture/manual), priority, kind(extract/highlight) |
+| `extract.created` | M | extract_id；num=字数；via(selection/ai_next/capture/manual/paste), priority, kind(extract/highlight) |
 | `extract.op` | M | extract_id；op(postpone/postponeDays/advance/update/setPriority/setStatus/delete/batch/spanSet/switchEngine/rerankNow), delta, batchSize, annotation(bool), fieldNames[], color；**不记正文** |
 | `extract.session` | R | ctx_id；phase(start/end), planned, done；dur_ms |
 | `extract.shown` | R | extract_id, ctx_id；origin=queue；position |
