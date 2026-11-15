@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/icon.png" width="88" alt="Nutation アイコン" />
+<img src="assets/icon.png" width="88" alt="Nutation アイコン" />
 
 # Nutation
 
@@ -18,7 +18,7 @@
 </div>
 
 <div align="center">
-<img src="docs/assets/readme/reader-excerpts-en.png" alt="読書現場：連続する本文と右側の本文追従構造" width="100%" />
+<img src="assets/readme/reader-excerpts-en.png" alt="読書現場：連続する本文と右側の本文追従構造" width="100%" />
 <p><sub>読書の現場：連続した本文を読み進めながら、右側の随文構造が論理展開をリアルタイムにマッピング。</sub></p>
 </div>
 
@@ -76,37 +76,37 @@ flowchart LR
 
 1. **アウトライン版式（扇形ツリー · Tree）**：滑らかなベジェ曲線で広がる階層ツリー。目次体系や階層的な知識骨格を俯瞰するのに最適です。
 <div align="center">
-<img src="docs/assets/readme/atlas-tree.png" alt="構造全景 · アウトライン版式（扇形ツリー）" width="100%" />
+<img src="assets/readme/atlas-tree.png" alt="構造全景 · アウトライン版式（扇形ツリー）" width="100%" />
 </div>
 
 2. **並列版式（グリッドタイル · Grid）**：独立したモジュールタイルを整然と並べるマトリックス構造。同等概念、サブシステム、分類リストの整理に適しています。
 <div align="center">
-<img src="docs/assets/readme/atlas-grid.png" alt="構造全景 · 並列版式（グリッドタイル）" width="100%" />
+<img src="assets/readme/atlas-grid.png" alt="構造全景 · 並列版式（グリッドタイル）" width="100%" />
 </div>
 
 3. **論証版式（階層論証マップ · Argument）**：核心となる主張を最上部に配置し、根拠や証拠データを下から階層的に集約。右側には独立した反対意見エリアと反論アークを備え、学術的な論争や多角的な思索を明確に可視化します。
 <div align="center">
-<img src="docs/assets/readme/atlas-argument.png" alt="構造全景 · 論証版式（階層論証マップ）" width="100%" />
+<img src="assets/readme/atlas-argument.png" alt="構造全景 · 論証版式（階層論証マップ）" width="100%" />
 </div>
 
 4. **タイムライン版式（比例時間軸 · Timeline）**：年代の比例尺、上下の交互レーン、長期間のギャップ圧縮を備えた水平タイムライン。歴史的出来事、思想史、技術の進化プロセスを的確に把握できます。
 <div align="center">
-<img src="docs/assets/readme/atlas-timeline.png" alt="構造全景 · タイムライン版式（比例時間軸）" width="100%" />
+<img src="assets/readme/atlas-timeline.png" alt="構造全景 · タイムライン版式（比例時間軸）" width="100%" />
 </div>
 
 5. **手順版式（プロセスチェーン · Chain）**：番号付きバッジ（1〜7）と進行矢印、蛇行折り返し機能を備え、厳密な作業工程、アルゴリズムの手順、思考の閉ループを精緻に表現します。
 <div align="center">
-<img src="docs/assets/readme/atlas-chain.png" alt="構造全景 · 手順版式（プロセスチェーン）" width="100%" />
+<img src="assets/readme/atlas-chain.png" alt="構造全景 · 手順版式（プロセスチェーン）" width="100%" />
 </div>
 
 6. **因果版式（階層有向グラフ · Layered）**：左から右へと流れる有向非巡回グラフ（DAG）。メカニズムの伝播、過負荷の伝達、多段階の推論ネットワークを整然と表現します。
 <div align="center">
-<img src="docs/assets/readme/atlas-layered.png" alt="構造全景 · 因果版式（階層有向グラフ）" width="100%" />
+<img src="assets/readme/atlas-layered.png" alt="構造全景 · 因果版式（階層有向グラフ）" width="100%" />
 </div>
 
 7. **対比版式（多次元比較表 · Compare）**：対象ごとのカラー帯ヘッダー、左側の比較次元ラベル、ゼブラストライプの比較行により、複数の概念やモデルの横断比較を明快に行えます。
 <div align="center">
-<img src="docs/assets/readme/atlas-compare.png" alt="構造全景 · 対比版式（多次元比較表）" width="100%" />
+<img src="assets/readme/atlas-compare.png" alt="構造全景 · 対比版式（多次元比較表）" width="100%" />
 </div>
 
 ### 2. 抜き書きカード：インクリメンタルリーディング
