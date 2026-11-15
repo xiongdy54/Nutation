@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/icon.png" width="88" alt="Nutation Logo" />
+<img src="assets/icon.png" width="88" alt="Nutation Logo" />
 
 # Nutation
 
@@ -18,7 +18,7 @@ English | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md)
 </div>
 
 <div align="center">
-<img src="docs/assets/readme/reader-excerpts-en.png" alt="Nutation Reading Environment with Inline Structure" width="100%" />
+<img src="assets/readme/reader-excerpts-en.png" alt="Nutation Reading Environment with Inline Structure" width="100%" />
 <p><sub>The reading environment: immersive multi-paragraph prose with dynamic inline structure mapping the author's logical progression.</sub></p>
 </div>
 
@@ -76,37 +76,37 @@ To faithfully reflect the internal logic of diverse knowledge domains, Nutation'
 
 1. **Tree Layout (Horizontal Fan Tree · Tree)**: Hierarchical decomposition with smooth Bézier branches, ideal for taxonomy trees and multi-level outlines.
 <div align="center">
-<img src="docs/assets/readme/atlas-tree.png" alt="Structure Atlas · Outline Fan Tree" width="100%" />
+<img src="assets/readme/atlas-tree.png" alt="Structure Atlas · Outline Fan Tree" width="100%" />
 </div>
 
 2. **Grid Layout (Matrix Tiles · Grid)**: Modular matrix tiles arranged in balanced parallel columns, ideal for peer concepts, cognitive subsystems, and categorical inventories.
 <div align="center">
-<img src="docs/assets/readme/atlas-grid.png" alt="Structure Atlas · Grid Matrix Tiles" width="100%" />
+<img src="assets/readme/atlas-grid.png" alt="Structure Atlas · Grid Matrix Tiles" width="100%" />
 </div>
 
 3. **Argument Layout (Argumentation Map · Argument)**: Primary thesis anchored at top, with supporting reasons and empirical evidence converging upward, complemented by a dedicated counter-claim zone and rebuttal arcs on the right.
 <div align="center">
-<img src="docs/assets/readme/atlas-argument.png" alt="Structure Atlas · Argumentation Map" width="100%" />
+<img src="assets/readme/atlas-argument.png" alt="Structure Atlas · Argumentation Map" width="100%" />
 </div>
 
 4. **Timeline Layout (Proportional Chronological Timeline · Timeline)**: Horizontally scaled along historical time with scale rulers, alternating dual lanes, and fault compression for long eras, ideal for intellectual histories and technological evolutions.
 <div align="center">
-<img src="docs/assets/readme/atlas-timeline.png" alt="Structure Atlas · Proportional Chronological Timeline" width="100%" />
+<img src="assets/readme/atlas-timeline.png" alt="Structure Atlas · Proportional Chronological Timeline" width="100%" />
 </div>
 
 5. **Chain Layout (Step-by-Step Chain · Chain)**: Sequentially numbered circular badges (1–7) with directional flow arrows and serpentine switchbacks, strictly modeling step-by-step procedures and cognitive feedback loops.
 <div align="center">
-<img src="docs/assets/readme/atlas-chain.png" alt="Structure Atlas · Step-by-Step Chain" width="100%" />
+<img src="assets/readme/atlas-chain.png" alt="Structure Atlas · Step-by-Step Chain" width="100%" />
 </div>
 
 6. **Layered Layout (Causal DAG · Layered)**: Left-to-right cascading directed acyclic graph mapping causal transmission, systemic overload, and multi-factor deduction chains.
 <div align="center">
-<img src="docs/assets/readme/atlas-layered.png" alt="Structure Atlas · Causal DAG" width="100%" />
+<img src="assets/readme/atlas-layered.png" alt="Structure Atlas · Causal DAG" width="100%" />
 </div>
 
 7. **Compare Layout (Multi-Dimensional Matrix Table · Compare)**: Distinct colored header strips per entity, left-hand dimension labels, and alternating zebra-striped comparison rows for multi-model evaluation.
 <div align="center">
-<img src="docs/assets/readme/atlas-compare.png" alt="Structure Atlas · Multi-Dimensional Matrix Table" width="100%" />
+<img src="assets/readme/atlas-compare.png" alt="Structure Atlas · Multi-Dimensional Matrix Table" width="100%" />
 </div>
 
 ### 2. Excerpting: Incremental Processing & De-escalation

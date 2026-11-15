@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/icon.png" width="88" alt="Nutation 图标" />
+<img src="assets/icon.png" width="88" alt="Nutation 图标" />
 
 # Nutation
 
@@ -18,7 +18,7 @@
 </div>
 
 <div align="center">
-<img src="docs/assets/readme/reader-excerpts-zh.png" alt="阅读现场：正文多段沉浸阅读与右侧随文结构" width="100%" />
+<img src="assets/readme/reader-excerpts-zh.png" alt="阅读现场：正文多段沉浸阅读与右侧随文结构" width="100%" />
 <p><sub>阅读现场：沉浸阅读连续正文，右侧随文结构贴身梳理论证脉络，微观论述与宏观框架一目了然。</sub></p>
 </div>
 
@@ -77,37 +77,37 @@ flowchart LR
 
 1. **大纲版式（横向扇形树 · Tree）**：树状层级展开，平滑贝塞尔曲线汇聚，适合总揽多级目录体系与分层知识骨架。
 <div align="center">
-<img src="docs/assets/readme/atlas-tree.png" alt="结构全景 · 大纲版式（扇形树）" width="100%" />
+<img src="assets/readme/atlas-tree.png" alt="结构全景 · 大纲版式（扇形树）" width="100%" />
 </div>
 
 2. **并列版式（网格瓷砖 · Grid）**：模块化矩阵瓷砖，多列平行排列与顶部强调色带，适合平级知识点、核心子系统与分类清单。
 <div align="center">
-<img src="docs/assets/readme/atlas-grid.png" alt="结构全景 · 并列版式（网格瓷砖）" width="100%" />
+<img src="assets/readme/atlas-grid.png" alt="结构全景 · 并列版式（网格瓷砖）" width="100%" />
 </div>
 
 3. **论证版式（分层论证图 · Argument）**：核心主张顶置，支撑理由与实证数据自下而上分层汇聚，右侧设有独立反方一侧与反驳弧线，学术论辩与深度思辨一目了然。
 <div align="center">
-<img src="docs/assets/readme/atlas-argument.png" alt="结构全景 · 论证版式（分层论证图）" width="100%" />
+<img src="assets/readme/atlas-argument.png" alt="结构全景 · 论证版式（分层论证图）" width="100%" />
 </div>
 
 4. **时间线版式（比例时间轴 · Timeline）**：横向按历史纪年比例拉伸，带年份刻度标尺、上下交错泳道与超长断层压缩，展现历史事件、思想流派与技术演进史。
 <div align="center">
-<img src="docs/assets/readme/atlas-timeline.png" alt="结构全景 · 时间线版式（比例时间轴）" width="100%" />
+<img src="assets/readme/atlas-timeline.png" alt="结构全景 · 时间线版式（比例时间轴）" width="100%" />
 </div>
 
 5. **步骤版式（流程链条 · Chain）**：带编号圆形徽章（1–7）与流向箭头，支持双向蛇形折返，精确呈现严格工程工序、算法流水线与思维闭环机制。
 <div align="center">
-<img src="docs/assets/readme/atlas-chain.png" alt="结构全景 · 步骤版式（流程链条）" width="100%" />
+<img src="assets/readme/atlas-chain.png" alt="结构全景 · 步骤版式（流程链条）" width="100%" />
 </div>
 
 6. **因果版式（分层有向图 · Causal DAG）**：自左向右瀑布流因果有向无环图，展示机制传导、过载传导与推导网络，复杂机理层层递进。
 <div align="center">
-<img src="docs/assets/readme/atlas-layered.png" alt="结构全景 · 因果版式（分层有向图）" width="100%" />
+<img src="assets/readme/atlas-layered.png" alt="结构全景 · 因果版式（分层有向图）" width="100%" />
 </div>
 
 7. **对照版式（多维对照表 · Compare）**：对象实体色带栏头、左侧维度标签与交替斑马纹对照行，多概念、多模型横向维度比对清晰锐利。
 <div align="center">
-<img src="docs/assets/readme/atlas-compare.png" alt="结构全景 · 对照版式（多维对照表）" width="100%" />
+<img src="assets/readme/atlas-compare.png" alt="结构全景 · 对照版式（多维对照表）" width="100%" />
 </div>
 
 ### 2. 摘录卡片：渐进阅读与难点解耦
