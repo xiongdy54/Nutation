@@ -26,8 +26,8 @@
 
 **机器强制**：`npm run lint:consistency`（scripts/consistency-check.mjs）规则 7——`:hover` 里把
 `opacity` 设为 1 的规则，目标类必须是 `.reveal-on-hover`；基线 `hoverOpacityCount` 硬 0
-（C-36 起收紧，只许保持）。脚本顶部 `REVEAL_ALLOW` 为四类存量豁免（`.annot-acts` / `.reader-tap-hint` /
-`.chart-dot` / D266 tooltip），按逗号拆分后的**独立选择器精确匹配**、全部命中才放行（共 8 条；
+（C-36 起收紧，只许保持）。脚本顶部 `REVEAL_ALLOW` 为五类存量豁免（`.annot-acts` / `.reader-tap-hint` /
+`.chart-dot` / D266 tooltip / D291 粘贴目的地 tooltip），按逗号拆分后的**独立选择器精确匹配**、全部命中才放行（共 10 条；
 含各自的 `:focus-within` / `:focus-visible` 兄弟），各附证据，**扩豁免须先在本文件登记理由**。
 
 **命中区**：`@media (pointer: coarse)` 下 `.zdots`、`.icon-btn` 最小 44×44 px（只扩大命中区，不改图标大小）。
@@ -41,3 +41,4 @@
 | `.reader-tap-zone:hover .reader-tap-hint` | `opacity: 0; pointer-events: none` | 非操作控件——装饰性翻页 chevron 提示（本体不可点），操作本体＝翻页热区常在常可点；报告证据清单只列可操作控件 |
 | `.chart-svg:hover .chart-dot` | `opacity: 0`（仅在 `@media (hover: hover)` 内） | 已有触控替代——基础态与显形规则整体包在 `(hover: hover)` 内，无 hover 能力时数据点常显（theme.css 该块注释自证）；图表 hover-dim 强调效果，非可操作控件 |
 | `.sel-btn.ic[data-tip]:hover::after` / `.form-seg[data-tip]:hover::after`（D266，各含 `:focus-visible::after` 兄弟） | `opacity: 0`（tooltip 气泡本体） | 非操作控件——按钮本体常显、常可点，tooltip 只是图标名称/快捷键的补充说明，名称同时由 `aria-label` 提供给读屏；不属于「悬停才出现的操作」。豁免选择器必须带 `::after`（气泡本体），按钮本体的 `:hover { opacity: 1 }` 不放行；不设全局 `[data-tip]` 子串豁免 |
+| `.dest-opt:hover .dest-tip` / `.dest-opt:focus-visible .dest-tip`（D291） | `opacity: 0; pointer-events: none`（theme.css `.dest-tip`） | 非操作控件——粘贴窗目的地分段按钮本体常显常可点，不靠 hover 才出现；tooltip 只是「存为摘录 / 存为书」去向差别的补充说明，选项名由按钮文字 + `aria-pressed` 提供、说明文字另由 `aria-describedby` 提供给读屏（`PasteMaterialModal.tsx`）。与 D266 同族判定 |

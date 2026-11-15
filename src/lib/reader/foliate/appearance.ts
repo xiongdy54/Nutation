@@ -21,6 +21,9 @@ export interface ReaderAppearanceEx extends ReaderAppearance {
   /** D243：忽略出版方字体/字重（默认 false）。开启后正文使用应用字体与 400 字重；
    *  标题、strong/b、code/pre 保留语义字重/等宽字体。仅影响阅读 iframe，PDF 不适用。 */
   ignorePublisherFont?: boolean;
+  /** D297：用户**显式选过**纸白（存储字段，仅 true 才落盘）。区分「默认的纸白（旧版默认值，等同未选）」
+   *  与「用户主动选的纸白」——前者迁移为 "auto"（跟随应用明暗），后者永远保持纸白。 */
+  themeExplicit?: boolean;
 }
 
 export type TurnEffect = "glide" | "none";
@@ -43,11 +46,11 @@ export interface ReaderSettings {
 
 export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   mode: { flow: "scrolled" },
-  appearance: { theme: "paper", ignorePublisherFont: false },
+  appearance: { theme: "auto", ignorePublisherFont: false },
   customThemes: []
 };
 
-const PRESETS: Record<Exclude<ReaderTheme, "custom">, { bg: string; fg: string }> = {
+const PRESETS: Record<Exclude<ReaderTheme, "custom" | "auto">, { bg: string; fg: string }> = {
   paper: { bg: "#fafaf8", fg: "#1a1a1a" },
   sepia: { bg: "#f4ecd8", fg: "#5b4636" },
   dark: { bg: "#141414", fg: "#c9c9c9" }
@@ -154,6 +157,16 @@ export function normalizeReaderSettings(s: unknown): ReaderSettings {
   };
   // D241：旧存储字段 turnAnimated 退役（生效值只由 resolveAppearance 产出，不回写存储）
   delete appearance.turnAnimated;
+  // D297：主题归一——非法值 → auto；旧版默认值 "paper"（无 themeExplicit 标记）迁移为 auto；
+  // themeExplicit 只在「显式纸白」时落盘（auto/羊皮/暗夜/自定义本身就是显式或跟随，不需要标记）
+  const rawTheme = appearance.theme as string;
+  if (rawTheme !== "auto" && rawTheme !== "paper" && rawTheme !== "sepia" && rawTheme !== "dark" && rawTheme !== "custom") {
+    appearance.theme = "auto";
+  } else if (rawTheme === "paper" && raw.appearance?.themeExplicit !== true) {
+    appearance.theme = "auto";
+  }
+  if (appearance.theme === "paper") appearance.themeExplicit = true;
+  else delete appearance.themeExplicit;
   return {
     mode: { ...DEFAULT_READER_SETTINGS.mode, ...(raw.mode ?? {}) },
     appearance,
@@ -161,20 +174,27 @@ export function normalizeReaderSettings(s: unknown): ReaderSettings {
   };
 }
 
-export function resolveAppearance(s: ReaderSettings | null): ReaderAppearanceEx {
+/**
+ * D297：阅读主题与应用明暗的关系（Apple Books / Kindle / Kobo 同款模型）——
+ * 「自动」（默认）＝跟随应用明暗：浅色档→纸白、深色档→暗夜；用户手动选了具体主题＝覆盖，
+ * 不再随应用明暗变化。`baseTone` 是**应用设置解析出的明暗**（不是阅读中临时覆盖后的档）。
+ * 输出的 theme 永远是具体主题（"auto" 在此解析掉）。
+ */
+export function resolveAppearance(s: ReaderSettings | null, baseTone: "light" | "dark" = "light"): ReaderAppearanceEx {
   const a = s?.appearance ?? DEFAULT_READER_SETTINGS.appearance;
-  const preset = a.theme === "custom" ? null : PRESETS[a.theme];
+  const theme: Exclude<ReaderTheme, "auto"> = a.theme === "auto" ? (baseTone === "dark" ? "dark" : "paper") : a.theme;
+  const preset = theme === "custom" ? null : PRESETS[theme];
   // v29 PDF 缩放：预设字符串或 50-300 百分比，非法值回退适应宽度
   const zoom = a.zoom === "page-width" || a.zoom === "page-fit" ? a.zoom
     : typeof a.zoom === "number" && a.zoom >= 50 && a.zoom <= 300 ? a.zoom
     : "page-width";
   return {
-    theme: a.theme,
+    theme,
     fontFamily: a.fontFamily?.trim() || DEFAULT_READER_FONT_STACK,
     fontSize: a.fontSize && a.fontSize >= 10 && a.fontSize <= 40 ? a.fontSize : DEFAULT_READER_FONT_SIZE,
     lineHeight: a.lineHeight && a.lineHeight >= 1.2 && a.lineHeight <= 2.4 ? a.lineHeight : 1.7,
-    bgColor: a.theme === "custom" && a.bgColor ? a.bgColor : preset?.bg ?? PRESETS.paper.bg,
-    fgColor: a.theme === "custom" && a.fgColor ? a.fgColor : preset?.fg ?? PRESETS.paper.fg,
+    bgColor: theme === "custom" && a.bgColor ? a.bgColor : preset?.bg ?? PRESETS.paper.bg,
+    fgColor: theme === "custom" && a.fgColor ? a.fgColor : preset?.fg ?? PRESETS.paper.fg,
     // D130 修正：margin 钳制改 null 判等（旧 `a.margin &&` 的 falsy 写法令 0 失效→48）——
     // 本批新增 0–120 滑杆后 0 成为可设值，按 R3「看着能调、调了没反应＝硬缺陷」必须生效；
     // margin 此前无任何 UI 写入口，存量数据不受影响（除手工 settings.json 写过 0 的极端情形）
@@ -192,6 +212,7 @@ export function resolveAppearance(s: ReaderSettings | null): ReaderAppearanceEx 
 /**
  * D242：阅读主题的明暗档——决定整个应用界面（顶栏 / 控件 / 浮层）随阅读主题切到浅色还是深色档。
  * 暗夜＝深；纸白/羊皮＝浅；自定义＝按背景色相对亮度判定（< 0.4 视为深底）。
+ * D297：入参应是 resolveAppearance 的输出（theme 已是具体主题）；未解析的 "auto" 按浅色处理。
  */
 export function readerThemeTone(a: ReaderAppearance): "light" | "dark" {
   if (a.theme === "dark") return "dark";

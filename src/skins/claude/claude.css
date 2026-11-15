@@ -340,6 +340,18 @@ body.skin-claude .shelf-seg button[aria-pressed="true"]::before { content: none;
 body.skin-claude .shelf-seg { border-color: transparent; }
 body.skin-claude .shelf-seg button + button { border-left-color: transparent; }
 
+/* 粘贴弹窗目的地段控（D291「存为摘录 / 存为书」）：与 .shelf-seg 同一口径——
+   容器 hairline 框 + 分隔线在填充语言下＝双重框，去框后 affordance 由选中 soft 底
+   + hover grey-1（基线已备）承担；选中态从基线「实心 accent 底 + accent-on 字」
+   改为 D175 家族语言「--accent-soft 底 + accent 字」。仅动颜色，零动效属性（A6）。
+   基线 .dest-opt 底色＝--surface-overlay（与弹窗同面），故去框后不出现色块边界。 */
+body.skin-claude .dest-seg { border-color: transparent; }
+body.skin-claude .dest-opt + .dest-opt { border-left-color: transparent; }
+body.skin-claude .dest-opt.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 /* 遮挡编辑器段控滑移指示：底线 → 圆角软底 */
 body.skin-claude .occl-seg-ind { border-bottom-color: transparent; border-radius: var(--radius-xs); }
 

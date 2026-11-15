@@ -83,7 +83,7 @@ const EVENTS = {
   "reader.finished": { section: "6.2", owner: "R", doc: "progressPct；每 (dataEpoch,itemId) 一次", maxPerMin: 10, props: p({ progressPct: N() }) },
 
   // ---- 6.3 ----
-  "extract.created": { section: "6.3", owner: "M", doc: "extract_id；num=字数；via(selection/ai_next/capture/manual), priority, kind(extract/highlight)", maxPerMin: 120, props: p({ num: I(), via: E("selection", "ai_next", "capture", "manual"), priority: I(), kind: E("extract", "highlight") }) },
+  "extract.created": { section: "6.3", owner: "M", doc: "extract_id；num=字数；via(selection/ai_next/capture/manual/paste), priority, kind(extract/highlight)", maxPerMin: 120, props: p({ num: I(), via: E("selection", "ai_next", "capture", "manual", "paste"), priority: I(), kind: E("extract", "highlight") }) },
   "extract.op": { section: "6.3", owner: "M", doc: "extract_id；op(postpone/postponeDays/advance/update/setPriority/setStatus/delete/batch/spanSet/switchEngine/rerankNow), delta, batchSize, annotation(bool), fieldNames[], color；**不记正文**", maxPerMin: 240, props: p({ op: E("postpone", "postponeDays", "advance", "update", "setPriority", "setStatus", "delete", "batch", "spanSet", "switchEngine", "rerankNow"), delta: I(), batchSize: I(), annotation: B(), fieldNames: A(), color: S(24) }) },
   "extract.session": { section: "6.3", owner: "R", doc: "ctx_id；phase(start/end), planned, done；dur_ms", maxPerMin: 30, props: p({ phase: E("start", "end"), planned: I(), done: I(), dur_ms: I() }) },
   "extract.shown": { section: "6.3", owner: "R", doc: "extract_id, ctx_id；origin=queue；position", maxPerMin: 240, props: p({ position: I() }) },

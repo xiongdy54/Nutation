@@ -141,8 +141,11 @@ interface Props {
   sourceAuthor?: string;
   onBack: () => void;
   onProgress?: (ratio: number, lastText: string, extra?: { cfi?: string; fraction?: number; pageIndex?: number }) => void;
-  /** 阅读主题联动整个软件（v20.1）：暗夜→软件夜间模式，纸白/羊皮→浅色 */
-  onSwitchAppTheme?: (mode: "light" | "dark") => void;
+  /** D297：应用明暗（theme.mode 解析后的值，不含阅读器的临时覆盖）——阅读主题「自动」跟随它 */
+  appTone?: "light" | "dark";
+  /** D297：阅读主题的明暗档与应用明暗不一致时，阅读期间把窗口明暗档临时对齐阅读主题（null＝不覆盖）。
+   *  只是视图态：不写应用明暗设置，卸载时复位 null。 */
+  onToneOverride?: (tone: "light" | "dark" | null) => void;
   /** v48.13（P2）：由全局活动指示器「打开导图」进入时置位——挂载后自动打开导图工作区 */
   openMindmapInitially?: boolean;
   /** 消费后通知 App 清除标记（避免返回正文再进出时重复弹出） */
@@ -280,6 +283,7 @@ function ReaderThemeDropdown({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
   const builtIn: { key: ReaderAppearance["theme"]; label: string }[] = [
+    { key: "auto", label: T("跟随应用") },
     { key: "paper", label: T("纸白") },
     { key: "sepia", label: T("羊皮") },
     { key: "dark", label: T("暗夜") },
@@ -406,7 +410,8 @@ export default function Reader({
   sourceAuthor,
   onBack,
   onProgress,
-  onSwitchAppTheme,
+  appTone = "light",
+  onToneOverride,
   openMindmapInitially,
   onMindmapOpened,
   openMindmapMapId,
@@ -1034,30 +1039,26 @@ export default function Reader({
     persistReaderSettings(next);
     void kernelRef.current?.setMode(mode);
   };
-  /** D242：应用明暗档跟随阅读主题（暗夜＝深；纸白/羊皮＝浅；自定义按背景亮度）。只在明暗档真变化时
-   *  切换——拖动自定义取色器不会反复触发整窗换档。 */
-  const syncAppTone = (next: ReaderSettings) => {
-    const tone = readerThemeTone(resolveAppearance(next));
-    const isDark = document.body.classList.contains("theme-dark");
-    if ((tone === "dark") !== isDark) onSwitchAppTheme?.(tone);
-  };
+  /** D297：阅读主题「自动」跟随应用明暗——所有外观解析都带上当前应用明暗（ref：useCallback([]) 闭包也读得到最新值） */
+  const appToneRef = useRef(appTone);
+  appToneRef.current = appTone;
+  const resolveAppearanceT = (s: ReaderSettings | null) => resolveAppearance(s, appToneRef.current);
   const changeReaderTheme = (theme: ReaderAppearance["theme"]) => {
     track("reader.appearance", { libraryItemId: itemId, props: { key: "theme" } });
-    const next = { ...readerSettingsRef.current, appearance: { ...readerSettingsRef.current.appearance, theme } };
+    // paper 带 themeExplicit：区分「用户主动选纸白」与旧版默认值（后者迁移为 auto，见 normalizeReaderSettings）
+    const appearance = { ...readerSettingsRef.current.appearance, theme, themeExplicit: theme === "paper" ? true : undefined };
+    if (theme !== "paper") delete appearance.themeExplicit;
+    const next = { ...readerSettingsRef.current, appearance };
     persistReaderSettings(next);
-    kernelRef.current?.applyAppearance(resolveAppearance(next));
-    // 整体换色（v20.1）：暗夜=软件夜间模式；纸白/羊皮=浅色。D242：自定义按背景亮度同样换档
-    // （此前「自定义不动软件主题」→ 深色自定义底配浅色档控件）。
-    if (theme === "dark") onSwitchAppTheme?.("dark");
-    else if (theme === "paper" || theme === "sepia") onSwitchAppTheme?.("light");
-    else syncAppTone(next);
+    kernelRef.current?.applyAppearance(resolveAppearanceT(next));
+    // D297：不再写应用明暗设置——明暗档覆盖由下方 effect 按解析后的阅读主题派生（视图态）
   };
   // v29 PDF 专用缩放（foliate 引擎无此控件）
   const changeReaderZoom = (zoom: NonNullable<ReaderAppearance["zoom"]>) => {
     track("reader.appearance", { libraryItemId: itemId, props: { key: "zoom" } });
     const next = { ...readerSettingsRef.current, appearance: { ...readerSettingsRef.current.appearance, zoom } };
     persistReaderSettings(next);
-    kernelRef.current?.applyAppearance(resolveAppearance(next));
+    kernelRef.current?.applyAppearance(resolveAppearanceT(next));
   };
 
   // ---------- D130 R3：个性化外观（行距/边距/版心/翻页过渡/自定义主题） ----------
@@ -1069,8 +1070,7 @@ export default function Reader({
       appearance: { ...readerSettingsRef.current.appearance, ...patch }
     });
     persistReaderSettings(next);
-    kernelRef.current?.applyAppearance(resolveAppearance(next));
-    if (next.appearance.theme === "custom" && (patch.bgColor !== undefined || patch.theme !== undefined)) syncAppTone(next);
+    kernelRef.current?.applyAppearance(resolveAppearanceT(next));
   };
   /** P1 应用已存主题：写 custom 档 + 该套色值；**不回写**条目本身（重复「保存」才新增，避免别名漂移） */
   const applySavedTheme = (t: CustomThemeEntry) => {
@@ -1079,7 +1079,7 @@ export default function Reader({
   /** P1 保存当前自定义配色为命名主题（id=ct-时间戳；上限 12 保新弃旧/清洗由 normalizeReaderSettings 统一钳制） */
   const saveCustomTheme = (rawName: string) => {
     const cur = readerSettingsRef.current;
-    const a = resolveAppearance(cur);
+    const a = resolveAppearanceT(cur);
     const themes = cur.customThemes ?? [];
     const entry: CustomThemeEntry = {
       id: `ct-${Date.now()}`,
@@ -1098,16 +1098,41 @@ export default function Reader({
     saveCustomTheme(themeNameDraft);
   };
 
+  // D297：阅读主题「自动」跟随应用明暗——应用明暗变化（含跟随系统）时，已打开的书即时重解析并重绘
+  useEffect(() => {
+    if (!engineMode) return;
+    if (readerSettingsRef.current.appearance.theme !== "auto") return;
+    kernelRef.current?.applyAppearance(resolveAppearanceT(readerSettingsRef.current));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engineMode, appTone]);
+
+  // D297：窗口明暗档覆盖——解析后的阅读主题明暗 ≠ 应用明暗时，阅读期间把窗口档对齐阅读主题
+  // （控件 / 高亮 / 强调色取对应档，与 D242 派生的表面 Token 同调）；一致时不覆盖（null）。
+  // 只是视图态，不写设置；离开阅读器复位。自定义色按背景相对亮度判档（拖取色器只在明暗真变化时才触发）。
+  const readerResolvedTone = engineMode ? readerThemeTone(resolveAppearanceT(readerSettings)) : appTone;
+  useLayoutEffect(() => {
+    if (!engineMode) return;
+    onToneOverride?.(readerResolvedTone === appTone ? null : readerResolvedTone);
+    // 覆盖档落到 body 类发生在 App 的 effect（晚于本 effect）→ 微任务里重推高亮字面值，才能取到新档
+    queueMicrotask(() => kernelRef.current?.setDocumentMarks?.(marksRef.current));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engineMode, readerResolvedTone, appTone]);
+  useLayoutEffect(() => {
+    if (!engineMode) return;
+    return () => onToneOverride?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engineMode]);
+
   // 外观变量上提到滚动容器：控件/目录/背景统一随 --reader-* 变化（iframe 内由内核注入）
   useEffect(() => {
     if (!engineMode) return;
     const el = scrollRef.current;
     if (!el) return;
-    const a = resolveAppearance(readerSettings);
+    const a = resolveAppearanceT(readerSettings);
     el.style.setProperty("--reader-bg", a.bgColor ?? "transparent");
     el.style.setProperty("--reader-fg", a.fgColor ?? "inherit");
     el.style.background = a.bgColor ?? "transparent";
-  }, [engineMode, readerSettings]);
+  }, [engineMode, readerSettings, appTone]);
 
   // D242：整个阅读界面随阅读主题同步——此前 --reader-bg/--reader-fg 只挂在滚动容器上，滚动容器之外
   // （阅读页外框、顶栏、学习坞、浮层、按钮）仍取应用主题的纸白/灰阶 Token：暗夜下残留大片白、
@@ -1117,13 +1142,13 @@ export default function Reader({
   useLayoutEffect(() => {
     if (!engineMode) return;
     const body = document.body;
-    const a = resolveAppearance(readerSettings);
+    const a = resolveAppearanceT(readerSettings);
     body.style.setProperty("--reader-bg", a.bgColor ?? "transparent");
     body.style.setProperty("--reader-fg", a.fgColor ?? "inherit");
     for (const [token, source] of READER_SURFACE_TOKENS) body.style.setProperty(token, `var(--reader-surface-${source})`);
     body.classList.add("reader-surface");
     body.dataset.readerTheme = a.theme;
-  }, [engineMode, readerSettings]);
+  }, [engineMode, readerSettings, appTone]);
   useLayoutEffect(() => {
     if (!engineMode) return;
     return () => {
@@ -1140,9 +1165,9 @@ export default function Reader({
   useEffect(() => {
     if (!engineMode || engineKind !== "foliate") return;
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
-    let active = resolveAppearance(readerSettingsRef.current).turnAnimated;
+    let active = resolveAppearanceT(readerSettingsRef.current).turnAnimated;
     const syncMotion = () => {
-      const a = resolveAppearance(readerSettingsRef.current);
+      const a = resolveAppearanceT(readerSettingsRef.current);
       if (a.turnAnimated === active) return;
       active = a.turnAnimated;
       kernelRef.current?.applyAppearance(a);
@@ -1403,7 +1428,7 @@ export default function Reader({
     readerSettingsRef.current = merged;
     setReaderSettings(merged);
     await k.setMode(merged.mode);
-    k.applyAppearance(resolveAppearance(merged));
+    k.applyAppearance(resolveAppearanceT(merged));
   }, []);
 
   const handleEngineReady = useCallback((k: ReaderKernel) => {
@@ -1412,7 +1437,7 @@ export default function Reader({
     setEngineError(null);
     setTocItems(k.getTOC());
     void k.setMode(readerSettingsRef.current.mode);
-    k.applyAppearance(resolveAppearance(readerSettingsRef.current));
+    k.applyAppearance(resolveAppearanceT(readerSettingsRef.current));
     // 调试/测试钩子（L2 e2e 经此访问章节文档；引擎 iframe 对宿主跨源，contentDocument 不可用）
     (window as unknown as { __readerKernel?: ReaderKernel }).__readerKernel = k;
     // v48.24 批3（§4 文中留痕）：点中标记 → 批注编辑浮层（v48.45/D85：唯一浮层——
@@ -2110,7 +2135,7 @@ export default function Reader({
 
   // ---------- D130 R3：快捷菜单派生值 ----------
   const savedThemes = readerSettings.customThemes ?? [];
-  const resolvedAppearance = resolveAppearance(readerSettings);
+  const resolvedAppearance = resolveAppearanceT(readerSettings);
   const pagedLike = readerSettings.mode.flow === "paged"; // 对开（spread）也是 flow=paged
   // P4a：动画过渡开关——D241 起 foliate 引擎三种模式都生效（分页/对开＝章内滑行 + 跨章淡入；
   // 滚动＝PageDown/空格整屏缓动 + 跨章淡入）；PDF 为连续滚动容器不适用 → 禁用态

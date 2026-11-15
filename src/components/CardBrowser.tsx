@@ -31,6 +31,8 @@ import CardFaceExtrasBlock from "./CardFaceExtras";
 import { useTagsEnabled } from "../lib/tagSettings";
 // v48.22（D58 §6.8-6）：浏览器 2.0——摘录行数据源 + 状态/推送文案
 import { readingWorkflow, type DueTopic } from "../lib/readingWorkflow";
+// v49.125（D291 §5）：隐藏父锚「粘贴摘录」——来源名显示映射只认这个 id（锚是系统实体，四语显示）
+import { libraryApi } from "../lib/library";
 import { extractStatusLabel } from "../lib/sessionQueue";
 import { nextAtText } from "./ExtractCardFace";
 import { settingsStore } from "../lib/settings";
@@ -41,7 +43,7 @@ import { buildSchemeFilter, cardMatchesScheme, extractMatchesScheme } from "../l
 // v48.60（D101）：标签——批量打标/去标的终值计算 + 词表建议（规则单一源 = src/lib/tags.ts）
 import { applyTagDelta, tagKey, type TagVocabEntry } from "../lib/tags";
 import TagInput from "./TagInput";
-import { t, useT } from "../lib/i18n";
+import { t, useT, getLocale } from "../lib/i18n";
 
 /** v48.22（D58 §6.8-5）：筛选牌组（复习范围）——保存的过滤条件，零 schema 变更。
  *  v48.61（D105）：结构扩展 tags[] / kpIds[]（向后兼容，缺省 = 不限）；过滤语义见 §6.8-5 */
@@ -185,6 +187,8 @@ export default function CardBrowser({
   onClearAnchorFilter?: () => void;
 }) {
   const T = useT();
+  // v49.125（D291 §5）：语言码作 memo 依赖——useT 触发重渲染后锚来源名须按新语言重算
+  const locale = getLocale();
   const tagsEnabled = useTagsEnabled();
   // v48.67（D111）：全库轻量行集（cards:listMeta，无题面/答案大列）——排序/预设/页签/计数的数据面
   const [metaAll, setMetaAll] = useState<BrowserMetaRow[]>([]);
@@ -230,6 +234,25 @@ export default function CardBrowser({
   // v48.22（D58 §6.8-6）：浏览器 2.0——统一数据源（闪卡 + 摘录）、多选/全选/反选、批量、按书分组
   const [kindFilter, setKindFilter] = useState<"card" | "extract" | "both">("card");
   const [extracts, setExtracts] = useState<DueTopic[]>([]);
+  // v49.125（D291 §5）：隐藏父锚「粘贴摘录」的 id——挂载取一次（锚首次保存摘录才存在，故可能为 null）。
+  // 只用于**显示映射**：锚是系统实体（标题固定「粘贴摘录」），书名是用户数据不翻译，锚须四语显示。
+  // 摘录集刷新时重取一次：本页常驻期间用户可能刚存下第一条粘贴摘录（锚此刻才被创建），
+  // 只挂载取一次会让来源名一直停在库内原文（非当前语言）。只读查询，代价可忽略。
+  const [pasteAnchorId, setPasteAnchorId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    libraryApi
+      .pasteAnchor()
+      .then((a) => {
+        if (!cancelled) setPasteAnchorId(a?.id ?? null);
+      })
+      .catch(() => {
+        /* 取不到锚＝不做映射，来源名照旧显示库内标题 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [extracts]);
   const [selCards, setSelCards] = useState<Set<string>>(new Set());
   const [selExtracts, setSelExtracts] = useState<Set<string>>(new Set());
   const [anchorId, setAnchorId] = useState<string | null>(null);
@@ -490,8 +513,11 @@ export default function CardBrowser({
       if (c.bookId) m.set(String(c.bookId), String(c.docTitle || t("未知材料")));
     }
     for (const e of extracts) if (e.libraryItemId) m.set(String(e.libraryItemId), String(e.docTitle || t("未知材料")));
+    // v49.125（D291 §5）：隐藏父锚的标题是系统实体（「粘贴摘录」），按当前语言显示；其余书名是用户数据不译。
+    if (pasteAnchorId && m.has(pasteAnchorId)) m.set(pasteAnchorId, T("粘贴摘录"));
     return [{ value: "all", label: t("全部来源书") }, ...[...m.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([value, label]) => ({ value, label }))];
-  }, [metaAll, extracts]);
+    // locale 参与依赖：useT 的重渲染会让 locale 取到新值，锚名随之重算（t 本身是稳定引用，不能当依赖）
+  }, [metaAll, extracts, pasteAnchorId, locale]);
 
   // D158：方案条件作用于表格——来源书（下拉单选 ∪ 追加来源书）+ 标签 + 知识点归并族。
   // 这几项任何时候都作用于表格（创建面板追加条件即时生效，取消即恢复）；无方案条件时 schemeFilter=null，
@@ -766,10 +792,19 @@ export default function CardBrowser({
       ...new Set([
         ...(bookScope !== "all" ? [bookScope] : []),
         ...deckExtraBooks,
-        // 查询里的 book: 书名子串 → 按书名（NFKC 折叠）解析为 libraryItemId；无命中如实丢弃
-        ...cond.bookNames.flatMap((needle) =>
-          bookOptions.filter((o) => o.value !== "all" && foldSearch(o.label).includes(foldSearch(needle))).map((o) => o.value)
-        )
+        // 查询里的 book: 书名子串 → 按书名（NFKC 折叠）解析为 libraryItemId；无命中如实丢弃。
+        // v49.125（D291 §5-3）：锚的标签已按语言翻译，但库内原标题恒为「粘贴摘录」——给它补一个原名
+        // 别名参与匹配，保证四语下 `book:粘贴摘录` 都能解析出锚 id（翻译后的标签不得成为唯一匹配源）。
+        ...cond.bookNames.flatMap((needle) => {
+          const n = foldSearch(needle);
+          return bookOptions
+            .filter((o) => {
+              if (o.value === "all") return false;
+              if (foldSearch(o.label).includes(n)) return true;
+              return Boolean(pasteAnchorId) && o.value === pasteAnchorId && foldSearch("粘贴摘录").includes(n);
+            })
+            .map((o) => o.value);
+        })
       ])
     ];
     const tags = [...new Set([...deckTags, ...cond.tags])];
@@ -1674,7 +1709,8 @@ export default function CardBrowser({
                 {e.prioritySource === "user" ? T(" ·改") : ""}
               </span>
               <span className="mono">{nextAtText(e.topicNextAt)}</span>
-              <span className="cb-src">{e.docTitle}</span>
+              {/* v49.125（D291 §5）：隐藏父锚的来源名按当前语言显示（系统实体，非用户书名） */}
+              <span className="cb-src">{pasteAnchorId && String(e.libraryItemId) === pasteAnchorId ? T("粘贴摘录") : e.docTitle}</span>
               <span className="cb-act">
                 {/* 原「学习队列」页的管理动作之一：跳转回原文位置（§6.8-8 进度安全：跳转不写阅读进度） */}
                 {onJumpToDoc && e.contextRef?.documentId ? (
@@ -1874,6 +1910,7 @@ export default function CardBrowser({
           onClose={() => setExtractDetailId(null)}
           onJumpToDoc={onJumpToDoc}
           onChanged={() => refresh()}
+          pasteAnchorId={pasteAnchorId}
         />
       )}
 
@@ -1905,12 +1942,15 @@ export function ExtractDetail({
   extract,
   onClose,
   onJumpToDoc,
-  onChanged
+  onChanged,
+  pasteAnchorId
 }: {
   extract: ExtractRow;
   onClose: () => void;
   onJumpToDoc?: JumpToDoc;
   onChanged: () => Promise<void> | void;
+  /** v49.125（D291 §5）：隐藏父锚 id——命中时来源名按当前语言显示 */
+  pasteAnchorId?: string | null;
 }) {
   const T = useT();
   // D214：详情＝右侧半宽停靠面板（非模态）：无遮罩、不锁 Tab；Esc 关闭与焦点管理仍走 useDialogA11y
@@ -1967,7 +2007,8 @@ export function ExtractDetail({
     [T("状态"), T(extractStatusLabel(extract.status))],
     [T("优先级"), `P${extract.priority}${extract.prioritySource === "user" ? T(" · 改") : ""}`],
     [T("下次推送"), nextAtText(extract.topicNextAt)],
-    [T("来源"), extract.docTitle || "—"],
+    // v49.125（D291 §5）：隐藏父锚＝系统实体，来源名按当前语言显示
+    [T("来源"), pasteAnchorId && String(extract.libraryItemId) === pasteAnchorId ? T("粘贴摘录") : extract.docTitle || "—"],
     [T("引文"), ranges?.length ? T("{n} 段（{type}）", { n: ranges.length, type: extract.parentType === "extract" ? T("父卡正文坐标") : T("本条正文") }) : "—"],
     [T("批注"), extract.comment || "—"],
     [T("创建时间"), extract.createdAt ? new Date(extract.createdAt).toLocaleString() : "—"]

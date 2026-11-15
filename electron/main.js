@@ -493,6 +493,14 @@ ipcMain.handle("library:createFromPaste", (_e, title, markdown) => {
   return createFromPaste(String(title || ""), md);
 });
 
+// v49.125（D291 §4.2）：粘贴窗「存为摘录」——正文经既有 createExtract 落库，父＝隐藏父锚「粘贴摘录」。
+// 写路径纪律沿用既有口径：事务提交 + persist 后返回；失败 reject 上抛，渲染层走「留窗报错」。
+ipcMain.handle("library:createExtractFromPaste", (_e, title, markdown) =>
+  dbModule.createExtractFromPaste(String(title ?? ""), String(markdown ?? ""))
+);
+// v49.125（D291 §4.4）：只读父锚（卡片浏览器来源名映射 / 测试取锚 id）；锚不存在返回 null
+ipcMain.handle("library:pasteAnchor", () => dbModule.getPasteAnchor());
+
 ipcMain.handle("library:delete", (_e, id) => deleteItem(String(id)));
 
 // v38（D35）：书籍语言属性——查词语言路由的书籍级信号

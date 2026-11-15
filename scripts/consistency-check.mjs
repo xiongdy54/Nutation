@@ -102,6 +102,17 @@ const REVEAL_ALLOW = [
   {
     sel: ".form-seg[data-tip]:focus-visible::after",
   },
+  {
+    // D291 粘贴窗目的地分段控件的说明 tooltip——与 D266 同族判定：非操作控件。
+    // 按钮本体（.dest-opt）常显常可点、不依赖 hover 才出现；tooltip 只是「存为摘录 / 存为书」
+    // 两种去向差别的补充说明，选项名同时由按钮文字与 aria-pressed 提供，说明文字另由
+    // aria-describedby 提供给读屏（PasteMaterialModal.tsx）。基础态 .dest-tip 为
+    // opacity: 0 + pointer-events: none 的纯浮层。理由已登记 docs/UI-CONVENTIONS.md。
+    sel: ".dest-opt:hover .dest-tip",
+  },
+  {
+    sel: ".dest-opt:focus-visible .dest-tip",
+  },
 ];
 const normalizeSelector = (s) => s.trim().replace(/\s+/g, " ");
 const isRevealAllowed = (selector) =>

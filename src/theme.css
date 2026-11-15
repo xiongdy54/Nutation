@@ -137,7 +137,12 @@
   --hl-multi: color-mix(in srgb, var(--accent) 22%, transparent);
   /* 批注色板（批 4，规格 §2 色板 / §9.2）：8 色，与 Zotero 数量对齐（本项目自定值域，不抄色值）。
      颜色**不承载调度语义**；渲染取 --annot-<name>（实色：竖线/色点/角标）与
-     --annot-<name>-soft（透明档：文中高亮，浅档 12% / 深档 26%）。
+     --annot-<name>-soft（透明档：文中高亮）。两档各自的口径：
+       浅档（本块）＝实色按**逐色透明度 27–41%**（v49.129 / D296）——旧口径「一刀切 12%」在纸白
+         #fafaf8 上带/底只有 1.07–1.16、OKLab 色度 0.020–0.031，八色两两 ΔE 最小仅 0.010
+         （绿/青几乎同色），用户实测「淡淡的高亮，不同颜色区别度不大」。新口径让**八色色度一致**
+         （OKLab C≈0.065），两两 ΔE 最小 0.037；黄最刺眼故取最低 27%、绿最暗故取最高 41%。
+       深档（body.theme-dark）＝实色混白 30% 后逐色定透明度 31–40%（v49.128 / D295）。
      -soft 派生自实色 ⇒ 必须与实色一起在 :root / body / body.theme-dark 三处各声明一次。 */
   --annot-red: #e5484d;
   --annot-orange: #f28c28;
@@ -147,14 +152,23 @@
   --annot-blue: #3e7bfa;
   --annot-purple: #8b5cf6;
   --annot-magenta: #db4fa8;
-  --annot-red-soft: color-mix(in srgb, var(--annot-red) 12%, transparent);
-  --annot-orange-soft: color-mix(in srgb, var(--annot-orange) 12%, transparent);
-  --annot-yellow-soft: color-mix(in srgb, var(--annot-yellow) 12%, transparent);
-  --annot-green-soft: color-mix(in srgb, var(--annot-green) 12%, transparent);
-  --annot-teal-soft: color-mix(in srgb, var(--annot-teal) 12%, transparent);
-  --annot-blue-soft: color-mix(in srgb, var(--annot-blue) 12%, transparent);
-  --annot-purple-soft: color-mix(in srgb, var(--annot-purple) 12%, transparent);
-  --annot-magenta-soft: color-mix(in srgb, var(--annot-magenta) 12%, transparent);
+  --annot-red-soft: color-mix(in srgb, var(--annot-red) 36%, transparent);
+  --annot-orange-soft: color-mix(in srgb, var(--annot-orange) 37%, transparent);
+  --annot-yellow-soft: color-mix(in srgb, var(--annot-yellow) 27%, transparent);
+  --annot-green-soft: color-mix(in srgb, var(--annot-green) 41%, transparent);
+  --annot-teal-soft: color-mix(in srgb, var(--annot-teal) 39%, transparent);
+  --annot-blue-soft: color-mix(in srgb, var(--annot-blue) 35%, transparent);
+  --annot-purple-soft: color-mix(in srgb, var(--annot-purple) 31%, transparent);
+  --annot-magenta-soft: color-mix(in srgb, var(--annot-magenta) 34%, transparent);
+  /* 自定义色（`#hex`）的透明档口径（v49.128 / D295，v49.129 / D296 改浅档数值）：色板 id 的 -soft
+     由上面的 Token 族直接给出，而用户在设置里自选的十六进制色没有对应 Token，`annotSoft()` 现场算时
+     必须读同一套深浅口径——否则自定义色的高亮会比色板色淡/暗一档（旧口径写死 16%）。浅档＝原色
+     100% × 34%（取八色新值的中间档），深档（body.theme-dark）＝混白 30% × 38%。 */
+  --annot-hex-soft-mix: 100%;
+  --annot-hex-soft-alpha: 34%;
+  /* 「提亮混色」的目标色（深色档 -soft 是「实色混白」）：静态值、无派生 ⇒ 只在 :root 声明一次
+     （§5.1 求值层纪律）；单列 Token 是为了让 annotColor.ts 的 #hex 现场算不写裸色值（颜色只用 Token）。 */
+  --annot-soft-whiten: #ffffff;
   /* D266：色块选中对勾色（深浅主题同值——对勾压在任何用户自选色上，不随主题反色） */
   --annot-check: #ffffff;
   /* D266：对勾固定深色描边（浅黄等高亮色上也清楚；不随主题反色） */
@@ -285,8 +299,12 @@ body.theme-dark {
   /* 必须与 --shadow-float 各写一次：自定义属性里的 var() 在声明元素上求值，
      若 :root 写成 var(--shadow-float)，深色模式下 --shadow-panel 仍会取到浅色值 */
   --shadow-panel: 0 8px 24px rgba(0, 0, 0, 0.5);
-  /* 批注色板深色档：实色提亮（对比不足的同因处理，同 --accent），透明档加深到 26%
-     以便与深底拉开——浅档 12% 在 #101010 上几乎看不见（样张实测口径）。 */
+  /* 批注色板深色档：实色提亮（对比不足的同因处理，同 --accent）。
+     透明档（v49.128 / D295）：**实色先混白 30% 再按色取透明度**——旧口径「实色 26%」在深底上
+     带/底只有 1.52–1.91、饱和度 31–60%，观感偏暗偏艳（用户实测「不如 Zotero 好看」；Zotero 带/底
+     2.42、饱和度 23.8%＝偏亮偏灰的粉尘感）。逐色定透明度是为了让**八色带底亮度一致**（带/底 ≈2.4），
+     否则同一透明度下黄/绿比红/蓝亮一档；同时保证带内文字仍 ≥4.5:1（深色阅读底 #141414 实测
+     4.60–4.72，应用底 #0d1311 更高）。浅色档见 :root 块的说明（v49.129 / D296 已从 12% 提到 27–41%）。 */
   /* D122：新默认 5 色（黄/红/绿/蓝/紫）的深色提亮档；橙/青/品红为自定义色板可选的同族补充 */
   --annot-red: #ff6b70;
   --annot-orange: #fda04d;
@@ -296,14 +314,18 @@ body.theme-dark {
   --annot-blue: #6c9bff;
   --annot-purple: #a78bfa;
   --annot-magenta: #f472b6;
-  --annot-red-soft: color-mix(in srgb, var(--annot-red) 26%, transparent);
-  --annot-orange-soft: color-mix(in srgb, var(--annot-orange) 26%, transparent);
-  --annot-yellow-soft: color-mix(in srgb, var(--annot-yellow) 26%, transparent);
-  --annot-green-soft: color-mix(in srgb, var(--annot-green) 26%, transparent);
-  --annot-teal-soft: color-mix(in srgb, var(--annot-teal) 26%, transparent);
-  --annot-blue-soft: color-mix(in srgb, var(--annot-blue) 26%, transparent);
-  --annot-purple-soft: color-mix(in srgb, var(--annot-purple) 26%, transparent);
-  --annot-magenta-soft: color-mix(in srgb, var(--annot-magenta) 26%, transparent);
+  --annot-red-soft: color-mix(in srgb, color-mix(in srgb, var(--annot-red) 70%, #ffffff) 40%, transparent);
+  --annot-orange-soft: color-mix(in srgb, color-mix(in srgb, var(--annot-orange) 70%, #ffffff) 35%, transparent);
+  --annot-yellow-soft: color-mix(in srgb, color-mix(in srgb, var(--annot-yellow) 70%, #ffffff) 31%, transparent);
+  --annot-green-soft: color-mix(in srgb, color-mix(in srgb, var(--annot-green) 70%, #ffffff) 33%, transparent);
+  --annot-teal-soft: color-mix(in srgb, color-mix(in srgb, var(--annot-teal) 70%, #ffffff) 34%, transparent);
+  --annot-blue-soft: color-mix(in srgb, color-mix(in srgb, var(--annot-blue) 70%, #ffffff) 38%, transparent);
+  --annot-purple-soft: color-mix(in srgb, color-mix(in srgb, var(--annot-purple) 70%, #ffffff) 38%, transparent);
+  --annot-magenta-soft: color-mix(in srgb, color-mix(in srgb, var(--annot-magenta) 70%, #ffffff) 38%, transparent);
+  /* 自定义色（#hex）深色档口径：与色板同一条「混白 30% × 定透明度」，透明度取中间档 38%
+     （逐色微调只为对齐八色亮度，自定义色没有对应项） */
+  --annot-hex-soft-mix: 70%;
+  --annot-hex-soft-alpha: 38%;
 }
 
 /* ---------- 基础 ---------- */
@@ -433,14 +455,14 @@ body {
   --annot-blue: #3e7bfa;
   --annot-purple: #8b5cf6;
   --annot-magenta: #db4fa8;
-  --annot-red-soft: color-mix(in srgb, var(--annot-red) 12%, transparent);
-  --annot-orange-soft: color-mix(in srgb, var(--annot-orange) 12%, transparent);
-  --annot-yellow-soft: color-mix(in srgb, var(--annot-yellow) 12%, transparent);
-  --annot-green-soft: color-mix(in srgb, var(--annot-green) 12%, transparent);
-  --annot-teal-soft: color-mix(in srgb, var(--annot-teal) 12%, transparent);
-  --annot-blue-soft: color-mix(in srgb, var(--annot-blue) 12%, transparent);
-  --annot-purple-soft: color-mix(in srgb, var(--annot-purple) 12%, transparent);
-  --annot-magenta-soft: color-mix(in srgb, var(--annot-magenta) 12%, transparent);
+  --annot-red-soft: color-mix(in srgb, var(--annot-red) 36%, transparent);
+  --annot-orange-soft: color-mix(in srgb, var(--annot-orange) 37%, transparent);
+  --annot-yellow-soft: color-mix(in srgb, var(--annot-yellow) 27%, transparent);
+  --annot-green-soft: color-mix(in srgb, var(--annot-green) 41%, transparent);
+  --annot-teal-soft: color-mix(in srgb, var(--annot-teal) 39%, transparent);
+  --annot-blue-soft: color-mix(in srgb, var(--annot-blue) 35%, transparent);
+  --annot-purple-soft: color-mix(in srgb, var(--annot-purple) 31%, transparent);
+  --annot-magenta-soft: color-mix(in srgb, var(--annot-magenta) 34%, transparent);
   /* 同理：--text-primary/--text-helper 在 :root 里是 var(--ink)/var(--grey-3)，
      皮肤只改 --ink 或 --grey-3 时必须能在 body 这一层重新取到，
      否则文字色会停在基础主题值上，与皮肤色板错位。 */
@@ -2101,6 +2123,76 @@ html[data-wb-open="1"][data-wb-place="right"] .topbar { --tb-split: var(--wb-w);
   font-weight: 500;
   color: var(--text-helper);
 }
+/* 目的地分段控件（v49.125 / D291 §3.2，P1 定稿；视觉事实源＝样张 design-samples/paste-destination）。
+   位置＝底行「取消」与主保存钮之间；两枚 aria-pressed 按钮，选中项 accent 底。
+   说明文字**不占独立行**——悬停 / 键盘聚焦时在按钮上方右对齐浮出 tooltip（第二轮裁定）。
+   全 Token：底色 surface-overlay/accent、描边 border-strong、浮层 surface-overlay + hairline + shadow-popover。
+   v49.125 样式跟进：容器与按钮消费 --radius-control（默认皮肤 =0，逐像素不变；
+   雨林皮肤 8px 自动生效，与 .shelf-seg 同一档）；底色从 --paper 换成 --surface-overlay——
+   本件坐在弹窗表面（.modal-panel）上：默认浅色两 Token 同值（逐像素不变），
+   默认深色 #0d1311 → #141c19（按钮与所在弹窗同面，1.08:1，观感不变）；
+   雨林深色档下不再出现比弹窗更暗的色块。选中态与去框由皮肤层结构规则决定。 */
+.dest-seg {
+  flex: none;
+  display: inline-flex;
+  align-self: center;
+  border: var(--bw-hairline) solid var(--border-strong);
+  border-radius: var(--radius-control);
+}
+.dest-opt {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  min-width: 96px;
+  height: 40px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--surface-overlay);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+/* 悬停＝填充语言的 affordance（默认皮肤 --grey-1 与 .btn-secondary 同源；选中项由下方 .on 压过） */
+.dest-opt:hover { background: var(--grey-1); color: var(--text-primary); }
+.dest-opt + .dest-opt { border-left: var(--bw-hairline) solid var(--border-strong); }
+.dest-name {
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.dest-opt.on { background: var(--accent); color: var(--accent-on); }
+/* 说明 tooltip（D291 §3.2）：悬停与键盘焦点两条路都出；浮层件 token 与既有自绘 tooltip 同源 */
+.dest-tip {
+  position: absolute;
+  bottom: calc(100% + var(--sp-1));
+  right: 0;
+  z-index: var(--z-tooltip);
+  width: max-content;
+  max-width: 264px;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-overlay);
+  border: var(--bw-hairline) solid var(--border-subtle);
+  box-shadow: var(--shadow-popover);
+  /* D175：浮层家族统一消费圆角 Token（默认 --radius-panel=0 → 默认皮肤逐像素不变；皮肤可覆盖） */
+  border-radius: var(--radius-popover);
+  font-size: var(--fs-secondary);
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  transform: translateY(var(--sp-1));
+  pointer-events: none;
+  transition: opacity var(--dur-hover) var(--ease-out-soft), transform var(--dur-hover) var(--ease-out-soft);
+}
+.dest-opt:hover .dest-tip,
+.dest-opt:focus-visible .dest-tip { opacity: 1; transform: none; }
 /* v48.70（D114 §6.2）：窄窗口断点用容器查询（对齐 D51 书架工具条先例，860px 一档）。
    容器放在设置面板根上而不是 .settings-layout —— @container 规则不能命中容器自身，
    而窄档恰恰要改 .settings-layout 的排布方向；同时 layout containment 使面板成为
@@ -2523,6 +2615,30 @@ body.theme-dark .modal-panel {
   color: var(--text-secondary);
 }
 .oss-tail { margin-top: calc(var(--sp-2) * -1); }
+/* 项目主页链接（v49.126 / D293）：与应用名同行、靠右端（窄窗放不下时整枚换到下一行仍靠右）。
+   图标与地址同处一个链接＝单一 Tab 停靠点；颜色/圆角/焦点环全走 Token
+   （:focus-visible 全局规则接管，本处不覆盖）。 */
+.about-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+.about-repo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: auto;
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.about-repo:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.about-repo svg { flex: none; }
 
 /* ---------- 设置面板工具类（收口此前散落在 tsx 里的 23 处内联样式） ----------
    规范「对齐法则」：子元素间距用 grid/flex gap，禁用逐个 margin 硬堆；

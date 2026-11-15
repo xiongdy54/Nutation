@@ -59,6 +59,9 @@ contextBridge.exposeInMainWorld("updateAPI", {
 contextBridge.exposeInMainWorld("libraryAPI", {
   list: () => ipcRenderer.invoke("library:list"),
   createFromPaste: (title, markdown) => ipcRenderer.invoke("library:createFromPaste", title, markdown),
+  // v49.125（D291 §4.2/§4.4）：粘贴窗「存为摘录」写通道 + 隐藏父锚只读
+  createExtractFromPaste: (title, markdown) => ipcRenderer.invoke("library:createExtractFromPaste", title, markdown),
+  pasteAnchor: () => ipcRenderer.invoke("library:pasteAnchor"),
   createFromEpub: (payload) => ipcRenderer.invoke("library:createFromEpub", payload),
   pickEpub: () => ipcRenderer.invoke("library:pickEpub"),
   remove: (id) => ipcRenderer.invoke("library:delete", id),

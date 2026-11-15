@@ -38,6 +38,7 @@ import { eventBus } from "../lib/eventbus";
 import { useDialogA11y } from "../lib/dialogA11y";
 import { useDismiss } from "../lib/useDismiss";
 import { useOverlayBackdrop } from "../lib/overlayDismiss";
+import { IconGithub } from "./icons";
 import SettingsInfo from "./SettingsInfo";
 // v48.80（D124 / 设计稿 §11.6）：学习者知识模型设置子块（sec-learner）
 import { learnerApi, learnerSettings } from "../lib/learner";
@@ -1694,9 +1695,18 @@ function ReaderSection() {
           <SettingsInfo label={T("主题预设")}>{T("与阅读器顶栏「主题」菜单读写同一份设置。")}</SettingsInfo>
         </span>
         <div className="seg-tabs">
-          {(["paper", "sepia", "dark", "custom"] as const).map((t) => (
-            <button key={t} className={a.theme === t ? "active" : ""} onClick={() => save({ ...cfg, appearance: { ...a, theme: t } })}>
-              {t === "paper" ? T("纸白") : t === "sepia" ? T("羊皮") : t === "dark" ? T("暗夜") : T("自定义")}
+          {(["auto", "paper", "sepia", "dark", "custom"] as const).map((t) => (
+            <button
+              key={t}
+              className={a.theme === t ? "active" : ""}
+              onClick={() => {
+                // D297：纸白带 themeExplicit（显式选择），否则读侧会把它当旧默认值迁移为「跟随应用」
+                const next = { ...a, theme: t, themeExplicit: t === "paper" ? true : undefined };
+                if (t !== "paper") delete next.themeExplicit;
+                save({ ...cfg, appearance: next });
+              }}
+            >
+              {t === "auto" ? T("跟随应用") : t === "paper" ? T("纸白") : t === "sepia" ? T("羊皮") : t === "dark" ? T("暗夜") : T("自定义")}
             </button>
           ))}
         </div>
@@ -2363,10 +2373,16 @@ function UpdateSection() {
 }
 
 // ---------- 关于（v49.7 / D181）：应用信息 + 开源许可清单 ----------
-// 纯信息节：零设置键、零交互控件。许可清单为静态数据手工维护，口径＝运行时直接依赖
+// 纯信息节：零设置键；唯一交互＝项目主页外链（D293，不进设置存储、不发请求）。
+// 许可清单为静态数据手工维护，口径＝运行时直接依赖
 // （不列构建期工具与测试依赖）；许可类型以 node_modules 各包 package.json 实测为准；
 // 不写版本号——版本随升级漂移，清单只固化「用了什么、什么许可」。版本号复用
 // update:status 快照（currentVersion，真源 package.json version，D180），不新增 IPC。
+// v49.126 / D293：项目主页——地址只写这一处，可见文本由它派生（去掉协议前缀）。
+// 外链一律 target=_blank：主进程 setWindowOpenHandler 把 http(s) 交系统浏览器并拒绝开新窗
+//（electron/main.js），渲染层永不自行导航（v20 既有契约）。零新 IPC / 零新设置键。
+const REPO_URL = "https://github.com/xiongdy54/Nutation";
+
 const OSS_ITEMS: Array<{ name: string; license: string; note?: string }> = [
   { name: "Electron", license: "MIT", note: "应用框架（含 Chromium / Node.js）" },
   { name: "React · React DOM", license: "MIT", note: "界面框架" },
@@ -2411,9 +2427,16 @@ function AboutSection() {
 
   return (
     <SettingsSection id="sec-about" title={T("关于")}>
+      {/* v49.126 / D293：项目主页与应用名同行（右端对齐，窄窗自动换行到下一行仍靠右）。
+          地址是用户数据（仓库名不译），可见文本去掉协议前缀。 */}
+      <div className="about-head">
+        <span>{"Nutation"}{version ? T(" · 版本 v{version}", { version }) : ""}</span>
+        <a className="about-repo" href={REPO_URL} target="_blank" rel="noreferrer">
+          <IconGithub size={16} />
+          <span>{REPO_URL.replace(/^https?:\/\//, "")}</span>
+        </a>
+      </div>
       <p className="form-hint">
-        {"Nutation"}{version ? T(" · 版本 v{version}", { version }) : ""}
-        <br />
         {T("本地优先的桌面渐进阅读学习软件：数据全部保存在本机；核心功能零网络、零账号，仅在显式配置 AI 服务或检查更新时联网。")}
       </p>
       <h4>{T("开源许可")}</h4>

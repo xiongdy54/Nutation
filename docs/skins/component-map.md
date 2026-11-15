@@ -9,7 +9,7 @@
 | --- | --- | --- | --- | --- |
 | 圆角-输入 | `--radius-input` | `var(--radius)` | 10 | `input, textarea` / `input[type="color"]` / `input[type="date"]` / `select` / `.form-field input, .form-field textarea` / `.accent-row input[type="color"]` / `.cb-search` / `.markdown-editor-compact` / `.cap-input` / `.menu-comment`（D175） |
 | 圆角-卡片 | `--radius-card` | `var(--radius)` | 5 | `.card-fill, .card-outlined, .card-accent, .card-ink` / `.card-marked` / `.card-marked-error` / `.skeleton` / `.bg-activity-card` |
-| 圆角-控件 | `--radius-control` | `var(--radius)` | 11 | `.icon-btn` / `.btn` / `.bar-btn`（D175）/ `.shelf-seg`（含 `button`）/ `.act` / `.shelf-table .t-open` / `.dd-btn` / `.bg-activity-row` / `.bg-activity-btn` / `.topbar-wb` |
+| 圆角-控件 | `--radius-control` | `var(--radius)` | 12 | `.icon-btn` / `.btn` / `.bar-btn`（D175）/ `.shelf-seg`（含 `button`）/ `.dest-seg`（含 `.dest-opt`，D291）/ `.act` / `.shelf-table .t-open` / `.dd-btn` / `.bg-activity-row` / `.bg-activity-btn` / `.topbar-wb` |
 | 圆角-chip | `--radius-xs` | `var(--radius)` | 7 | `.dict-lang-chip` / `.skin-card-preview` / `.dd-item` / `.model-option` / `.md-tb-menu-item` / `.learner-menu-pop button` + `.bar-pop button` + `.occlusion-editor-badge`（D175 弹层行级统一规则） |
 | 圆角-对话框 | `--radius-dialog` | `var(--radius-panel)` | 1 | `.modal-panel` |
 | 圆角-弹层 | `--radius-popover` | `var(--radius-panel)` | 19（D175 浮层家族统一规则） | `.menu, .selection-menu` / `.settings-info-tip` / `.annot-editor` / `.colorpop` / `.reader-toast` / `.image-focus-toolbar` / `.tag-suggest-v4` / `.cb-scheme-pop` / `.occlusion-editor-rail` / `.occlusion-editor-confirm` / `.model-dropdown` / `.dd-menu` / `.source-peek` / `.bar-pop` / `.extract-face-toolbar.is-float-pop` / `.md-tb-menu` / `.learner-menu-pop` / `.growth-toast` |

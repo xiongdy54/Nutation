@@ -48,6 +48,8 @@ import type { MotionLevel } from "./skins/types";
 import { applyAccent } from "./lib/accentVar";
 // v49.8（D182）：多语言 i18n——loadLocale 启动装载（D237：资源按需装载）/ useT 渲染订阅 / t 自然键翻译
 import { loadLocale, useT, t } from "./lib/i18n";
+import { useFlash } from "./lib/useFlash";
+import { dayLabel } from "./lib/shelf";
 import { useThemePlugin } from "./lib/themePlugins";
 import { WB_STATE_EVENT, getLastWorkbenchOpen, requestWorkbenchToggle, type WorkbenchState } from "./lib/workbenchLayout";
 
@@ -144,11 +146,21 @@ const TOP_NAV = [
 
 export default function App() {
   const T = useT(); // v49.8（D182）：语言切换时整树重渲染（顶栏导航/标题/按钮提示全量跟随）
+  // v49.125（D291 §12 D5）：本批唯一一处 App 级新增 UI——粘贴保存成功的短时提示宿主
+  // （复用 .reader-toast；useFlash 单计时器 1800ms，后一条覆盖前一条）。粘贴窗关窗后提示仍在。
+  const [appToast, showFlash] = useFlash();
   // C-37：theme = 解析后的落窗档（恒 "light"|"dark"，与 SkinHost 的 ColorMode 同型）；
   // themeMode = theme.mode 原始档（"light"|"dark"|"system"）——与 motion 的 motionSetting/motion 同构：
   // themeMode 是设置真源（驱动设置页高亮与系统跟随监听），theme 消费解析结果（body 类 / accent 默认值 / SkinHost）。
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  // D297：阅读器内用户手动选了与应用明暗相反的阅读主题时，阅读期间把**窗口明暗档**临时对齐阅读主题
+  // （控件/高亮/强调色取对应档）——只是视图态覆盖：不写 theme.mode 设置、离开阅读器即撤销、
+  // 应用明暗仍是唯一设置真源（Apple Books / Kindle 同款：阅读主题是应用主题之上的局部覆盖）。
+  const [readerTone, setReaderTone] = useState<"light" | "dark" | null>(null);
+  const readerToneRef = useRef<"light" | "dark" | null>(null);
+  readerToneRef.current = readerTone;
+  const bodyTone = readerTone ?? theme;
   const [skinId, setSkinId] = useState<string>(DEFAULT_SKIN_ID);
   // v49.0 / D172：accentColor = **当前生效**的用户 accent（随皮肤切换换值）；
   // accentColorLegacy = 默认皮肤的原键（app.accentColor，旧数据兼容）；accentBySkin = 其他皮肤各自记忆
@@ -255,8 +267,8 @@ export default function App() {
 
   useEffect(() => {
     document.body.classList.remove("theme-light", "theme-dark");
-    document.body.classList.add(theme === "dark" ? "theme-dark" : "theme-light");
-  }, [theme]);
+    document.body.classList.add(bodyTone === "dark" ? "theme-dark" : "theme-light");
+  }, [bodyTone]);
 
   // C-37：theme.mode = "system" 时跟随系统深浅色——mq change 重新解析并广播 theme/changed
   //（发**解析后的** "light"|"dark"，App/Reader/Dashboard 既有监听者零修改；报告 C-37 步骤 2/3）；
@@ -273,7 +285,7 @@ export default function App() {
         flushSync(() => {
           setTheme(resolved);
           document.body.classList.remove("theme-light", "theme-dark");
-          document.body.classList.add(resolved === "dark" ? "theme-dark" : "theme-light");
+          document.body.classList.add((readerToneRef.current ?? resolved) === "dark" ? "theme-dark" : "theme-light");
           eventBus.emit("theme/changed", resolved);
         });
       });
@@ -392,7 +404,7 @@ export default function App() {
         setThemeMode(m);
         setTheme(resolved);
         document.body.classList.remove("theme-light", "theme-dark");
-        document.body.classList.add(resolved === "dark" ? "theme-dark" : "theme-light");
+        document.body.classList.add((readerToneRef.current ?? resolved) === "dark" ? "theme-dark" : "theme-light");
         eventBus.emit("theme/changed", resolved);
       });
     });
@@ -773,7 +785,8 @@ export default function App() {
         sourceTitle={view.doc.title}
         sourceAuthor={view.doc.author ?? undefined}
         onBack={view.jumpAnchor ? () => changeView({ name: view.returnTo ?? "review" } as View) : backToShelf}
-        onSwitchAppTheme={handleThemeChange}
+        appTone={theme}
+        onToneOverride={setReaderTone}
         // 跳转进入（jumpAnchor 存在）时不传 onProgress：Reader 的滚动/卸载保存全部失效，
         // 阅读进度与阅读字数保持上次真实阅读的值（v19 现场查看语义）
         onProgress={view.jumpAnchor ? undefined : handleDocProgress}
@@ -865,7 +878,7 @@ export default function App() {
       {/* v49.0 / D170：皮肤引擎 v2 主窗口挂载点（SkinHost 唯一实现；独立窗口经 WindowSkin，D210）——CSS 注入/移除、body 类、背景/前景层、activate 生命周期 */}
       <SkinHost
         skinId={skinId}
-        mode={theme}
+        mode={bodyTone}
         motion={motion}
         onFail={() => void handleSkinChange(DEFAULT_SKIN_ID)}
       />
@@ -946,11 +959,22 @@ export default function App() {
       {importOpen && <ImportFilesModal onClose={() => setImportOpen(false)} />}
       {pasteOpen && (
         <PasteMaterialModal
-          onSave={async (title, markdown, lang) => {
-            const created = await libraryApi.createFromPaste(title, markdown);
-            // v38（D35）：粘贴书随建册带上语言属性（空=未知）
-            if (created && lang) await libraryApi.setItemLang(created.id, lang);
-            eventBus.emit("library/changed");
+          onSave={async (title, markdown, lang, destination) => {
+            // v49.125（D291 §3.4/§4）：目的地分叉——book 路径与今天逐字相同（createFromPaste），
+            // extract 走新写通道（父＝隐藏父锚「粘贴摘录」），事件口径各随其既有写法。
+            if (destination === "extract") {
+              const created = await libraryApi.createExtractFromPaste(title, markdown);
+              // 空正文：写通道返回 null（handler 同口径）。不静默成功——留在窗内如实报错。
+              if (!created) throw new Error(t("内容为空，未保存"));
+              eventBus.emit("workflow/changed");
+              showFlash(t("已存为摘录 · 明日（{date}）进复习队列", { date: dayLabel(created.topicNextAt) }));
+            } else {
+              const created = await libraryApi.createFromPaste(title, markdown);
+              // v38（D35）：粘贴书随建册带上语言属性（空=未知）
+              if (created && lang) await libraryApi.setItemLang(created.id, lang);
+              eventBus.emit("library/changed");
+              showFlash(t("已存入书架 · 只读，不参与推送"));
+            }
             // D120：成功关窗收口到 PasteMaterialModal 的 requestClose()（两步走出场），父级不再直接卸载
           }}
           onClose={() => setPasteOpen(false)}
@@ -972,6 +996,8 @@ export default function App() {
           />
         </Suspense>
       )}
+      {/* v49.125（D291 §12 D5）：粘贴保存成功提示（复用 .reader-toast，position:fixed 全局 Token） */}
+      {appToast && <div className="reader-toast" role="status">{appToast}</div>}
     </div>
   );
 }
