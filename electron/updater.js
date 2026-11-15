@@ -98,10 +98,20 @@ function emit(type, payload) {
   }
 }
 
+// v49.131 / D298：状态机真源＝state.state，必须先落状态再推送。
+// 原实现漏了 `state.state = next`（只有 info/progress/error 三行）——state 恒为 idle：
+//   · update:download 的 available 守卫永远不通过 → 设置页「下载更新」点了没反应；
+//   · update:status 快照恒 idle → 设置页置顶通知框（D206）与「发现新版本」行永不出现，
+//     自动检查即使查到新版本也静默（渲染层只靠 update:event 本地合并才能看见状态）。
+// 状态切换时清掉不再属于当前态的残留：progress 只在 downloading 有意义，error 只在 error 态有意义
+// （否则「先失败一次、再检查成功」会一直把旧错误显示成当前错误）。
 function setState(next, extra) {
+  state.state = next;
   if (extra && extra.info !== undefined) state.info = extra.info;
   if (extra && extra.progress !== undefined) state.progress = extra.progress;
   if (extra && extra.error !== undefined) state.error = extra.error;
+  if (next !== "downloading") state.progress = null;
+  if (next !== "error") state.error = null;
   emit(next, { type: next, info: state.info, progress: state.progress, error: state.error });
 }
 
