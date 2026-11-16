@@ -5,14 +5,14 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const SCHEMA_VERSION = 6; // 每新增一个 MIGRATIONS 项就 +1，并与最后一项的 version 相等
+const SCHEMA_VERSION = 7; // 每新增一个 MIGRATIONS 项就 +1，并与最后一项的 version 相等
 
 // C-18a（审计）：due 表达式——只在「JSON 合法且 $.due 是数值」时取出，其余一律为 NULL
 // （NULL = 交给 JS 精确判定，见 db.js 的 TODAY_QUEUE_DUE_SQL 快速路径）。
 // 建索引与查询必须引用**同一个常量字符串**，SQLite 才能把查询表达式匹配到索引。
 const DUE_EXPR = "(CASE WHEN json_valid(fsrs_json) AND json_type(fsrs_json, '$.due') IN ('integer','real') THEN json_extract(fsrs_json, '$.due') END)";
 
-/** 未来的迁移写在这里：{ version: 6, name: "…", up(db) { db.exec("…") } }（当前最后一项为 version 6）。禁止修改已发布的项。 */
+/** 未来的迁移写在这里：{ version: 6, name: "…", up(db) { db.exec("…") } }（当前最后一项为 version 7）。禁止修改已发布的项。 */
 const MIGRATIONS = [
   {
     version: 2,
@@ -125,6 +125,32 @@ const MIGRATIONS = [
         CREATE INDEX IF NOT EXISTS idx_assets_item_kind ON assets(library_item_id, kind);
         CREATE INDEX IF NOT EXISTS idx_card_issues_card ON card_issues(card_id);
         CREATE INDEX IF NOT EXISTS idx_reading_events_item_created ON reading_events(item_id, created_at);
+      `);
+    }
+  },
+  {
+    // v49.132 / D299：判断层留痕（src/lib/decisions）。不记正文——只记长度与 FNV-1a 指纹；
+    // override_json 由用户事后改判回填（将来校准判断阈值的免费标注）。LOCAL 表、保留最近 5000 条。
+    version: 7,
+    name: "decision_log",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS decision_log (
+          id TEXT PRIMARY KEY,
+          at INTEGER NOT NULL,
+          spec_id TEXT NOT NULL,
+          spec_version INTEGER NOT NULL,
+          backend TEXT NOT NULL,
+          fell_back INTEGER NOT NULL DEFAULT 0,
+          ms INTEGER NOT NULL DEFAULT 0,
+          input_len INTEGER NOT NULL DEFAULT 0,
+          input_hash TEXT NOT NULL,
+          answers_json TEXT NOT NULL,
+          action TEXT NOT NULL,
+          override_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_decision_log_spec_hash ON decision_log(spec_id, input_hash, at);
+        CREATE INDEX IF NOT EXISTS idx_decision_log_at ON decision_log(at);
       `);
     }
   }

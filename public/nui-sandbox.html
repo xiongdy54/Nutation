@@ -1,0 +1,39 @@
+<!doctype html>
+<!--
+  v49.132 / D299：AI 生成 HTML 的独立沙箱页（GUIDE §7.5）。
+  - 放在 public/：Vite 原样拷入 dist/，不经 cspPlugin 注入宿主 CSP；这里自带更严的 CSP——
+    零网络（default-src 'none'），只放行内联脚本 / 内联样式 / data: 图片与字体。
+  - 宿主以 <iframe sandbox="allow-scripts">（无 allow-same-origin）加载：opaque origin，拿不到宿主 DOM / Node / 存储 / IPC 桥。
+  - 内容经 postMessage 一次性下发 { nuiRender: { html, css } }，只认来自父窗口的第一条；document.open/write 后 CSP 随文档保留。
+  - 不要改成 srcdoc / blob:：二者继承宿主 CSP（script-src 'self'，无 unsafe-inline），打包版脚本不会执行。
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; base-uri 'none'; form-action 'none'"
+    />
+    <title>nui-sandbox</title>
+  </head>
+  <body>
+    <script>
+      (function () {
+        var done = false;
+        var RESIZE =
+          "<scr" + "ipt>(function(){function s(){parent.postMessage({nuiHeight:Math.ceil(document.body.getBoundingClientRect().bottom)},'*')}" +
+          "addEventListener('load',s);new ResizeObserver(s).observe(document.body);setTimeout(s,0);})();</scr" + "ipt>";
+        addEventListener("message", function (e) {
+          if (done || e.source !== parent) return;
+          var p = e.data && e.data.nuiRender;
+          if (!p || typeof p.html !== "string") return;
+          done = true;
+          var css = typeof p.css === "string" ? p.css.replace(/<\/?style/gi, "") : "";
+          document.open();
+          document.write("<!doctype html><html><head><meta charset='utf-8'><style>" + css + "</style></head><body>" + p.html + RESIZE + "</body></html>");
+          document.close();
+        });
+      })();
+    </script>
+  </body>
+</html>

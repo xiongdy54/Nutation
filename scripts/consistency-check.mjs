@@ -130,6 +130,7 @@ const TEXTAREA_WHITELIST = [
   "src/components/learner/SelfExplainDialog.tsx",
   "src/components/editor/OcclusionEditor.tsx",
   "src/components/AIPanel.tsx",
+  "src/components/genui/CardSuggestions.tsx", // v49.132 / D299 T-C1：AIPanel 草稿编辑区原样迁出（同一处登记，非新增编辑面）
   "src/components/AnswerJudgeModal.tsx",
   "src/components/editor/CardFields.tsx",
   "src/components/AnnotationEditor.tsx",

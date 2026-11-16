@@ -60,6 +60,7 @@ const {
   READER_EXPLAIN_STE_PROMPT_V1,
   READER_EXPLAIN_STE_PROMPT_V2,
   READER_EXPLAIN_STE_PROMPT_V3,
+  READER_EXPLAIN_STE_PROMPT_V4,
   // v48.74（D118）：通用解释模板 v2（追问四式）的 v1 原文冻结常量（READER_EXPLAIN_PROMPT 已在上方导入＝v2 现行文本）
   READER_EXPLAIN_PROMPT_V1,
   SITUATION_REQUIRED_SCOPES,
@@ -3331,6 +3332,17 @@ function ensurePromptTemplates() {
     if (Number(steMaxV4) < 4) {
       db.run(
         "INSERT INTO prompt_templates (id, scope, name, content, version, is_default, situation_required, created_at) VALUES (?, 'reader-explain-ste', '简明解读 v4', ?, 4, 1, ?, ?)",
+        [crypto.randomUUID(), READER_EXPLAIN_STE_PROMPT_V4, situationRequiredFor("reader-explain-ste"), now]
+      );
+    }
+  } catch { /* 播种失败不阻塞启动 */ }
+  // v49.134（D301）：reader-explain-ste v5——结构化 JSON 输出 + 程序切句 + 校验修复（v4 行改用冻结常量 READER_EXPLAIN_STE_PROMPT_V4）。
+  // 存量库按 MAX(version)<5 升版播种，v1-v4 留痕。
+  try {
+    const steMaxV5 = queryAll("SELECT MAX(version) AS v FROM prompt_templates WHERE scope = 'reader-explain-ste'")[0]?.v || 0;
+    if (Number(steMaxV5) < 5) {
+      db.run(
+        "INSERT INTO prompt_templates (id, scope, name, content, version, is_default, situation_required, created_at) VALUES (?, 'reader-explain-ste', '简明解读 v5', ?, 5, 1, ?, ?)",
         [crypto.randomUUID(), READER_EXPLAIN_STE_PROMPT, situationRequiredFor("reader-explain-ste"), now]
       );
     }
@@ -8858,7 +8870,92 @@ function bdiPull({ table, mode = "scan", cursor = 0, limit = 200, ids = [] } = {
   throw new Error(`bdiPull：非法 mode ${mode}`);
 }
 
+// ---------- v49.132 / D299：判断层留痕 decision_log（迁移 v7；LOCAL；不记正文） ----------
+const DECISION_LOG_CAP = 5000;
+const DECISION_BACKENDS = new Set(["local", "llm", "jev", "gemini-decision", "nutation-cloud"]);
+const DECISION_ACTIONS = new Set(["auto", "confirm", "fallback"]);
+const dlStr = (v, max) => String(v ?? "").slice(0, max);
+const dlInt = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.round(Number(v))) : 0);
+/** 答案只留 value/confidence/calibrated；value 限短串或数值或 box（防正文混入） */
+function dlAnswer(a) {
+  if (!a || typeof a !== "object") return null;
+  let v = a.value;
+  if (typeof v === "string") v = v.slice(0, 64);
+  else if (typeof v === "number") v = Number.isFinite(v) ? v : 0;
+  else if (v && typeof v === "object") v = { top: +v.top || 0, bottom: +v.bottom || 0, left: +v.left || 0, right: +v.right || 0 };
+  else return null;
+  const c = Number(a.confidence);
+  return { value: v, confidence: Number.isFinite(c) ? Math.min(1, Math.max(0, c)) : 0, calibrated: a.calibrated === true };
+}
+/** override 只允许 key → 基本类型短值 */
+function dlOverride(o) {
+  if (!o || typeof o !== "object") return null;
+  const out = {};
+  for (const [k, v] of Object.entries(o).slice(0, 16)) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(k)) continue;
+    if (typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v))) out[k] = v;
+    else if (typeof v === "string") out[k] = v.slice(0, 64);
+  }
+  return Object.keys(out).length ? out : null;
+}
+function appendDecisionLog(entry) {
+  if (!db || !entry || typeof entry !== "object") return { ok: false };
+  const answers = {};
+  for (const [k, a] of Object.entries(entry.answers && typeof entry.answers === "object" ? entry.answers : {}).slice(0, 32)) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(k)) continue;
+    const n = dlAnswer(a);
+    if (n) answers[k] = n;
+  }
+  const id = crypto.randomUUID();
+  db.run(
+    "INSERT INTO decision_log (id, at, spec_id, spec_version, backend, fell_back, ms, input_len, input_hash, answers_json, action, override_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [
+      id,
+      dlInt(entry.at) || Date.now(),
+      dlStr(entry.specId, 64),
+      dlInt(entry.specVersion),
+      DECISION_BACKENDS.has(entry.backend) ? entry.backend : "local",
+      entry.fellBack ? 1 : 0,
+      dlInt(entry.ms),
+      dlInt(entry.inputLen),
+      dlStr(entry.inputHash, 16),
+      JSON.stringify(answers),
+      DECISION_ACTIONS.has(entry.action) ? entry.action : "fallback",
+      null
+    ]
+  );
+  db.run(`DELETE FROM decision_log WHERE id NOT IN (SELECT id FROM decision_log ORDER BY at DESC, id DESC LIMIT ${DECISION_LOG_CAP})`);
+  persist();
+  return { ok: true, id };
+}
+function patchLastDecisionLog(specId, inputHash, override) {
+  if (!db) return { ok: false };
+  const o = dlOverride(override);
+  if (!o) return { ok: false };
+  const row = queryAll("SELECT id, override_json FROM decision_log WHERE spec_id = ? AND input_hash = ? ORDER BY at DESC, id DESC LIMIT 1", [dlStr(specId, 64), dlStr(inputHash, 16)])[0];
+  if (!row) return { ok: false };
+  let prev = {};
+  try { prev = JSON.parse(row.override_json || "{}") || {}; } catch { prev = {}; }
+  db.run("UPDATE decision_log SET override_json = ? WHERE id = ?", [JSON.stringify({ ...prev, ...o }), row.id]);
+  persist();
+  return { ok: true };
+}
+function listDecisionLog(limit = 200) {
+  if (!db) return [];
+  const n = Math.min(DECISION_LOG_CAP, Math.max(1, dlInt(limit) || 200));
+  return queryAll("SELECT * FROM decision_log ORDER BY at DESC, id DESC LIMIT ?", [n]).reverse().map((r) => {
+    let answers = {};
+    let override;
+    try { answers = JSON.parse(r.answers_json) || {}; } catch { answers = {}; }
+    try { override = r.override_json ? JSON.parse(r.override_json) : undefined; } catch { override = undefined; }
+    return { at: r.at, specId: r.spec_id, specVersion: r.spec_version, backend: r.backend, fellBack: !!r.fell_back, ms: r.ms, inputLen: r.input_len, inputHash: r.input_hash, answers, action: r.action, ...(override ? { override } : {}) };
+  });
+}
+
 module.exports = {
+  appendDecisionLog,
+  patchLastDecisionLog,
+  listDecisionLog,
   foldSearch,
   initDb,
   persistDb: persist,

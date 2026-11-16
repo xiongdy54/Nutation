@@ -62,6 +62,7 @@ import { computeSettingsNotices, latestSaneBackupAt, type SettingsNotice, type S
 // 审计 #12：平滑滚动必须同时尊重系统 prefers-reduced-motion 与应用内动效等级（body.motion-off）——
 // 显式 behavior:"smooth" 会压过 theme.css 的 scroll-behavior:auto !important，只判 matchMedia 不够。
 import { motionPreference } from "../lib/mindmap/v2/animate";
+import { useGenuiAutoCards } from "../lib/genuiSettings";
 
 // C-37：新增 "system"（跟随系统）——theme 存的是解析后的落窗档（accent 默认值按它取），
 // themeMode 是 theme.mode 原始档（按钮高亮按它；"system" 时浅/深两钮都不高亮）。
@@ -449,6 +450,30 @@ function LearnerBlock() {
       )}
       {tracksOpen && <TracksDialog onClose={() => setTracksOpen(false)} />}
     </>
+  );
+}
+
+// v49.132 / D299：生成式 UI——追问中自动识别制卡意图（app.genuiAutoCards；写侧归一在 main.js settings:set）
+function GenuiSettingsRow() {
+  const T = useT();
+  const [on, setOn] = useGenuiAutoCards();
+  return (
+    <div className="settings-row">
+      <span className="settings-row-label">
+        {T("追问中自动识别制卡意图")}
+        <SettingsInfo label={T("追问中自动识别制卡意图")}>
+          {T("自由追问里说「顺便帮我制卡」「帮我记住」时，回答结束后自动给出待勾选确认的制卡建议（不会直接入库）。明确的说法本地即可识别；语气含糊时会多一次 AI 判断。")}
+        </SettingsInfo>
+      </span>
+      <div className="seg-tabs seg-tabs-sm" role="group" aria-label={T("追问中自动识别制卡意图")}>
+        <button className={on ? "active" : ""} onClick={() => setOn(true)}>
+          {T("开启")}
+        </button>
+        <button className={!on ? "active" : ""} onClick={() => setOn(false)}>
+          {T("关闭")}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -976,6 +1001,7 @@ function AISection() {
       {(busy === "test" || busy === "models" || busy === "save") && <SkeletonBlock h={32} />}
       {notice && <p className={notice.ok ? "ai-test-ok" : "ai-test-fail"}>{notice.text}</p>}
 
+      <GenuiSettingsRow />
       <MindmapSettingsBlock models={models} />
     </SettingsSection>
   );

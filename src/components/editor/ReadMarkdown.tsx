@@ -16,6 +16,7 @@ import rehypeSanitize from "rehype-sanitize";
 import rehypeKatex from "rehype-katex";
 import { extractSanitizeSchema, remarkMark, remarkSoftBreaks } from "../../lib/editor/markdownOffsetMap";
 import MermaidDiagram from "./MermaidDiagram";
+import GenUIBlock from "../genui/GenUIBlock";
 
 const READ_REMARK_PLUGINS = [remarkGfm, remarkMath, remarkMark, remarkSoftBreaks];
 const READ_REHYPE_PLUGINS: PluggableList = [rehypeRaw, [rehypeSanitize, extractSanitizeSchema], rehypeKatex];
@@ -25,6 +26,10 @@ const READ_REHYPE_PLUGINS: PluggableList = [rehypeRaw, [rehypeSanitize, extractS
  * 其余 code/pre 一律走 react-markdown 默认路径（样式/行为零变化）。 */
 const isMermaidLang = (cls: unknown): boolean =>
   typeof cls === "string" && cls.trim().split(/\s+/).includes("language-mermaid");
+
+/** D299：```nui 围栏 → 生成式 UI 组件（GenUIBlock；解析失败显示源码）。拆壳规则同 mermaid */
+const isNuiLang = (cls: unknown): boolean =>
+  typeof cls === "string" && cls.trim().split(/\s+/).includes("language-nui");
 
 type HastLike = { type?: string; value?: unknown; children?: unknown };
 
@@ -55,13 +60,15 @@ function mermaidSource(node: unknown, children: ReactNode): string {
 const MD_COMPONENTS: Components = {
   code({ node, className, children }) {
     if (isMermaidLang(className)) return <MermaidDiagram code={mermaidSource(node, children)} />;
+    if (isNuiLang(className)) return <GenUIBlock source={mermaidSource(node, children)} />;
     return <code className={className}>{children}</code>;
   },
   pre({ children }) {
     // 拆壳条件：除首尾空白文本外只有一个 mermaid 代码元素（原始 HTML 的 <pre>\n<code …>…</code>\n</pre> 也算）
     const kids = Children.toArray(children).filter((k) => !(typeof k === "string" && k.trim() === ""));
     const only = kids.length === 1 ? kids[0] : null;
-    if (isValidElement(only) && isMermaidLang((only.props as { className?: string }).className)) {
+    const onlyCls = isValidElement(only) ? (only.props as { className?: string }).className : undefined;
+    if (isValidElement(only) && (isMermaidLang(onlyCls) || isNuiLang(onlyCls))) {
       return <>{only as ReactNode}</>;
     }
     return <pre>{children}</pre>;
