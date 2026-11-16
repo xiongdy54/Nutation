@@ -23,7 +23,7 @@
   "rewriteExample": [
     {
       "before": "系统在特定条件下可能会出现一定程度的性能波动。",
-      "after": "当并发用户超过 200 时，系统响应会变慢约 2 秒。（来源未说明该阈值的测定条件）"
+      "after": "在特定条件下，系统性能可能波动。来源未说明这些条件和波动幅度。"
     }
   ],
   "source": "docs/design/STE-PLAIN-DECODE-D91.md"

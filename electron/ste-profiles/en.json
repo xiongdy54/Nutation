@@ -4,9 +4,9 @@
   "derivedFrom": ["ISO 24495-1:2023", "ASD-STE100 Issue 9 (structure reference only; all rule wording originally written)"],
   "licenseNote": "original-wording: every rule sentence in this file is originally written; no copyrighted specification text or its word lists is reproduced",
   "sentence": {
-    "maxWords": 20,
+    "maxWords": 18,
     "maxSentencesPerParagraph": 6,
-    "note": "One instruction per sentence; one topic per paragraph (with a conclusion first); split sentences longer than about 20 words; keep relative clauses to at most one per sentence"
+    "note": "One instruction per sentence; one topic per paragraph (with a conclusion first); split sentences longer than 18 words; keep relative clauses to at most one per sentence"
   },
   "voice": {
     "preferActive": true,

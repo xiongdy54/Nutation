@@ -1,0 +1,377 @@
+/* v49.132 / D299：生成式 UI 组件样式——瑞士风（docs/swiss-international-style.md）。
+   原则：发丝线分隔而非盒子堆叠；直角（--radius 交给皮肤）；等宽小标签承载元信息；
+   强调色只用于数据系列与当前态；颜色 / 间距 / 字号 / 动效全部取主题 Token（皮肤与明暗自动适配；
+   字面量只出现在 var() 回落位，consistency 规则 9）。动效随 body.motion-off 全局关闭。 */
+
+/* ---------- 外壳 ---------- */
+.nui {
+  margin: var(--sp-4) 0;
+  border: var(--bw-hairline) solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+.nui-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: var(--bw-hairline) solid var(--border-subtle);
+}
+.nui-kind {
+  flex: none;
+  font-size: var(--fs-meta);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-helper);
+}
+.nui-title {
+  min-width: 0;
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.nui-body { padding: var(--sp-3); }
+.nui-note { font-size: var(--fs-meta); color: var(--text-helper); }
+
+/* 紧凑（卡面 / 复习 / 浏览等非 AI 面板展示面）：无框无工具条，只留视图，融入正文 */
+.nui-compact { border: 0; background: transparent; margin: var(--sp-3) 0; }
+.nui-compact .nui-head { padding: 0 0 var(--sp-1); border-bottom: 0; }
+.nui-compact .nui-body { padding: 0; }
+
+/* ---------- 工具条 ---------- */
+.nui-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border-top: var(--bw-hairline) solid var(--border-subtle);
+}
+.nui-toolbar-gap { flex: 1; }
+.nui-tool {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--dur-hover) var(--ease-theme), background-color var(--dur-hover) var(--ease-theme);
+}
+.nui-tool:hover { color: var(--text-primary); background: var(--accent-soft); }
+.nui-tool:focus-visible { outline: var(--bw-hairline) solid var(--accent); outline-offset: -1px; }
+.nui-tool-primary { color: var(--accent); font-weight: 600; }
+.nui-tool-primary:hover { color: var(--accent-hover); }
+
+/* ---------- 无效 / 生成中 ---------- */
+.nui-invalid { padding: var(--sp-2) var(--sp-3); border-style: dashed; }
+.nui-invalid pre { margin: var(--sp-2) 0 0; max-height: 200px; overflow: auto; font-size: var(--fs-meta); }
+
+/* ---------- 色板（数据系列 6 色循环；首色＝主题强调色） ---------- */
+.nui-c0 { color: var(--accent); }
+.nui-c1 { color: var(--chart-2, var(--accent)); }
+.nui-c2 { color: var(--chart-3, var(--accent)); }
+.nui-c3 { color: var(--chart-4, var(--accent)); }
+.nui-c4 { color: var(--chart-5, var(--accent)); }
+.nui-c5 { color: var(--chart-6, var(--accent)); }
+.nui-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-inline-end: var(--sp-2);
+  background: currentColor;
+  vertical-align: 0.05em;
+}
+
+/* ---------- 公式 ---------- */
+.nui-tex-display { display: block; overflow-x: auto; overflow-y: hidden; padding: var(--sp-1) 0; }
+.nui-tex-display .katex-display { margin: 0; }
+.nui-vars {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--sp-1) var(--sp-4);
+  margin: var(--sp-3) 0 0;
+  padding-top: var(--sp-2);
+  border-top: var(--bw-hairline) solid var(--border-subtle);
+  font-size: var(--fs-secondary);
+}
+.nui-var { display: flex; gap: var(--sp-2); align-items: baseline; }
+.nui-var dt { flex: none; min-width: 2em; font-weight: 600; }
+.nui-var dd { margin: 0; color: var(--text-secondary); }
+
+/* ---------- 对比表 ---------- */
+.nui-scroll { overflow-x: auto; }
+.nui .nui-table { border-collapse: collapse; width: 100%; font-size: var(--fs-secondary); margin: 0; }
+.nui .nui-table th,
+.nui .nui-table td {
+  border: 0;
+  border-bottom: var(--bw-hairline) solid var(--border-subtle);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) 0;
+  text-align: start;
+  vertical-align: top;
+  background: transparent;
+}
+.nui .nui-table thead th {
+  border-bottom-color: var(--border-strong);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.nui .nui-table tbody th {
+  font-weight: 500;
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.nui .nui-table tbody tr:last-child > * { border-bottom: 0; }
+.nui-table-corner { width: 1%; }
+
+/* ---------- 图表 ---------- */
+.nui-chart { display: block; width: 100%; height: auto; }
+.nui-grid { stroke: var(--border-subtle); stroke-width: 1; }
+.nui-baseline { stroke: var(--border-strong); stroke-width: 1; }
+.nui-axis { fill: var(--text-helper); font-family: var(--font-mono); font-size: 11px; }
+.nui-fill { fill: currentColor; }
+.nui-stroke { stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.nui-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-4);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+}
+.nui-legend-item { display: inline-flex; align-items: baseline; }
+.nui-legend-unit { color: var(--text-helper); }
+.nui-legend-note { flex-basis: 100%; color: var(--text-helper); }
+
+/* ---------- 步骤 / 时间线 ---------- */
+.nui-steps,
+.nui-timeline { list-style: none; margin: 0; padding: 0; }
+.nui-steps li {
+  display: grid;
+  grid-template-columns: 2.5em 1fr;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+  border-top: var(--bw-hairline) solid var(--border-subtle);
+}
+.nui-steps li:first-child { border-top: 0; padding-top: 0; }
+.nui-steps li:last-child { padding-bottom: 0; }
+.nui-step-no { font-size: var(--fs-meta); color: var(--accent); padding-top: 0.15em; }
+.nui-step-title { font-weight: 600; font-size: var(--fs-body); }
+.nui-step-detail { margin-top: 2px; font-size: var(--fs-secondary); color: var(--text-secondary); line-height: var(--lh-prose); }
+
+.nui-timeline li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 5.5em 9px 1fr;
+  gap: var(--sp-3);
+  padding-bottom: var(--sp-3);
+}
+.nui-timeline li:last-child { padding-bottom: 0; }
+.nui-timeline li::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: calc(5.5em + var(--sp-3) + 4px);
+  top: 0.9em;
+  bottom: 0;
+  border-inline-start: var(--bw-hairline) solid var(--border-subtle);
+}
+.nui-timeline li:last-child::before { display: none; }
+.nui-time {
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  text-align: end;
+  padding-top: 0.2em;
+  overflow-wrap: anywhere;
+}
+.nui-tick { width: 9px; height: 9px; margin-top: 0.45em; background: var(--surface-card); border: 2px solid var(--accent); box-sizing: border-box; position: relative; }
+
+/* ---------- 层级 ---------- */
+.nui-tree,
+.nui-tree-children { list-style: none; margin: 0; padding: 0; }
+.nui-tree-children { margin-inline-start: var(--sp-2); padding-inline-start: var(--sp-4); border-inline-start: var(--bw-hairline) solid var(--border-subtle); }
+.nui-tree-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); padding: var(--sp-1) 0; }
+.nui-tree-d0 > .nui-tree-label { font-weight: 600; font-size: var(--fs-body); }
+.nui-tree-d1 > .nui-tree-label { font-weight: 500; }
+.nui-tree-d1 > .nui-tree-label::before,
+.nui-tree-d2 > .nui-tree-label::before {
+  content: "";
+  flex: none;
+  width: var(--sp-2);
+  margin-inline-start: calc(-1 * var(--sp-4));
+  margin-inline-end: var(--sp-2);
+  align-self: center;
+  border-top: var(--bw-hairline) solid var(--border-subtle);
+}
+.nui-tree-note { font-size: var(--fs-secondary); color: var(--text-secondary); font-weight: 400; }
+
+/* ---------- 自测 ---------- */
+.nui-quiz-q { margin: 0 0 var(--sp-3); font-weight: 600; line-height: var(--lh-prose); }
+.nui-quiz-opts { display: flex; flex-direction: column; gap: var(--sp-1); }
+.nui-quiz-opt {
+  appearance: none;
+  display: grid;
+  grid-template-columns: 1.75em 1fr;
+  align-items: baseline;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: var(--bw-hairline) solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: border-color var(--dur-hover) var(--ease-theme), background-color var(--dur-hover) var(--ease-theme), color var(--dur-hover) var(--ease-theme);
+}
+.nui-quiz-opt:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.nui-quiz-opt:focus-visible { outline: var(--bw-hairline) solid var(--accent); outline-offset: 1px; }
+.nui-quiz-opt:disabled { cursor: default; }
+.nui-quiz-letter { font-size: var(--fs-meta); color: var(--text-helper); }
+.nui-quiz-opt.is-correct { border-color: var(--success); background: color-mix(in srgb, var(--success) 10%, transparent); }
+.nui-quiz-opt.is-correct .nui-quiz-letter { color: var(--success); }
+.nui-quiz-opt.is-wrong { border-color: var(--error); background: var(--error-soft); }
+.nui-quiz-opt.is-wrong .nui-quiz-letter { color: var(--error); }
+.nui-quiz-opt.is-muted { color: var(--text-helper); }
+.nui-quiz-result { margin-top: var(--sp-3); padding-top: var(--sp-2); border-top: var(--bw-hairline) solid var(--border-subtle); }
+.nui-quiz-verdict { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); font-weight: 600; font-size: var(--fs-secondary); }
+.nui-quiz-result.is-correct .nui-quiz-verdict > span { color: var(--success); }
+.nui-quiz-result.is-wrong .nui-quiz-verdict > span { color: var(--error); }
+.nui-quiz-explain { margin: var(--sp-2) 0 0; font-size: var(--fs-secondary); color: var(--text-secondary); line-height: var(--lh-prose); }
+
+/* ---------- HTML 沙箱 ---------- */
+.nui-html-gate { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.nui-iframe { display: block; width: 100%; border: 0; background: transparent; }
+
+/* ---------- 制卡面板等展示面里的流程图 / 在 AI 回答排版内的间距修正 ---------- */
+.ai-answer .nui:first-child { margin-top: 0; }
+.ai-answer .nui:last-child { margin-bottom: 0; }
+
+/* ---------- 第三轮组件：共用小标签 ---------- */
+.nui-chip {
+  flex: none;
+  align-self: baseline;
+  padding: 0 var(--sp-2);
+  border: var(--bw-hairline) solid var(--border-subtle);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.7;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.nui-chip-ok { border-color: var(--success); color: var(--success); }
+.nui-chip-warn { border-color: var(--warning); color: var(--warning); }
+
+/* ---------- 发音 ---------- */
+.nui-pron,
+.nui-ex,
+.nui-bd,
+.nui-scale { list-style: none; margin: 0; padding: 0; }
+.nui-pron-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--sp-3);
+  align-items: start;
+  padding: var(--sp-2) 0;
+  border-top: var(--bw-hairline) solid var(--border-subtle);
+}
+.nui-pron-item:first-child { border-top: 0; padding-top: 0; }
+.nui-pron-item:last-child { padding-bottom: 0; }
+.nui-pron-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: var(--bw-hairline) solid var(--border-strong);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background-color var(--dur-hover) var(--ease-theme), border-color var(--dur-hover) var(--ease-theme);
+}
+.nui-pron-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+.nui-pron-btn:focus-visible { outline: var(--bw-hairline) solid var(--accent); outline-offset: 1px; }
+.nui-pron-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-3); }
+.nui-pron-word { font-size: var(--fs-title-s); font-weight: 600; line-height: 1.4; }
+.nui-pron-ipa { font-size: var(--fs-secondary); color: var(--text-secondary); }
+
+/* ---------- 术语 ---------- */
+.nui-gloss { margin: 0; }
+.nui-gloss-row {
+  display: grid;
+  grid-template-columns: minmax(6em, 30%) 1fr;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-top: var(--bw-hairline) solid var(--border-subtle);
+}
+.nui-gloss-row:first-child { border-top: 0; padding-top: 0; }
+.nui-gloss-row:last-child { padding-bottom: 0; }
+.nui-gloss dt { font-weight: 600; overflow-wrap: anywhere; }
+.nui-gloss-alias { display: block; font-weight: 400; font-size: var(--fs-meta); color: var(--text-helper); }
+.nui-gloss dd { margin: 0; font-size: var(--fs-secondary); color: var(--text-secondary); line-height: var(--lh-prose); }
+
+/* ---------- 类比 ---------- */
+.nui-ana-row {
+  display: grid;
+  grid-template-columns: 1fr 1.5em 1fr;
+  gap: var(--sp-2);
+  align-items: baseline;
+  padding: var(--sp-2) 0;
+  border-bottom: var(--bw-hairline) solid var(--border-subtle);
+  font-size: var(--fs-secondary);
+}
+.nui-ana-row:last-child { border-bottom: 0; }
+.nui-ana-head { border-bottom-color: var(--border-strong); font-weight: 600; font-size: var(--fs-body); padding-top: 0; }
+.nui-ana-head > span:last-child { color: var(--accent); }
+.nui-ana-arrow { color: var(--text-helper); text-align: center; }
+.nui-ana-limit { display: flex; gap: var(--sp-2); align-items: baseline; margin: var(--sp-3) 0 0; font-size: var(--fs-secondary); color: var(--text-secondary); line-height: var(--lh-prose); }
+
+/* ---------- 量级（对数标尺） ---------- */
+.nui-scale-row {
+  display: grid;
+  grid-template-columns: minmax(4em, 26%) 1fr auto;
+  gap: var(--sp-1) var(--sp-3);
+  align-items: center;
+  padding: var(--sp-1) 0;
+  font-size: var(--fs-secondary);
+}
+.nui-scale-label { font-weight: 500; overflow-wrap: anywhere; }
+.nui-scale-track { position: relative; height: 1px; background: var(--border-subtle); }
+.nui-scale-fill { position: absolute; inset-inline-start: 0; top: -1px; height: 3px; min-width: 3px; background: var(--accent); }
+.nui-scale-fill::after { content: ""; position: absolute; inset-inline-end: -4px; top: -3px; width: 9px; height: 9px; background: var(--accent); }
+.nui-scale-value { font-size: var(--fs-secondary); font-variant-numeric: tabular-nums; color: var(--text-primary); white-space: nowrap; }
+.nui-scale-note { grid-column: 2 / -1; font-size: var(--fs-meta); color: var(--text-helper); }
+
+/* ---------- 例子 / 句子拆解 ---------- */
+.nui-ex-item,
+.nui-bd-part {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: baseline;
+  padding: var(--sp-2) 0;
+  border-top: var(--bw-hairline) solid var(--border-subtle);
+  font-size: var(--fs-secondary);
+}
+.nui-ex-item:first-child { border-top: 0; padding-top: 0; }
+.nui-ex-item:last-child,
+.nui-bd-part:last-child { padding-bottom: 0; }
+.nui .nui-bd-sentence {
+  margin: 0 0 var(--sp-2);
+  padding: 0 0 0 var(--sp-3);
+  border: 0;
+  border-inline-start: 2px solid var(--accent);
+  background: transparent;
+  color: var(--text-primary);
+  line-height: var(--lh-prose);
+}
+.nui-bd .nui-chip { min-width: 3.5em; text-align: center; }

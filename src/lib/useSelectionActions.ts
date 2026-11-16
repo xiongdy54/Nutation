@@ -42,6 +42,10 @@ import { useTagsEnabled } from "./tagSettings";
 import { learnerApi, learnerSettings } from "./learner";
 import { routeExplainMode, type ExplainModePref } from "./explainRouter";
 import type { ExtractSpan } from "./readingWorkflow";
+import { decide, recordDecisionOverride, CARD_INTENT_SPEC, PRESENTATION_SPEC, presentationKinds, yes } from "./decisions";
+import { flattenNuiFences } from "./genui/spec";
+import type { PresentationPlan } from "./genui/prompt";
+import { readGenuiAutoCards } from "./genuiSettings";
 
 /**
  * 图片区域选区的提交载荷（百分比坐标，与 occlusion_json 同口径）。
@@ -216,6 +220,8 @@ export interface AiPanelState {
 export interface AskThreadItem {
   id: number;
   q: string;
+  /** D300：本轮模型实际看到的材料（选文 + 承接的前文问答），供组件落地校验；归档条目无此字段（q 即原文） */
+  src?: string;
   answer?: string;
   running: boolean;
   startedAt?: number;
@@ -224,6 +230,15 @@ export interface AskThreadItem {
 }
 
 export type SelectionActions = ReturnType<typeof useSelectionActions>;
+
+/** D299：材料类型下拉值 → material-type 判断的选项键（auto 不是改判） */
+const MODE_TO_MATERIAL: Partial<Record<CardGenMode, string>> = {
+  "card-generation": "concept",
+  "card-formula": "formula",
+  "card-seq": "sequence",
+  "card-enum": "enumeration",
+  "card-literature": "literature"
+};
 
 export function useSelectionActions(adapter: SelectionActionsAdapter) {
   const { showToast, sourceTextRef, occlusionSourceRef } = adapter;
@@ -766,7 +781,10 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
   // v48（M15，D41-⑥）：opts.focus = 导图结构摘要（注入既有【本次制卡重点】槽，≤1200 字）；
   // opts.mindmapNodeId = 来源导图节点（卡片 context_ref 溯源 + act:mindmap-<nodeId> 同源兄弟键）。
   // 提示词与规则完全沿用既有管线（材料类型路由/确认面板/CardLint/S1/KP 归一），不另起炉灶。
-  async function runAICards(text: string, webContext?: string, mode: CardGenMode = "auto", opts?: { focus?: string; mindmapNodeId?: string }) {
+  async function runAICards(rawText: string, webContext?: string, mode: CardGenMode = "auto", opts?: { focus?: string; mindmapNodeId?: string }) {
+    // D299：材料里的 ```nui 组件 JSON 先展平为 Markdown（表格/公式/列表），不把组件源码喂给制卡模型
+    const text = flattenNuiFences(rawText);
+    autoCardsAskRef.current = null; // 新一轮制卡默认非「追问自动触发」（runAsk 调用后再标记）
     // 材料类型识别：auto 时由 AI 判型（词汇/诗词本地信号精确则直采；失败回落本地规则），类型可手动覆盖
     let resolved: CardGenMode = mode;
     let shownRoute: MaterialRoute = mode === "auto"
@@ -1068,6 +1086,8 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
 
   // ---------- D123：AI 解释页自由追问（线程独立于 aiPanel） ----------
   const askSeqRef = useRef(0);
+  /** D299：最近一次「追问自动制卡」的追问原文（整批拒绝时回填 card-intent 改判；非自动触发为 null） */
+  const autoCardsAskRef = useRef<string | null>(null);
   const threadRef = useRef<AskThreadItem[]>([]);
   threadRef.current = thread;
   function patchThread(id: number, patch: Partial<AskThreadItem>) {
@@ -1088,16 +1108,29 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
     const fullQ = hist ? `（此前对话，供承接上文）\n${hist}\n\n现在的问题：${q}` : q;
     wakeDock();
     setExplainOpen(true); // D144 §4.3：追问发送（composer/chips）→ 解释板块自动展开
-    setThread((t) => [...t, { id, q, answer: "", running: true, startedAt: Date.now(), thinking: 0 }]);
+    setThread((t) => [...t, { id, q, src: [ctxText, hist].filter(Boolean).join("\n\n"), answer: "", running: true, startedAt: Date.now(), thinking: 0 }]);
     try {
+      // D299：制卡意图与呈现组件并行判断（意图仅弱信号时才多一次 LLM 判断；呈现恒本地）
+      // 开关 app.genuiAutoCards（默认开）关闭时整段跳过——不判断、不多一次 LLM 调用
+      const plan = await pickPresentation(ctxText, q);
+      const intentP = readGenuiAutoCards().then((on) => (on ? decide(CARD_INTENT_SPEC, { text: q }) : null)).catch(() => null);
       const answer = await cardGenerator.explain(
         ctxText,
         `${A().labels.title ?? ""}${A().labels.section ? " · " + A().labels.section : ""}`,
         fullQ,
         (acc) => patchThread(id, { answer: acc }),
-        (thinkChars) => patchThread(id, { thinking: thinkChars })
+        (thinkChars) => patchThread(id, { thinking: thinkChars }),
+        { presentation: plan }
       );
       patchThread(id, { running: false, answer, startedAt: undefined, thinking: undefined });
+      // D299：「顺便帮我制卡」——高置信自动走 AI 制卡（产出仍是待勾选确认的制卡建议，不直接入库）
+      const intent = await intentP;
+      // 轮次守卫：判断最长要等一次 LLM 往返，期间用户可能已发下一条追问 / 归档了解释——只认最新一轮
+      if (id === askSeqRef.current && intent && intent.action === "auto" && yes(intent.answers.wants_cards)) {
+        const material = [ctxText, flattenNuiFences(answer)].filter(Boolean).join("\n\n");
+        void runAICards(material, undefined, "auto", { focus: "只对讲解中最值得长期记忆的内容制卡（宁少勿滥）" });
+        autoCardsAskRef.current = q; // runAICards 同步段已复位该标记，此处再标为「自动触发」
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       patchThread(id, {
@@ -1227,6 +1260,11 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
   }
 
   async function rejectAllDrafts() {
+    // D299 改判回填：追问自动触发的制卡建议被整批拒绝＝该次「制卡意图」判断有误（只回填日志，不改行为）
+    if (autoCardsAskRef.current) {
+      recordDecisionOverride("card-intent", autoCardsAskRef.current, { wants_cards: false });
+      autoCardsAskRef.current = null;
+    }
     if (aiPanel?.batchId) await cardsApi.setBatchStatus(aiPanel.batchId, "rejected");
     setAiPanel(null);
   }
@@ -1238,12 +1276,25 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
    * 流数据按 requestId 配对不串扰；v48.74（D118 §3③）起面板写路径另有轮次序号守卫——requestId 只保证
    * 流数据不混线，不防旧流终态覆盖新面板）；材料语言取书籍语言标记（缺省时由模型自检并在标记中报告）。
    */
+  // D299：解释回答的呈现计划（判断层；当前本地规则、零网络）。本地选中的组件给完整示例并标为优先；
+  // 组件目录始终附上、由模型逐条对照触发条件（多几百 token、零额外请求）；判断失败 → 只附目录
+  async function pickPresentation(text: string, question: string, ste = false): Promise<PresentationPlan> {
+    try {
+      const res = await decide(PRESENTATION_SPEC, { text: text.slice(0, 4000), fields: { question } }, { localOnly: true });
+      return { kinds: presentationKinds(res.answers, text, question, ste), catalog: true };
+    } catch {
+      return { kinds: [], catalog: true };
+    }
+  }
+
   async function runExplain(text: string, question: string | null, modeOverride?: ExplainModePref) {
     const pref: ExplainModePref = modeOverride ?? explainModeRef.current;
     const ste = pref === "auto" ? routeExplainMode(text) === "ste" : pref === "ste";
     // v48.74（D118 §3③）：新一轮开始——取消旧流；此后仅本轮 seq 的回调/终态可写面板
     const seq = beginAIRun();
     setThread([]); // D123：新一轮解释＝新语境，旧追问线程退场
+    // D299 第三轮：简明解读同样带组件（初衷是帮助理解）；判断过程不在界面展示（留痕在 decision_log）
+    const plan = await pickPresentation(text, question ?? "", ste);
     setAiPanel({
       kind: "explain",
       text,
@@ -1267,7 +1318,7 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
           if (seq !== aiRunSeq.current) return;
           setAiPanel((p) => (p && p.kind === "explain" ? { ...p, thinking: thinkChars } : p));
         },
-        ste ? { mode: "ste", matLang: bookLangRef.current || "" } : undefined,
+        ste ? { mode: "ste", matLang: bookLangRef.current || "", presentation: plan } : { presentation: plan },
         registerAICancel(seq)
       );
       if (seq !== aiRunSeq.current) return;
@@ -1669,6 +1720,9 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
   }, [materialKey]);
   function changeAiMode(m: CardGenMode) {
     setAiMode(m);
+    // D299 改判回填：AI 制卡页手动改材料类型＝对 material-type 判断的纠正（指纹对回同一份材料；只回填日志）
+    const corrected = MODE_TO_MATERIAL[m];
+    if (corrected && aiPanel?.kind === "cards" && aiPanel.text) recordDecisionOverride("material-type", aiPanel.text, { material_type: corrected });
     if (materialKey) {
       void import("./settings").then(async ({ settingsStore }) => {
         const map = await settingsStore.get<Record<string, CardGenMode>>("app", "materialTypes", {});

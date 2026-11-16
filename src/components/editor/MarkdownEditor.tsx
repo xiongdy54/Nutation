@@ -15,7 +15,8 @@ import {
   editorViewOptionsCtx,
   rootCtx,
   schemaCtx,
-  commandsCtx
+  commandsCtx,
+  parserCtx
 } from "@milkdown/kit/core";
 import {
   commonmark,
@@ -37,6 +38,9 @@ import { history, redoCommand, undoCommand } from "@milkdown/kit/plugin/history"
 import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
 import { $command, $markSchema, $nodeSchema, $prose, $remark, getMarkdown } from "@milkdown/kit/utils";
 import { NodeSelection, Plugin, TextSelection } from "@milkdown/kit/prose/state";
+import { Slice } from "@milkdown/kit/prose/model";
+import { decodeNuiHtml } from "../../lib/genui/clipboard";
+import { blockToMarkdown } from "../../lib/genui/spec";
 import katex from "katex";
 import remarkMath from "remark-math";
 import { placePopover, type PopoverRect } from "../../lib/popoverPlace";
@@ -243,6 +247,25 @@ export function createExtractEditor(
         }
       })
   );
+  /** v49.132 / D299（T-G5）：生成式 UI 组件无损粘贴——剪贴板 HTML 带 data-nui 时按等价 Markdown 插入（表格→GFM 表、
+   *  公式→math 节点、步骤/层级→列表），不走 HTML 解析（KaTeX 的 HTML 会被拆成乱字）。其余粘贴原样交回默认处理。 */
+  const nuiPaste = $prose(
+    (ctx) =>
+      new Plugin({
+        props: {
+          handlePaste: (view, event) => {
+            const html = event.clipboardData?.getData("text/html") ?? "";
+            if (!html.includes("data-nui")) return false;
+            const block = decodeNuiHtml(html);
+            if (!block) return false;
+            const doc = ctx.get(parserCtx)(blockToMarkdown(block));
+            if (!doc || typeof doc === "string") return false;
+            view.dispatch(view.state.tr.replaceSelection(new Slice(doc.content, 0, 0)).scrollIntoView());
+            return true;
+          }
+        }
+      })
+  );
   return Editor.make()
     .config((ctx) => {
       ctx.set(rootCtx, root);
@@ -265,6 +288,7 @@ export function createExtractEditor(
     .use(insertMermaidBlockCommand)
     .use(setTaskCheckedCommand)
     .use(dirtyProbe)
+    .use(nuiPaste)
     .use(history)
     .use(listener);
 }

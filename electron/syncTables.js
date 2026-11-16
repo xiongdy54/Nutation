@@ -25,6 +25,7 @@ const LOCAL = [
   "prompt_templates",                         // 每台设备启动时按代码播种（随机 id），同步会重复
   "app_meta",                                 // C-10 新增；其中 fsrsConfigId 将来按"资料库设置"同步，见附录 B
   "sync_tombstones",                          // 本项新增
+  "decision_log",                             // v49.132 / D299 判断层留痕（不记正文；本机校准用，永不同步）
 ];
 /** 只在本机有意义的列：将来同步时不传输，由接收方重新分配 */
 const LOCAL_COLUMNS = { review_logs: ["review_seq"] };

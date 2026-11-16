@@ -43,6 +43,13 @@ contextBridge.exposeInMainWorld("logsAPI", {
   report: (payload) => ipcRenderer.send("logs:rendererError", payload)
 });
 
+// v49.132（D299）：判断层留痕（decision_log；渲染层 src/lib/decisions/index.ts 的 SQLite sink）
+contextBridge.exposeInMainWorld("decisionsAPI", {
+  append: (entry) => ipcRenderer.invoke("decisions:append", entry),
+  patchLast: (specId, inputHash, override) => ipcRenderer.invoke("decisions:patchLast", specId, inputHash, override),
+  list: (limit) => ipcRenderer.invoke("decisions:list", limit)
+});
+
 // v49.6（D180）：软件更新——状态快照 / 手动检查 / 确认后下载 / 重启安装 + 事件推送订阅
 contextBridge.exposeInMainWorld("updateAPI", {
   status: () => ipcRenderer.invoke("update:status"),

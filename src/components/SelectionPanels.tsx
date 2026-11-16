@@ -22,6 +22,7 @@ import { DockTrioMenu } from "./DockTrioMenu";
 import type { PopoverRect } from "../lib/popoverPlace";
 import { isImeComposing } from "../lib/ime";
 import { DictPanel } from "./DictPanel";
+import { GenUIActionsContext, type GenUIActions } from "./genui/GenUIContext";
 import { useT } from "../lib/i18n";
 import OcclusionEditor from "./editor/OcclusionEditor";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -504,7 +505,13 @@ export default function SelectionPanels({
     closeTrio();
   };
 
+  // D299：生成式 UI 组件动作（AI 解释/追问里的 ```nui 组件「就此制卡」「插入制卡面板」）
+  const genuiActions: GenUIActions = {
+    makeCards: (md) => void sel.runAICards(md, undefined, "auto"),
+    insertToCard: (md) => sel.startManualWith(md)
+  };
   return (
+    <GenUIActionsContext.Provider value={genuiActions}>
     <>
       {dictPanel && (
         <DictPanel
@@ -653,5 +660,6 @@ export default function SelectionPanels({
         <DisambiguateModal card={disamb.card} presetOther={disamb.other} origin="manual" onClose={() => setDisamb(null)} />
       )}
     </>
+    </GenUIActionsContext.Provider>
   );
 }

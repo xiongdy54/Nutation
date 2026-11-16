@@ -217,6 +217,7 @@ const COUNT_ONLY = {
     "library:updateProgress", "reading:event", "dict:cacheSet",
   ],
   "流式 AI 通道（owner=渲染层 ai.invoked）": ["ai:chat", "ai:abort"],
+  "判断层留痕（v49.132 / D299：decision_log 本身即本机日志，不再派生行为事件）": ["decisions:append", "decisions:patchLast", "decisions:list"],
   "配置 / 凭证 / 模型探测（只记设置变更走 settings:changed）": [
     "ai:getConfig", "ai:setConfig", "ai:test", "ai:listModels", "ai:detectLocal",
     "plugins:setActive", "plugins:openFolder", "plugins:rescan",

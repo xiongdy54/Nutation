@@ -327,6 +327,8 @@ ipcMain.handle("settings:set", (_e, scope, key, value) => {
   // 与渲染层读侧（src/lib/cardFaceExtras.ts normalizeCardFaceExtras）同规
   // v48.63（D107，§7.4）：标签功能总开关写侧归一——仅严格 false 为关，其余（含缺失/非法）回落开
   if (scope === "app" && key === "tagsEnabled") value = value !== false;
+  // v49.132 / D299：追问中自动识别制卡意图（默认开，仅严格 false 为关；与 src/lib/genuiSettings.ts 读侧同规）
+  if (scope === "app" && key === "genuiAutoCards") value = value !== false;
   if (scope === "app" && key === "cardFaceExtras") {
     const src = value && typeof value === "object" && !Array.isArray(value) ? value : {};
     value = {
@@ -1634,6 +1636,11 @@ async function extractPdfPagesForLearner(itemId) {
   }
 }
 learnerRefresh.init({ extractPdfPages: extractPdfPagesForLearner });
+
+// v49.132 / D299：判断层留痕（decision_log，LOCAL，不记正文；db.js 逐字段归一）
+ipcMain.handle("decisions:append", (_e, entry) => dbModule.appendDecisionLog(entry));
+ipcMain.handle("decisions:patchLast", (_e, specId, inputHash, override) => dbModule.patchLastDecisionLog(specId, inputHash, override));
+ipcMain.handle("decisions:list", (_e, limit) => dbModule.listDecisionLog(limit));
 
 ipcMain.handle("learner:status", () => {
   if (!learnerRefresh.learnerEnabled()) return { enabled: false };

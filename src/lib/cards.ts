@@ -1,5 +1,5 @@
 // CardGeneratorProvider（文档§3.17）+ Cloze 解析 + CardLintEngine（§3.18/§8.4）
-import { aiGateway } from "./ai";
+import { aiGateway, type ChatMessage } from "./ai";
 import { formatRelatedCardLine, needsAttribution, normalizeQualifier, type CardQualifier } from "./disambiguateText";
 // v48.77（D121）：纯函数集中在零依赖文件，便于 node 单测；此处再导出供渲染层统一从 cards 取
 export { formatRelatedCardLine, needsAttribution, normalizeQualifier } from "./disambiguateText";
@@ -13,8 +13,13 @@ import { settingsStore } from "./settings";
 import { getLocale } from "./i18n";
 // v48.51（D91）：简明解读的 CLP pack 注入（回退链 + 格式化）
 import { formatProfile, resolveProfile, steOutputLang, steOutputLangName } from "./steProfiles";
+import { parseSteJson, renderSteMarkdown, renderStePartial, splitSentences, steLimitText, steLint, steNeedsRepair, steOutLangOf, steRepairPrompt, steScore, type SteLintContext } from "./steJson";
+import { steExampleBlock } from "./steExamples";
 // v48.60（D101）：标签规范常量（L17 与 tags.ts 同源，禁第二份阈值）
 import { TAG_MAX_DEPTH, TAG_MAX_LEN, TAG_MAX_PER_CARD, type TagVocabEntry } from "./tags";
+import { decide, ans, type DecisionSpec } from "./decisions";
+import { presentationAppendix } from "./genui/prompt";
+import type { PresentationPlan } from "./genui/prompt";
 
 declare global {
   interface Window {
@@ -340,44 +345,63 @@ const ROUTE_SYSTEM_PROMPT = [
   "判断依据是材料的内容形态与学习目标，而不是个别关键词。"
 ].join("\n");
 
+// D299：材料路由迁入判断层——提示词与解析逐字沿用（spec.llm），行为不变；
+// 将来接判断模型 / 托管用量：只换后端，本函数与调用方零改动。
+const MATERIAL_TYPE_SPEC: DecisionSpec = {
+  id: "material-type",
+  version: 1,
+  primary: "material_type",
+  questions: {
+    material_type: {
+      type: "choice",
+      instructions: "这段学习材料属于哪一类？判断依据是内容形态与学习目标，而不是个别关键词。",
+      criteria: {
+        concept: "概念、定义、原理、论述、因果、观点、事实陈述等需要理解的内容（拿不准时选它）",
+        formula: "以公式、定理、方程、推导、计算步骤为核心",
+        sequence: "有先后次序的流程、步骤、时间线、阶段，次序本身是记忆重点",
+        enumeration: "并列的清单、分类、要点列表，需要逐项记全",
+        literature: "诗、词、曲、文言或需要逐字背诵的文学原文",
+        vocab: "外语单词、短语、词条释义",
+        other: "以上都不合适（按 concept 处理）"
+      }
+    }
+  },
+  thresholds: { calibrated: { auto: 0.7, confirm: 0.5 }, uncalibrated: { auto: 0.5, confirm: 0 } },
+  local: (input) => ({ material_type: ans.choice(detectMaterialType(input.text).materialType, 0.5) }),
+  // 词汇/诗词两类本地信号精确：直接采纳、不发请求（原行为）
+  shouldEscalate: (local) => local.material_type?.value !== "vocab" && local.material_type?.value !== "literature",
+  llm: {
+    system: ROUTE_SYSTEM_PROMPT,
+    user: (input) => {
+      const text = input.text;
+      const sample = text.length > 1500 ? `${text.slice(0, 1200)}\n……\n${text.slice(-300)}` : text;
+      return `【材料】\n${sample}`;
+    },
+    parse: (raw) => {
+      const key = parseRouteReply(raw);
+      return key && (AI_ROUTE_KEYS as readonly string[]).includes(key) ? { material_type: ans.choice(key, 0.8) } : null;
+    },
+    temperature: 0,
+    timeoutMs: 8000,
+    feature: "card_gen"
+  },
+  backends: ["llm", "local"]
+};
+
 export async function routeMaterialType(
   text: string,
   onCancelRegister?: (cancel: () => void) => void,
   timeoutMs = 8000
 ): Promise<{ route: MaterialRoute; by: "local" | "ai" | "fallback" }> {
   const local = detectMaterialType(text);
-  if (local.materialType === "vocab" || local.materialType === "literature") return { route: local, by: "local" };
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    let cancel: (() => void) | null = null;
-    const sample = text.length > 1500 ? `${text.slice(0, 1200)}\n……\n${text.slice(-300)}` : text;
-    const ask = aiGateway.chat(
-      [
-        { role: "system", content: ROUTE_SYSTEM_PROMPT },
-        { role: "user", content: `【材料】\n${sample}` }
-      ],
-      undefined,
-      0,
-      undefined,
-      (c) => {
-        cancel = c;
-        onCancelRegister?.(c);
-      },
-      "card_gen"
-    );
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        cancel?.();
-        reject(new Error("route timeout"));
-      }, timeoutMs);
-    });
-    const key = parseRouteReply(await Promise.race([ask, timeout]));
-    if (key && (AI_ROUTE_KEYS as readonly string[]).includes(key)) return { route: MATERIAL_ROUTES[key], by: "ai" };
-    return { route: local, by: "fallback" };
+    const res = await decide(MATERIAL_TYPE_SPEC, { text }, { onCancelRegister, timeoutMs });
+    const key = String(res.answers.material_type?.value ?? "");
+    const route = key in MATERIAL_ROUTES ? MATERIAL_ROUTES[key as MaterialType] : local;
+    if (res.backend !== "local") return { route, by: "ai" };
+    return { route: local, by: res.fellBack ? "fallback" : "local" };
   } catch {
     return { route: local, by: "fallback" };
-  } finally {
-    if (timer) clearTimeout(timer);
   }
 }
 
@@ -538,6 +562,52 @@ export async function requestOcclusionResult(
   return { result: extractJson(raw || acc), templateId: tpl.id };
 }
 
+// ---------- v49.134（D301）：简明解读结构化生成 + 校验 + 定向修复 ----------
+/** 简明解读温度（精度任务） */
+export const STE_TEMPERATURE = 0.1;
+/** 违规时的修复回合上限（质量优先：至多再请求 3 次；取各轮中违规最少的一份） */
+export const STE_MAX_REPAIRS = 3;
+
+async function runSteStructured(
+  base: ChatMessage[],
+  ctx: SteLintContext,
+  onDelta?: (acc: string, delta: string) => void,
+  onThinking?: (thinkChars: number) => void,
+  onCancelRegister?: (cancel: () => void) => void
+): Promise<string> {
+  let best: { md: string; score: number } | null = null;
+  let lastRaw = "";
+  let messages = base;
+  for (let round = 0; round <= STE_MAX_REPAIRS; round++) {
+    // 首轮流式：残缺 JSON 边到边渲染；修复轮不流式（避免已显示的完整结果闪回半成品），结束后整体替换
+    const stream =
+      round === 0 && onDelta
+        ? (acc: string) => {
+            if (ctx.followUp && !/"answer"/.test(acc)) return;
+            const md = renderStePartial(acc, ctx.outLang);
+            if (md) onDelta(md, "");
+          }
+        : undefined;
+    const raw = await aiGateway.chat(messages, stream, STE_TEMPERATURE, onThinking, onCancelRegister, "ste");
+    lastRaw = raw;
+    const { doc } = parseSteJson(raw);
+    const v = steLint(doc, ctx);
+    if (doc && (ctx.followUp ? !!doc.answer?.length : true)) {
+      const score = steScore(v);
+      if (!best || score < best.score) best = { md: renderSteMarkdown(doc, ctx.outLang), score };
+    }
+    if (!steNeedsRepair(v)) break;
+    if (round < STE_MAX_REPAIRS) {
+      // 只带上一轮输出与违规清单（不累积全部历史，控制 token）
+      messages = [...base, { role: "assistant", content: raw }, { role: "user", content: steRepairPrompt(v, ctx.followUp) }];
+    }
+  }
+  // 模型完全没按 JSON 输出（如用户接的模型不支持）：原样返回其 Markdown 文本
+  const final = best?.md ?? (renderStePartial(lastRaw, ctx.outLang) || lastRaw);
+  onDelta?.(final, "");
+  return final;
+}
+
 export const cardGenerator: {
   generateCards(
     sourceText: string,
@@ -591,7 +661,7 @@ export const cardGenerator: {
     onDelta?: (acc: string) => void,
     onThinking?: (thinkChars: number) => void,
     /** v48.51（D91）：mode=ste 走 reader-explain-ste（简明解读）；缺省 general 走既有 reader-explain（逐字不动） */
-    opts?: { mode?: "general" | "ste"; matLang?: string },
+    opts?: { mode?: "general" | "ste"; matLang?: string; /** D299：判断层的呈现计划（通用 / 简明解读都注入组件说明；缺省不注入） */ presentation?: PresentationPlan },
     /** v48.74（D118 §3④）：注册一次性取消闭包（ai:abort） */
     onCancelRegister?: (cancel: () => void) => void
   ): Promise<string>;
@@ -885,41 +955,49 @@ export const cardGenerator: {
       // v49.76（D247）：模板级 {{OUTPUT_LANG_NAME}} 注入——v4 起全体输出（正文/节标题/标签/说明/追问）按母语
       const outLang = steOutputLang();
       const output = resolveProfile(outLang);
+      const lang = steOutLangOf(outLang);
+      // v49.134（D301）：v5 模板＝结构化 JSON（含 "explanations"）；用户自改过的旧式模板仍走 Markdown 直出（不校验）
+      const structured = tpl.content.includes('"explanations"');
       const sys = tpl.content
         // v49.76（D247）：{{OUTPUT_LANG_NAME}} 在模板中出现多次，必须全量替换（replace 只换首处）
         .split("{{OUTPUT_LANG_NAME}}").join(steOutputLangName(outLang))
         .replace("{{ANALYSIS_PROFILE}}", formatProfile(analysis))
-        .replace("{{OUTPUT_PROFILE}}", formatProfile(output));
+        .replace("{{OUTPUT_PROFILE}}", formatProfile(output))
+        .split("{{SENTENCE_LIMIT}}").join(steLimitText(lang))
+        .split("{{EXAMPLE}}").join(steExampleBlock(lang));
+      // D301：程序切句——模型按编号逐句解释，校验按编号核对组数
+      const split = splitSentences(sourceText);
+      const sentences = split.length ? split : [String(sourceText ?? "").trim()];
       const user = [
-        `【选中文本】\n${sourceText}`,
+        structured ? `【原句】（共 ${sentences.length} 句）\n${sentences.map((s, i) => `[${i + 1}] ${s}`).join("\n")}` : `【选中文本】\n${sourceText}`,
         context ? `【上下文】${context}` : "",
-        `【材料语言】${matLang || "未标注——请自检材料语言并在 <!--ste:matLang=…--> 标记中报告"}`,
+        `【材料语言】${matLang || (structured ? "未标注——请自检材料语言并写入 matLang" : "未标注——请自检材料语言并在 <!--ste:matLang=…--> 标记中报告")}`,
         `【解读语言】${outLang}（${steOutputLangName(outLang)}）`,
         // v48.74（D118 追加）：追问必须送达——此前 ste 分支丢掉 question，四个追问按钮与
         // 初次解读发出的请求逐字相同 ⇒ 回复几乎一样（模板侧另有「追问直答」条款配合）
         question ? `【用户追问】${question}` : ""
       ]
         .filter(Boolean)
-        .join("\n\n");
-      // v48.103（D148）：受控语言改写是精度任务，高温是「简明改写」跑偏（长句/分句堆叠/口语化复述）的主因之一，
-      // 0.7→0.3；追问直答同链路受益（模板侧已声明追问也遵守硬规则）。
-      return aiGateway.chat(
-        [
-          { role: "system", content: sys },
-          { role: "user", content: user }
-        ],
-        onDelta,
-        0.3,
-        onThinking,
-        onCancelRegister,
-        "ste"
-      );
+        .join("\n\n") +
+        // D299 第三轮：简明解读同样可用组件（未传呈现计划时为空串——提示词基线逐字不变）；
+        // D301：追问直答不带组件；结构化模式下组件写进 JSON components
+        (question ? "" : presentationAppendix(opts.presentation?.kinds ?? [], { catalog: opts.presentation?.catalog ?? false, ste: true }));
+      // v48.103（D148）：受控语言改写是精度任务，0.7→0.3；v49.134（D301）：再降到 0.1（同输入多次生成的差异是「不稳定」的直接来源）。
+      const base: ChatMessage[] = [
+        { role: "system", content: sys },
+        { role: "user", content: user }
+      ];
+      if (!structured) return aiGateway.chat(base, onDelta, STE_TEMPERATURE, onThinking, onCancelRegister, "ste");
+      return runSteStructured(base, { outLang, sentences, source: sourceText, followUp: !!question }, onDelta, onThinking, onCancelRegister);
     }
     const tpl = await window.promptsAPI?.get("reader-explain");
     const sys = tpl?.content || "你是阅读助手。";
     // v49.8（D182）：输出语言随界面语言——zh-CN 保持原文零变化（测试基线），其余语言注入指令行
     const langLine = getLocale() === "zh-CN" ? "" : `【输出语言】${steOutputLangName()}\n\n`;
-    const user = `${langLine}【选中文本】\n${sourceText}\n\n${context ? `【上下文】${context}` : ""}\n\n${question ? `【用户追问】${question}` : "请解释这段文字。"}`;
+    const user =
+      `${langLine}【选中文本】\n${sourceText}\n\n${context ? `【上下文】${context}` : ""}\n\n${question ? `【用户追问】${question}` : "请解释这段文字。"}` +
+      // D299：无组件时为空串——提示词与既有基线逐字一致
+      presentationAppendix(opts?.presentation?.kinds ?? [], { catalog: opts?.presentation?.catalog ?? false });
     return aiGateway.chat(
       [
         { role: "system", content: sys },
