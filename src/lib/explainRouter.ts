@@ -127,10 +127,12 @@ function bracketDepth(s: string): number {
 /**
  * 本地路由器（D91 §5.4）：纯函数 `routeExplainMode(text) → "general" | "ste"`。
  * 特征 = 材料语言不敏感的表面特征：句长 / 每句分句密度 / 括号嵌套 / 否定计数 / 被动标记。
+ * v49.135（D302）：文言恒走 general——ASD-STE 式短句改写不适合「先释字词再串今义」的文言。
  */
 export function routeExplainMode(text: string): RoutedExplainMode {
   const src = String(text ?? "").trim();
   if (src.length < EXPLAIN_ROUTER_MIN_CHARS) return "general";
+  if (isClassicalChinese(src)) return "general";
   const f = summarize(src);
   const w = EXPLAIN_ROUTER_WEIGHTS;
   let score = 0;
@@ -143,6 +145,39 @@ export function routeExplainMode(text: string): RoutedExplainMode {
   if (f.avgLen >= 50) score += w.lengthAvg;
   if (f.maxLen >= 100) score += w.lengthMax;
   return score >= EXPLAIN_ROUTER_THRESHOLD ? "ste" : "general";
+}
+
+// ---------- v49.135（D302）：文言判定（纯本地表面特征） ----------
+
+/**
+ * 文言标志字：只收现代书面语（含法律、学术文体）里也少见的虚词与代词。
+ * 之 / 其 / 而 / 亦 / 乃 / 盖 / 夫 在现代正式文体里很常见，不计；「者」只在「……者，」「者也」这种文言判断句里计
+ * （「作者」「举证者必须……」之类现代用法不计）。
+ */
+const CLASSICAL_MARKERS = /[乎也矣焉哉兮曰吾汝欤]|者(?=[，,。；;也])/g;
+/** 现代白话标志字：文言里几乎不用的结构助词、代词、语气词 */
+const MODERN_MARKERS = /[的了着们这那吗呢吧啊就把被很都还没么]/g;
+const CJK_CHAR = /[一-鿿]/g;
+/** 判定所需的最少汉字数（太短的片段统计不可靠，交给提示词处理） */
+export const CLASSICAL_MIN_CJK = 8;
+/** 文言标志字至少出现次数（单个「也」在现代文里也会出现） */
+export const CLASSICAL_MIN_MARKERS = 2;
+/** 文言标志字占汉字比例下限 */
+export const CLASSICAL_MARKER_RATIO = 0.06;
+/** 现代标志字占汉字比例上限 */
+export const CLASSICAL_MODERN_MAX_RATIO = 0.03;
+
+/**
+ * 文言判定：文言标志字密度高、且现代白话标志字密度低。
+ * 现代白话里引用一两句文言（如「孔子说：『殷礼，吾能言之。』这说明……」）不算文言——现代标志字会把比例拉过上限。
+ */
+export function isClassicalChinese(text: string): boolean {
+  const src = String(text ?? "");
+  const cjk = (src.match(CJK_CHAR) ?? []).length;
+  if (cjk < CLASSICAL_MIN_CJK) return false;
+  const classical = (src.match(CLASSICAL_MARKERS) ?? []).length;
+  const modern = (src.match(MODERN_MARKERS) ?? []).length;
+  return classical >= CLASSICAL_MIN_MARKERS && classical / cjk >= CLASSICAL_MARKER_RATIO && modern / cjk <= CLASSICAL_MODERN_MAX_RATIO;
 }
 
 // ---------- 机器标记契约（D91 §4.2）：<!--ste:matLang=xx--> / <!--ste:points=N--> / <!--ste:readings=N--> ----------

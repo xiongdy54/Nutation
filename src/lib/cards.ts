@@ -20,6 +20,9 @@ import { TAG_MAX_DEPTH, TAG_MAX_LEN, TAG_MAX_PER_CARD, type TagVocabEntry } from
 import { decide, ans, type DecisionSpec } from "./decisions";
 import { presentationAppendix } from "./genui/prompt";
 import type { PresentationPlan } from "./genui/prompt";
+// v49.135（D302）：解释 / 制卡共用的语境包（来源行 + 前后文）
+import { explainContextBlocks, formatSourceLine, type ExplainContext } from "./explainContext";
+export type { ExplainContext } from "./explainContext";
 
 declare global {
   interface Window {
@@ -565,6 +568,8 @@ export async function requestOcclusionResult(
 // ---------- v49.134（D301）：简明解读结构化生成 + 校验 + 定向修复 ----------
 /** 简明解读温度（精度任务） */
 export const STE_TEMPERATURE = 0.1;
+/** v49.135（D302）：通用解读温度（保真任务；此前 0.7） */
+export const EXPLAIN_TEMPERATURE = 0.3;
 /** 违规时的修复回合上限（质量优先：至多再请求 3 次；取各轮中违规最少的一份） */
 export const STE_MAX_REPAIRS = 3;
 
@@ -656,7 +661,8 @@ export const cardGenerator: {
   ): Promise<{ batchId: string; result: GenResult; templateId: string | null }>;
   explain(
     sourceText: string,
-    context: string,
+    /** v49.135（D302）：ExplainContext＝来源（书名 · 作者 · 章节路径）+ 前后文；字符串＝旧语义来源行 */
+    context: string | ExplainContext,
     question: string | null,
     onDelta?: (acc: string) => void,
     onThinking?: (thinkChars: number) => void,
@@ -696,10 +702,8 @@ export const cardGenerator: {
       if (mem?.ok && mem.block) memoryBlock = mem.block;
     }
     // v48.77（D121 §2.1）：来源行 = 书名 · 作者 · 章节路径（sectionPath 优先于 section）
-    const sectionLabel = context.sectionPath?.length ? context.sectionPath.join(" › ") : context.section || "";
-    const sourceLine = context.title
-      ? `【来源】《${context.title}》${context.author ? " · 作者：" + context.author : ""}${sectionLabel ? " · 章节：" + sectionLabel : ""}`
-      : "";
+    // v49.135（D302）：与 AI 解释共用 formatSourceLine（输出逐字不变）
+    const sourceLine = formatSourceLine(context);
     const sur = context.surrounding;
     const surroundingBlock =
       sur && (sur.before || sur.after)
@@ -970,7 +974,8 @@ export const cardGenerator: {
       const sentences = split.length ? split : [String(sourceText ?? "").trim()];
       const user = [
         structured ? `【原句】（共 ${sentences.length} 句）\n${sentences.map((s, i) => `[${i + 1}] ${s}`).join("\n")}` : `【选中文本】\n${sourceText}`,
-        context ? `【上下文】${context}` : "",
+        // v49.135（D302）：来源行 + 前后文（⟦⟧ 标出原句位置）
+        ...explainContextBlocks(sourceText, context),
         `【材料语言】${matLang || (structured ? "未标注——请自检材料语言并写入 matLang" : "未标注——请自检材料语言并在 <!--ste:matLang=…--> 标记中报告")}`,
         `【解读语言】${outLang}（${steOutputLangName(outLang)}）`,
         // v48.74（D118 追加）：追问必须送达——此前 ste 分支丢掉 question，四个追问按钮与
@@ -994,8 +999,10 @@ export const cardGenerator: {
     const sys = tpl?.content || "你是阅读助手。";
     // v49.8（D182）：输出语言随界面语言——zh-CN 保持原文零变化（测试基线），其余语言注入指令行
     const langLine = getLocale() === "zh-CN" ? "" : `【输出语言】${steOutputLangName()}\n\n`;
+    // v49.135（D302）：来源行 + 前后文（⟦⟧ 标出选文位置）；空段落不再留空行
     const user =
-      `${langLine}【选中文本】\n${sourceText}\n\n${context ? `【上下文】${context}` : ""}\n\n${question ? `【用户追问】${question}` : "请解释这段文字。"}` +
+      langLine +
+      [`【选中文本】\n${sourceText}`, ...explainContextBlocks(sourceText, context), question ? `【用户追问】${question}` : "请解释这段文字。"].join("\n\n") +
       // D299：无组件时为空串——提示词与既有基线逐字一致
       presentationAppendix(opts?.presentation?.kinds ?? [], { catalog: opts?.presentation?.catalog ?? false });
     return aiGateway.chat(
@@ -1004,7 +1011,8 @@ export const cardGenerator: {
         { role: "user", content: user }
       ],
       onDelta,
-      0.7,
+      // v49.135（D302）：解释是保真任务，0.7→0.3（同一输入时对时错的直接来源）
+      EXPLAIN_TEMPERATURE,
       onThinking,
       onCancelRegister,
       "explain"

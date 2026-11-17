@@ -20,9 +20,11 @@ import {
   routeMaterialType,
   type CardDraft,
   type CardGenMode,
+  type ExplainContext,
   type MaterialRoute,
   type OcclusionRegion
 } from "./cards";
+import { paragraphContext } from "./selectionContext";
 import { VOCAB_KIND_LABEL, buildVocabDrafts, isVocabSelection, type DictionaryEntry, type ReadingContext, type VocabKind } from "./dict";
 import { buildReadingContext, loadDictSettings, lookupWord } from "./dictClient";
 import { libraryApi } from "./library";
@@ -294,7 +296,45 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
   const aiRunSeq = useRef(0);
   /** D121 §2.2/§2.3：选区语境包（章节路径 + 前后文）——在 clearSelection 之前由 actAICards 采集，
    *  runAICards / 联网重试 / 补充制卡按 text 命中复用（选区清掉后无法再从宿主重新取） */
-  const aiCtxRef = useRef<{ text: string; sectionPath: string[]; surrounding: { before: string; after: string } | null } | null>(null);
+  const aiCtxRef = useRef<{ text: string; owner?: string; sectionPath: string[]; surrounding: { before: string; after: string } | null } | null>(null);
+  /** v49.135（D302）：AI 解释的选区语境包（同 aiCtxRef 形状）——actAIExplain 在 clearSelection 之前采集，
+   *  切换方式重跑 / 追问四式 / 自由追问按 text + 文档命中复用 */
+  const explainCtxRef = useRef<{ text: string; owner?: string; sectionPath: string[]; surrounding: { before: string; after: string } | null } | null>(null);
+  /** 在清选区之前采集语境（章节路径 + 前后文）；owner＝本书/本文档键，防止跨文档误用 */
+  function captureSelectionCtx(text: string) {
+    return { text, owner: A().ownerKey(), sectionPath: A().sectionPath?.() ?? [], surrounding: A().selectionSurrounding?.() ?? null };
+  }
+  /** 正文定位兜底的最短长度：太短的片段在全书中多处出现，定位不可靠 */
+  const EXPLAIN_FALLBACK_MIN_CHARS = 8;
+  /**
+   * v49.135（D302）：AI 解释的语境（来源 + 前后文）。优先用已采集的语境（按 text + 文档命中；
+   * prefer="cards" 时制卡语境优先）。没有时：当前选区正是这段文字 → 现取并缓存；否则仅当这段文字
+   * 在正文中恰好出现一次（且不太短）才定位段落兜底，兜底结果不缓存；都不满足 → 不带前后文（不猜）。
+   */
+  function explainContextFor(text: string, prefer: "explain" | "cards" = "explain"): ExplainContext {
+    const owner = A().ownerKey();
+    const refs = prefer === "cards" ? [aiCtxRef.current, explainCtxRef.current] : [explainCtxRef.current, aiCtxRef.current];
+    let cap = refs.find((c) => c && c.text === text && (c.owner === undefined || c.owner === owner)) ?? null;
+    if (!cap) {
+      if (A().selectionText() === text) {
+        cap = captureSelectionCtx(text);
+        explainCtxRef.current = cap;
+      } else {
+        const body = String(A().bodyText ?? "");
+        const t = text.trim();
+        const unique = body && t.length >= EXPLAIN_FALLBACK_MIN_CHARS && body.indexOf(t) >= 0 && body.indexOf(t) === body.lastIndexOf(t);
+        cap = { text, owner, sectionPath: [], surrounding: unique ? paragraphContext(body, t) : null };
+      }
+    }
+    const labels = A().labels;
+    return {
+      title: labels.sourceTitle || labels.title,
+      author: labels.sourceAuthor,
+      section: labels.section,
+      sectionPath: cap.sectionPath,
+      surrounding: cap.surrounding
+    };
+  }
   const aiCancelRef = useRef<(() => void) | null>(null);
   function beginAIRun(): number {
     aiRunSeq.current += 1;
@@ -1068,7 +1108,8 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
     try {
       const answer = await cardGenerator.explain(
         aiPanel.text,
-        `${A().labels.sourceTitle ?? ""}${A().labels.section ? " · " + A().labels.section : ""}`,
+        // v49.135（D302）：复用制卡时采集的语境（来源 + 前后文）
+        explainContextFor(aiPanel.text, "cards"),
         question,
         (acc) => patchExploration(explId, { answer: acc }),
         (thinkChars) => patchExploration(explId, { thinking: thinkChars })
@@ -1116,7 +1157,8 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
       const intentP = readGenuiAutoCards().then((on) => (on ? decide(CARD_INTENT_SPEC, { text: q }) : null)).catch(() => null);
       const answer = await cardGenerator.explain(
         ctxText,
-        `${A().labels.title ?? ""}${A().labels.section ? " · " + A().labels.section : ""}`,
+        // v49.135（D302）：有材料选文时带来源 + 前后文；纯自由对话只带来源
+        ctxText ? explainContextFor(ctxText) : { title: A().labels.sourceTitle || A().labels.title, author: A().labels.sourceAuthor, section: A().labels.section },
         fullQ,
         (acc) => patchThread(id, { answer: acc }),
         (thinkChars) => patchThread(id, { thinking: thinkChars }),
@@ -1308,7 +1350,7 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
     try {
       const answer = await cardGenerator.explain(
         text,
-        `${A().labels.title ?? ""}${A().labels.section ? " · " + A().labels.section : ""}`,
+        explainContextFor(text),
         question,
         (acc) => {
           if (seq !== aiRunSeq.current) return;
@@ -1563,7 +1605,7 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
     if (!t) return;
     A().rememberAnchor(t);
     // D121 §2.3：前后文与章节路径必须在 clearSelection 之前采集
-    aiCtxRef.current = { text: t, sectionPath: A().sectionPath?.() ?? [], surrounding: A().selectionSurrounding?.() ?? null };
+    aiCtxRef.current = captureSelectionCtx(t);
     A().clearSelection();
     wakeDock();
     void runAICards(t, undefined, aiModeRef.current);
@@ -1571,6 +1613,8 @@ export function useSelectionActions(adapter: SelectionActionsAdapter) {
   function actAIExplain() {
     const t = A().selectionText();
     if (!t) return;
+    // v49.135（D302）：前后文与章节路径必须在 clearSelection 之前采集（同 actAICards）
+    explainCtxRef.current = captureSelectionCtx(t);
     A().clearSelection();
     wakeDock();
     void runExplain(t, null);
