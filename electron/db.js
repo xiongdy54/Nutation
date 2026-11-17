@@ -61,8 +61,12 @@ const {
   READER_EXPLAIN_STE_PROMPT_V2,
   READER_EXPLAIN_STE_PROMPT_V3,
   READER_EXPLAIN_STE_PROMPT_V4,
+  // v49.135（D302）：v5 原文冻结常量（全新库 v5 行留痕用）；READER_EXPLAIN_STE_PROMPT＝v6 现行文本
+  READER_EXPLAIN_STE_PROMPT_V5,
   // v48.74（D118）：通用解释模板 v2（追问四式）的 v1 原文冻结常量（READER_EXPLAIN_PROMPT 已在上方导入＝v2 现行文本）
   READER_EXPLAIN_PROMPT_V1,
+  // v49.135（D302）：通用解释 v2 原文冻结常量（READER_EXPLAIN_PROMPT＝v3 现行文本）
+  READER_EXPLAIN_PROMPT_V2,
   SITUATION_REQUIRED_SCOPES,
   situationRequiredFor,
   // D121 §3.3/§3.4：卡片辨析 scope card-disambiguate v1
@@ -3252,6 +3256,17 @@ function ensurePromptTemplates() {
     if (Number(explainMaxV) < 2) {
       db.run(
         "INSERT INTO prompt_templates (id, scope, name, content, version, is_default, situation_required, created_at) VALUES (?, 'reader-explain', '阅读解释 v2', ?, 2, 1, ?, ?)",
+        [crypto.randomUUID(), READER_EXPLAIN_PROMPT_V2, situationRequiredFor("reader-explain"), now]
+      );
+    }
+  } catch { /* 播种失败不阻塞启动 */ }
+  // v49.135（D302）：reader-explain v3——前后文与事实纪律（v2 行改用冻结常量 READER_EXPLAIN_PROMPT_V2）。
+  // 存量库按 MAX(version)<3 升版播种，v1/v2 留痕。
+  try {
+    const explainMaxV3 = queryAll("SELECT MAX(version) AS v FROM prompt_templates WHERE scope = 'reader-explain'")[0]?.v || 0;
+    if (Number(explainMaxV3) < 3) {
+      db.run(
+        "INSERT INTO prompt_templates (id, scope, name, content, version, is_default, situation_required, created_at) VALUES (?, 'reader-explain', '阅读解释 v3', ?, 3, 1, ?, ?)",
         [crypto.randomUUID(), READER_EXPLAIN_PROMPT, situationRequiredFor("reader-explain"), now]
       );
     }
@@ -3343,6 +3358,17 @@ function ensurePromptTemplates() {
     if (Number(steMaxV5) < 5) {
       db.run(
         "INSERT INTO prompt_templates (id, scope, name, content, version, is_default, situation_required, created_at) VALUES (?, 'reader-explain-ste', '简明解读 v5', ?, 5, 1, ?, ?)",
+        [crypto.randomUUID(), READER_EXPLAIN_STE_PROMPT_V5, situationRequiredFor("reader-explain-ste"), now]
+      );
+    }
+  } catch { /* 播种失败不阻塞启动 */ }
+  // v49.135（D302）：reader-explain-ste v6——【来源与前后文】一节（v5 行改用冻结常量 READER_EXPLAIN_STE_PROMPT_V5）。
+  // 存量库按 MAX(version)<6 升版播种，v1-v5 留痕。
+  try {
+    const steMaxV6 = queryAll("SELECT MAX(version) AS v FROM prompt_templates WHERE scope = 'reader-explain-ste'")[0]?.v || 0;
+    if (Number(steMaxV6) < 6) {
+      db.run(
+        "INSERT INTO prompt_templates (id, scope, name, content, version, is_default, situation_required, created_at) VALUES (?, 'reader-explain-ste', '简明解读 v6', ?, 6, 1, ?, ?)",
         [crypto.randomUUID(), READER_EXPLAIN_STE_PROMPT, situationRequiredFor("reader-explain-ste"), now]
       );
     }
