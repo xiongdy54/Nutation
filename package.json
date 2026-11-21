@@ -48,6 +48,7 @@
     "opencc-js": "^1.4.2",
     "pdfjs-dist": "^6.3.289",
     "sql.js": "^1.14.2",
+    "ts-fsrs": "^5.4.2",
     "turndown": "^7.2.4",
     "yauzl": "3.4.0",
     "yazl": "3.3.1"
@@ -87,7 +88,6 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "remark-parse": "^11.0.0",
-    "ts-fsrs": "^5.4.2",
     "typescript": "^5.5.3",
     "unified": "^11.0.5",
     "vite": "^6.0.0",
