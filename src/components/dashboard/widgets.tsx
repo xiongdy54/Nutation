@@ -16,6 +16,7 @@ import TimelineWidget from "../charts/Timeline";
 // 自取数（useGrowthOverview 防抖 hook，Timeline 先例），不进 StatsOverview、不改 stats:overview 刷新链。
 import GrowthEventsWidget from "./GrowthEventsWidget";
 import TerritoryWidget from "./TerritoryWidget";
+import KgStatsWidget from "./KgStatsWidget";
 import { t } from "../../lib/i18n";
 
 export type ChartMode = string; // 图型 id，如 "months" / "columns"
@@ -306,6 +307,17 @@ export const WIDGETS: WidgetDef[] = [
     defaultData: "territory-map",
     defaultChart: "segments",
     render: () => <TerritoryWidget />
+  },
+  // v49.139 / D306：知识图谱数字（点亮 / 本周变化 / 褪色 / 每日维护 + 近 8 周折线）
+  {
+    id: "kg",
+    title: "知识图谱",
+    layer: "territory",
+    dataKeys: ["kg-summary"],
+    charts: { "kg-summary": [{ id: "summary", label: "点亮数" }] },
+    defaultData: "kg-summary",
+    defaultChart: "summary",
+    render: () => <KgStatsWidget />
   }
 ];
 

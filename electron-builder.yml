@@ -33,6 +33,23 @@ files:
   # 负向模式只删不增；node_modules 收集会叠加这些规则，故保留项必须落在未命中的路径。
   # - @napi-rs/canvas 是 pdfjs-dist 的 optional Node canvas；主进程只做文本抽取，
   #   实测屏蔽后 PDF 夹具抽取结果逐字节一致（未来若加主进程栅格化需恢复）。
+  # - v49.140 / D307 语义匹配：主进程只 require onnxruntime-web 的 dist/ort.node.min.js（+ onnxruntime-common），
+  #   WASM 推理引擎与模型都是用户在设置里主动下载到 userData/models（不随包分发，设计稿 §0.4）。
+  #   其余构建变体、源码、文档与仅浏览器构建用到的依赖一律不进包（约 90 MB）。
+  - "!node_modules/onnxruntime-web/lib/**"
+  - "!node_modules/onnxruntime-web/docs/**"
+  - "!node_modules/onnxruntime-web/dist/*.wasm"
+  - "!node_modules/onnxruntime-web/dist/*.map"
+  - "!node_modules/onnxruntime-web/dist/ort-wasm-*"
+  - "!node_modules/onnxruntime-web/dist/ort.{all,bundle,wasm,webgl,webgpu}*"
+  - "!node_modules/onnxruntime-web/dist/ort.{js,mjs,min.js,min.mjs}"
+  - "!node_modules/onnxruntime-web/dist/ort.node.min.mjs"
+  - "!node_modules/protobufjs/**"
+  - "!node_modules/@protobufjs/**"
+  - "!node_modules/flatbuffers/**"
+  - "!node_modules/guid-typescript/**"
+  - "!node_modules/platform/**"
+  - "!node_modules/long/**"
   - "!node_modules/@napi-rs/**"
   # - pdfjs-dist：主进程用 legacy/build/pdf(.worker).mjs + cmaps + standard_fonts；
   #   现代 build/ 与 web/ 已被 Vite 构建期打进 dist/assets，wasm/iccs 由 dist/pdfjs 提供。
@@ -69,6 +86,12 @@ files:
   #   smartUnpack 会因它把整个 jszip 包解到 asar 外（实测 748 KB）。排除后 jszip 回 asar。
   - "!node_modules/jszip/.jekyll-metadata"
 asar: true
+# v49.146 / D315 知识全谱：随包只带核心库（scripts/atlas/build_core.py 产物），装到 resources/atlas/atlas-core.sqlite，
+# 由 electron/atlas.js 只读打开（asar 外，better-sqlite3 需要真实文件路径）。完整库（数 GB）不进安装包，用户在设置里下载到 userData。
+# 文件缺失时打包仅告警，应用内全谱功能静默降级。核心库不进 git：本地打包先把产物放到 <repo>/atlas/；CI 由 build.yml 的「Fetch knowledge atlas core」步骤按 ATLAS_CORE_URL 下载。
+extraResources:
+  - from: atlas/atlas-core.sqlite
+    to: atlas/atlas-core.sqlite
 asarUnpack:
   # fsrs-rs-nodejs（NAPI 预编译）等原生绑定不能从 asar 内 dlopen
   - "**/*.node"

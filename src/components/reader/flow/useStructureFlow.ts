@@ -106,6 +106,8 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
   const peekRef = useRef<AttnResult["peek"]>(null);
   const blockRef = useRef<number | null>(null);
   const mapIdRef = useRef<string | null>(null);
+  /** 「为本节生成」进行中的文档（覆盖整段 await，防同一文档重复点击并发建图；换文档不受旧文档拦截） */
+  const genRunRef = useRef<string | null>(null);
   const feedRef = useRef(feed);
   feedRef.current = feed;
 
@@ -566,29 +568,83 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
     busy: "正在生成中。",
     no_text: "原文还在读取，稍后再试。",
   };
+  /** 「本节」＝包含当前阅读位置、层级最深的目录节点（主进程 locate 的 scopeNodeId，不依赖导图是否已建）。
+   *  不能用注意力分组：分组是阅读节点的父节点，新建骨架上会落到整本书 / 整章，生成错地方或被判「已展开」。
+   *  ready=false：主进程没有这份原文的会话（或尚未送到该单元）——与「已就绪但不在任何目录节点下」区分开。 */
+  const locateScope = async (doc: string, mapId: string): Promise<{ ready: boolean; scope: { id: string; floor: boolean } | null }> => {
+    if (!kernel) return { ready: true, scope: null };
+    const probes = (kernel.getReadingProbes?.(ATTN.FRACS) ?? []).filter((x) => x.text);
+    probes.sort((x, y) => Math.abs(x.frac - 0.38) - Math.abs(y.frac - 0.38));
+    const one = probes[0] ?? kernel.getReadingProbe?.() ?? null;
+    if (!one) return { ready: true, scope: null };
+    const r = await mindmapV2Api.locate({ documentId: doc, unitAnchor: one.unitAnchor, text: one.text, mapId }).catch(() => null);
+    if (!r?.ready) return { ready: false, scope: null };
+    return { ready: true, scope: r.scopeNodeId ? { id: String(r.scopeNodeId), floor: !!r.scopeFloor } : null };
+  };
   const generateHere = async () => {
-    if (!kernel || !documentId) return;
-    const scopeNodeId = scopeIdRef.current;
-    if (!scopeNodeId) return;
+    if (!kernel || !documentId || genRunRef.current === documentId) return;
+    const doc = documentId;
+    genRunRef.current = doc;
+    const stale = () => docRef.current !== doc;
     setStatus("");
     setBusy("pending");
     try {
-      const st = await ensureFed(kernel as Parameters<typeof ensureFed>[0], documentId, title);
-      if (!st.complete) {
+      // 主进程最多保留 MAX_SESSIONS 份原文会话；本文档的会话被挤出后，前端送原文状态仍是「已送完」，
+      // 于是 ensureMap 报「原文尚未送完」、locate 返回未就绪。遇到这两种情况：重送一次原文，再从头试一次。
+      let mapId = "";
+      let created = false;
+      let scope: { id: string; floor: boolean } | null = null;
+      for (let attempt = 0; ; attempt++) {
+        const st = await ensureFed(kernel as Parameters<typeof ensureFed>[0], doc, title);
+        if (stale()) return;
+        if (!st.complete) {
+          setBusy(null);
+          showStatus(T("原文还在读取，稍后再试。"));
+          return;
+        }
+        try {
+          ({ mapId, created } = await mindmapV2Api.ensureMap(doc, title));
+        } catch (err) {
+          if (stale()) return;
+          if (attempt > 0) throw err;
+          resetFeed(kernel as unknown as FeedKernel, doc);
+          continue;
+        }
+        if (stale()) return;
+        if (created || mapId !== graphRef.current?.mapId) await loadGraph();
+        if (stale()) return;
+        const loc = await locateScope(doc, mapId);
+        if (stale()) return;
+        // 刚新建导图＝主进程会话一定在（graphEnsureMap 建图前校验过），此时 ready=false 是探针对不上，重送也无济于事
+        if (!loc.ready && attempt === 0 && !created) {
+          resetFeed(kernel as unknown as FeedKernel, doc);
+          continue;
+        }
+        scope = loc.scope;
+        break;
+      }
+      if (!scope) {
+        // 骨架（若刚建）已显示；定位不到所在目录节点（如停在封面 / 目录页）→ 明确告知，不静默
         setBusy(null);
-        showStatus(T("原文还在读取，稍后再试。"));
+        showStatus(T("没定位到正在读的这一节，翻到正文里再试。"), 5000);
+        scheduleSample(0);
         return;
       }
-      const { mapId, created } = await mindmapV2Api.ensureMap(documentId, title);
-      if (created || mapId !== graphRef.current?.mapId) await loadGraph();
-      const r = await mindmapV2Api.expand({ mapId, nodeId: scopeNodeId, trigger: "click" });
+      const r = await mindmapV2Api.expand({ mapId, nodeId: scope.id, trigger: "click" });
+      if (stale()) return;
       if (r.skipped) {
         setBusy(null);
-        showStatus(T(SKIP[r.skipped] || r.skipped));
+        // 本节原文太短（作用域被判 floor）时主进程按「已展开」跳过——如实说「已是最细」
+        const why = r.skipped === "cached" && scope.floor ? "floor" : r.skipped;
+        showStatus(T(SKIP[why] || why));
       } else setBusy(r.jobId || null);
+      scheduleSample(0);
     } catch (err) {
+      if (stale()) return;
       setBusy(null);
       showStatus(T("没能生成：{msg}", { msg: err instanceof Error ? err.message : String(err) }), 6000);
+    } finally {
+      if (genRunRef.current === doc) genRunRef.current = null;
     }
   };
   const deepen = async (id: string) => {
@@ -629,14 +685,6 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
     }
   };
   const closeExplain = useCallback(() => setExplainFor(null), []);
-
-  // 生成「本节」用的作用域节点：随注意力样本更新（保留最近一次非空值）
-  const scopeIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!graph) return;
-    const gid = attnRef.current.groupId;
-    if (gid) scopeIdRef.current = gid === ROOT_ID ? (graph.nodes[attnRef.current.readingId ?? ""]?.parentId ?? null) : gid;
-  });
 
   const explainText = explainFor ? graph?.explain[explainFor] || graph?.nodes[explainFor]?.explain || explainLocal[explainFor] || "" : "";
   const explainBusy = !!(explainFor && explainBusyId === explainFor);

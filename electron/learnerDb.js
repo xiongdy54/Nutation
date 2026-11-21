@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS kp_states (
   first_l3_at INTEGER, first_l4_at INTEGER,
   computed_at INTEGER NOT NULL
 );
+-- v49.137 / D304 的 kg_layout（布局缓存）于 v49.143 / D310 退役：派生库可删可重建，存量表留着无害、不再读写。
+-- v49.140 / D307：知识点向量缓存（语义匹配档；模型或知识点文本变化即重算，可删可重建）
+CREATE TABLE IF NOT EXISTS kg_vectors (
+  kp_id TEXT NOT NULL, model_key TEXT NOT NULL, text_fp TEXT NOT NULL, vec BLOB NOT NULL,
+  PRIMARY KEY (kp_id, model_key)
+);
 CREATE TABLE IF NOT EXISTS lexemes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   lang TEXT NOT NULL, key TEXT NOT NULL,

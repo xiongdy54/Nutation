@@ -1,3 +1,5 @@
+import KgVectorSettings from "./kg/KgVectorSettings";
+import KgAtlasSettings from "./kg/KgAtlasSettings";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { isImeComposing } from "../lib/ime";
 import { SKINS } from "../skins";
@@ -227,7 +229,10 @@ const SECTION_GROUPS: Array<{ label: string; items: Array<{ id: string; label: s
     label: "智能",
     items: [
       { id: "ai", label: "AI 服务" },
-      { id: "dict", label: "词典与查词" }
+      { id: "dict", label: "词典与查词" },
+      // v49.140 / D307：知识图谱去重的可选向量档
+      { id: "kgvector", label: "语义匹配" },
+      { id: "kgatlas", label: "知识全谱" }
       // v48.114（D159）：「用户记忆」（sec-memory）随功能暂时移除——重实装时按 §6.7 回插本项
     ]
   },
@@ -3976,6 +3981,8 @@ export default function SettingsPanel({
             {/* 智能 */}
             <AISection />
             <DictSection />
+            <KgVectorSettings />
+            <KgAtlasSettings />
             {/* v48.114（D159）：<MemorySection />（sec-memory）随用户记忆功能暂时移除，代码保留待重实装 */}
 
             {/* 数据与效率 */}

@@ -25,6 +25,9 @@ type SvgProps = IconProps & {
   height?: number;
   fill?: string;
   stroke?: string;
+  preserveAspectRatio?: string;
+  /** 素画布：不注入宽高 / 描边 / 填充 / 线帽默认值，全部交给 CSS（PlotSvg 用） */
+  plain?: boolean;
 };
 
 function Svg({
@@ -37,18 +40,18 @@ function Svg({
   width,
   height,
   fill = "none",
-  stroke = "currentColor"
+  stroke = "currentColor",
+  preserveAspectRatio,
+  plain = false
 }: SvgProps & { children: ReactNode }) {
+  const paint = plain
+    ? {}
+    : { width: width ?? size, height: height ?? size, fill, stroke, strokeWidth, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   return (
     <svg
-      width={width ?? size}
-      height={height ?? size}
+      {...paint}
       viewBox={viewBox}
-      fill={fill}
-      stroke={stroke}
-      strokeWidth={strokeWidth}
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      preserveAspectRatio={preserveAspectRatio}
       className={className}
       role={title ? "img" : undefined}
       aria-hidden={title ? undefined : true}
@@ -269,6 +272,69 @@ export const IconArrowLeft = (p: IconProps) => (
     <path d="m12 19-7-7 7-7" />
   </Svg>
 );
+
+/* —— 知识图谱工具条（16×16 / 10×10 栅格；尺寸、描边、填充由 kg.css 的 .kg-icon svg / .kg-play svg 决定） —— */
+
+/** 图谱：查找 */
+export const IconKgSearch = (p: IconProps) => (
+  <Svg viewBox="0 0 16 16" {...p}>
+    <circle cx="7" cy="7" r="4.5" />
+    <path d="M10.5 10.5 14 14" />
+  </Svg>
+);
+
+/** 图谱：更多（实心三点，配 .kg-dots） */
+export const IconKgDots = (p: IconProps) => (
+  <Svg viewBox="0 0 16 16" fill="currentColor" stroke="none" {...p}>
+    <circle cx="3" cy="8" r="1.25" />
+    <circle cx="8" cy="8" r="1.25" />
+    <circle cx="13" cy="8" r="1.25" />
+  </Svg>
+);
+
+/** 图谱：图例（问号圈） */
+export const IconKgHelp = (p: IconProps) => (
+  <Svg viewBox="0 0 16 16" {...p}>
+    <circle cx="8" cy="8" r="6" />
+    <path d="M6.3 6.2a1.8 1.8 0 1 1 2.4 1.7c-.5.2-.7.5-.7 1v.4" />
+    <circle cx="8" cy="11.6" r=".35" />
+  </Svg>
+);
+
+/** 生长回放：播放（实心） */
+export const IconKgPlay = (p: IconProps) => (
+  <Svg viewBox="0 0 10 10" fill="currentColor" stroke="none" {...p}>
+    <path d="M2 1 9 5 2 9Z" />
+  </Svg>
+);
+
+/** 生长回放：暂停（实心） */
+export const IconKgPause = (p: IconProps) => (
+  <Svg viewBox="0 0 10 10" fill="currentColor" stroke="none" {...p}>
+    <rect x="1.5" y="1" width="2.4" height="8" />
+    <rect x="6.1" y="1" width="2.4" height="8" />
+  </Svg>
+);
+
+/** 数据驱动的小图形画布（时间轴刻度、图例样例等，不是图标）：
+ *  不注入任何描边 / 填充默认值，外观完全由调用方 className 对应的 CSS 决定；纯装饰。 */
+export function PlotSvg({
+  viewBox,
+  className,
+  preserveAspectRatio,
+  children
+}: {
+  viewBox: string;
+  className?: string;
+  preserveAspectRatio?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Svg plain viewBox={viewBox} className={className} preserveAspectRatio={preserveAspectRatio}>
+      {children}
+    </Svg>
+  );
+}
 
 /** 书架空态插画（v49.90 / D257）：品牌设计系统「空状态 empty」——地平线 + 点线螺旋 + 种子。
  *  参数与点线坐标照抄 nutation-design docs/10-components.md「空状态」与

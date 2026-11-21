@@ -1,6 +1,6 @@
 // 结构全景 · 焦点节点卡（D254 v2；docs/design/STRUCTURE-ATLAS-D254.md §6）。
 // 浮在焦点字形下方 8px；动作行 + 讲解 + 详情；复用随文结构的 .flow-actions / .flow-explain / .flow-dots / .flow-status。
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { GraphState, PatternKey, V2Node } from "../../../lib/mindmap/v2/types";
 import { PATTERN_KEYS, ROOT_ID } from "../../../lib/mindmap/v2/types";
 import { PATTERN_LABEL } from "../../../lib/flow/layout";
@@ -9,6 +9,9 @@ import { edgesOf } from "../../../lib/mindmap/v2/graph";
 import { mindmapV2Api, type GraphNodeText } from "../../../lib/mindmapV2";
 import { useT } from "../../../lib/i18n";
 import { FLOW } from "../../../lib/flow/layout";
+import { atlasApi, atlasGloss, atlasLabel, type AtlasNode } from "../../../lib/atlas";
+import { isImeComposing } from "../../../lib/ime";
+import AtlasMissHint from "../../kg/AtlasMissHint";
 
 const STATE_LABEL: Record<string, string> = {
   more: "可深挖",
@@ -40,6 +43,11 @@ export interface AtlasCardProps {
   onToggleFold: () => void;
   onFocusNode: (id: string) => void;
   onSetPattern: (id: string, key: PatternKey | null) => void;
+  /** v49.146（T4）：本节点的全谱挂靠；点击 → 打开图谱 */
+  links?: { atlasId: string; label: string | null; source: string }[];
+  onOpenGraph?: (atlasId: string) => void;
+  /** D314 修订：手动改挂靠——on=true 加（来源记为用户）；on=false 移除 */
+  onSetLink?: (atlasId: string, on: boolean) => void;
 }
 
 export default function AtlasCard(p: AtlasCardProps) {
@@ -68,6 +76,23 @@ export default function AtlasCard(p: AtlasCardProps) {
         ))}
         {p.preview && (node.state === "more" || node.state === "stub") ? <span className="atlas-card-hint">{T("生成导图后可以继续深挖")}</span> : null}
       </div>
+      {(p.links && p.links.length > 0 && p.onOpenGraph) || (p.onSetLink && !p.preview) ? (
+        <div className="atlas-card-links" data-atlas-links={p.links?.length ?? 0}>
+          {(p.links || []).map((l) => (
+            <span key={l.atlasId}>
+              {p.onOpenGraph ? (
+                <button type="button" title={T("在知识图谱中查看")} onClick={() => p.onOpenGraph!(l.atlasId)}>{l.label || l.atlasId}</button>
+              ) : (
+                <span>{l.label || l.atlasId}</span>
+              )}
+              {p.onSetLink ? (
+                <button type="button" className="atlas-link-x" aria-label={T("移除")} title={T("移除这条挂靠")} onClick={() => p.onSetLink!(l.atlasId, false)}>×</button>
+              ) : null}
+            </span>
+          ))}
+          {p.onSetLink && !p.preview ? <AddLink onPick={(id) => p.onSetLink!(id, true)} /> : null}
+        </div>
+      ) : null}
       {p.explainOpen ? (
         <div className="flow-explain" style={{ maxHeight: FLOW.EXPLAIN_MAX_H }}>
           {p.explainBusy && !p.explainText ? <span className="flow-dots" aria-label={T("正在生成…")}><i /><i /><i /></span> : null}
@@ -177,5 +202,58 @@ function AtlasDetail(p: {
         <button type="button" className="atlas-link-btn" onClick={() => p.onDeepen(true)}>{T("仍要尝试深挖")}</button>
       ) : null}
     </div>
+  );
+}
+
+/** D314 修订：手动给节点添加全谱挂靠——小搜索框（经 atlas:search，本地没有时同时查在线）→ 点结果即挂 */
+function AddLink({ onPick }: { onPick: (atlasId: string) => void }) {
+  const T = useT();
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<AtlasNode[]>([]);
+  const [done, setDone] = useState(false);
+  const seq = useRef(0);
+  const reset = () => {
+    setOpen(false);
+    setQ("");
+    setHits([]);
+    setDone(false);
+  };
+  const run = async () => {
+    const t = q.trim();
+    if (!t) return;
+    const my = ++seq.current;
+    setDone(false);
+    const r = (await atlasApi()?.atlasSearch(t, { limit: 8 }).catch(() => [] as AtlasNode[])) || [];
+    if (my !== seq.current) return;
+    setHits(r);
+    setDone(true);
+  };
+  if (!open) return <button type="button" data-atlas-act="add-link" onClick={() => setOpen(true)}>{T("添加")}</button>;
+  return (
+    <span className="atlas-add-link" data-atlas-add-link>
+      <input
+        autoFocus
+        className="atlas-add-link-input"
+        value={q}
+        aria-label={T("搜索全谱")}
+        placeholder={T("搜索全谱")}
+        onChange={(e) => { setQ(e.target.value); setDone(false); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !isImeComposing(e)) void run();
+        }}
+      />
+      <button type="button" onClick={reset}>{T("取消")}</button>
+      {hits.length > 0 ? (
+        <span className="atlas-add-link-hits">
+          {hits.map((h) => (
+            <button key={h.id} type="button" data-atlas-add-hit={h.id} title={atlasGloss(h) || T(h.kindLabel)} onClick={() => { onPick(h.id); reset(); }}>
+              {atlasLabel(h)}
+            </button>
+          ))}
+        </span>
+      ) : null}
+      <AtlasMissHint show={done && hits.length === 0} className="atlas-card-hint" />
+    </span>
   );
 }

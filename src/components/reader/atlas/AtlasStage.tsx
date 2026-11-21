@@ -44,6 +44,8 @@ export interface AtlasStageProps {
   onDeepen?: (id: string) => void;
   /** 点击已聚焦节点：重新打开节点卡（失焦关闭后） */
   onCardOpen?: () => void;
+  /** v49.146（T4）：节点 id → 全谱挂靠数（有则在节点旁画小圆点 + 数量） */
+  linkCounts?: Record<string, number>;
 }
 
 // ---------------------------------------------------------------- 几何格式化 / SVG 路径
@@ -74,7 +76,7 @@ function decoBox(d: AtlasScene["decos"][number]): { x: number; y: number; w: num
 interface GlyphDraw { gl: AGlyph; phase: Phase; x: number; y: number; w: number; opacity: number; delay: number; dim: boolean }
 
 const GlyphRow = memo(
-  function GlyphRow({ d, focus, readingId, T }: { d: GlyphDraw; focus: string; readingId: string | null; T: (k: string, p?: Record<string, string | number>) => string }) {
+  function GlyphRow({ d, focus, readingId, links, T }: { d: GlyphDraw; focus: string; readingId: string | null; links: number; T: (k: string, p?: Record<string, string | number>) => string }) {
     const gl = d.gl;
     const reading = !!gl.nodeId && gl.nodeId === readingId;
     const style: CSSProperties = {
@@ -129,10 +131,15 @@ const GlyphRow = memo(
             {gl.expanded ? "−" : `+${gl.kids}`}
           </button>
         ) : null}
+        {links > 0 ? (
+          <span className="ag-link" data-atlas-link={links} title={T("关联 {n} 个全谱节点", { n: links })} aria-label={T("关联 {n} 个全谱节点", { n: links })}>
+            <i aria-hidden="true" />{links}
+          </span>
+        ) : null}
       </div>
     );
   },
-  (a, b) => a.d.gl === b.d.gl && a.d.phase === b.d.phase && a.d.x === b.d.x && a.d.y === b.d.y && a.d.w === b.d.w && a.d.opacity === b.d.opacity && a.d.delay === b.d.delay && a.d.dim === b.d.dim && a.focus === b.focus && a.readingId === b.readingId && a.T === b.T,
+  (a, b) => a.d.gl === b.d.gl && a.d.phase === b.d.phase && a.d.x === b.d.x && a.d.y === b.d.y && a.d.w === b.d.w && a.d.opacity === b.d.opacity && a.d.delay === b.d.delay && a.d.dim === b.d.dim && a.focus === b.focus && a.readingId === b.readingId && a.links === b.links && a.T === b.T,
 );
 
 // ---------------------------------------------------------------- 画布
@@ -1119,7 +1126,7 @@ export default function AtlasStage(props: AtlasStageProps) {
         </SvgRoot>
         <div className="atlas-glyphs">
           {glyphDraws.map((d) => (
-            <GlyphRow key={d.gl.id} d={d} focus={focusIn} readingId={props.readingId} T={T} />
+            <GlyphRow key={d.gl.id} d={d} focus={focusIn} readingId={props.readingId} links={(d.gl.nodeId && props.linkCounts?.[d.gl.nodeId]) || 0} T={T} />
           ))}
         </div>
       </div>

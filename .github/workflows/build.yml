@@ -126,6 +126,18 @@ jobs:
           [ -n "$IN_APPLE_APP_SPECIFIC_PASSWORD" ] && echo "APPLE_APP_SPECIFIC_PASSWORD=$IN_APPLE_APP_SPECIFIC_PASSWORD" >> "$GITHUB_ENV" || true
           [ -n "$IN_APPLE_TEAM_ID" ] && echo "APPLE_TEAM_ID=$IN_APPLE_TEAM_ID" >> "$GITHUB_ENV" || true
 
+      # v49.146 / D315：随包只带「核心库」（scripts/atlas/build_core.py 产物，按 rank 取前若干节点 + 上级链闭包）。
+      # 仓库变量 ATLAS_CORE_URL 指向压缩后的 atlas-core.sqlite.gz（发布资产）；未配置时跳过（包内无全谱，
+      # 应用内回落快照 / 在线分片 / 用户下载的完整库）。完整库不再进安装包。只在打包时联网，应用运行时不联网。
+      - name: Fetch knowledge atlas core (optional)
+        if: ${{ vars.ATLAS_CORE_URL != '' }}
+        shell: bash
+        run: |
+          mkdir -p atlas
+          curl -fL --retry 5 -o atlas/atlas-core.sqlite.gz "${{ vars.ATLAS_CORE_URL }}"
+          gunzip -f atlas/atlas-core.sqlite.gz
+          ls -la atlas
+
       - name: Package (electron-builder, unsigned path without secrets)
         shell: bash
         env:

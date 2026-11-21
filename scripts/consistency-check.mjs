@@ -56,6 +56,9 @@ const COLOR_ALLOW = [
   // 结构流宿主：用 .flow-probe 把阅读主题 Token 解析成实色交给 SVG；这里的字面量只是
   // 「Token 未装载 / jsdom 无法求值 var()」时的回落色板（不是业务配色，皮肤可覆盖 Token 后即被解析值替换）
   /^src\/components\/reader\/flow\/StructureFlowHost\.tsx$/,
+  // 知识图谱 canvas 渲染器：读主题 Token（--kg-*）后必须转成数值 RGB 才能在 canvas 上混色绘制；
+  // 这里的字面量只是解析探针的复位值 "#000" 与把数值拼回 rgb() 字符串，不含任何业务配色
+  /^src\/components\/kg\/graphRenderer\.ts$/,
 ];
 const isColorAllowed = (rel) => COLOR_ALLOW.some((re) => re.test(rel));
 

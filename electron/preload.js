@@ -362,6 +362,89 @@ contextBridge.exposeInMainWorld("shortcutsAPI", {
 });
 
 // v40（K1，D37 / §4.2-23）：知识地基——KP / 关系 / 提案 / 外部 ID（KnowledgeBase 渲染层只持 API）
+// v49.137 / D304 知识图谱
+contextBridge.exposeInMainWorld("kgAPI", {
+  graph: (opts) => ipcRenderer.invoke("kg:graph", opts || {}),
+  snapshotAt: (t) => ipcRenderer.invoke("kg:snapshotAt", t),
+  today: () => ipcRenderer.invoke("kg:today"),
+  cardPanel: (cardId) => ipcRenderer.invoke("kg:cardPanel", cardId),
+  appearances: (kpId) => ipcRenderer.invoke("kg:appearances", kpId),
+  atlasAppearances: (atlasId) => ipcRenderer.invoke("kg:atlasAppearances", atlasId),
+  atlasReport: (payload) => ipcRenderer.invoke("atlas:report", payload),
+  // D314 修订：挂靠由主进程自动完成；mapLink:changed 单向推送（载荷 { mapId }），视图据此刷新
+  onMapLinkChanged: (callback) => {
+    const handler = (_e, payload) => callback(payload);
+    ipcRenderer.on("mapLink:changed", handler);
+    return () => ipcRenderer.removeListener("mapLink:changed", handler);
+  },
+  mapLinkRefsForMap: (mapId) => ipcRenderer.invoke("mapLink:refsForMap", mapId),
+  mapLinkRefsForAtlas: (ids) => ipcRenderer.invoke("mapLink:refsForAtlas", ids),
+  mapLinkSetUserRef: (mapId, nodeId, atlasId, on) => ipcRenderer.invoke("mapLink:setUserRef", mapId, nodeId, atlasId, on),
+  defVersions: (kpId) => ipcRenderer.invoke("kg:defVersions", kpId),
+  reviseDefinition: (kpId, payload) => ipcRenderer.invoke("kg:reviseDefinition", kpId, payload),
+  revertDefinition: (kpId, seq) => ipcRenderer.invoke("kg:revertDefinition", kpId, seq),
+  archive: (kpId) => ipcRenderer.invoke("kg:archive", kpId),
+  restore: (kpId) => ipcRenderer.invoke("kg:restore", kpId),
+  setFacet: (cardId, facet) => ipcRenderer.invoke("kg:setFacet", cardId, facet),
+  moveCard: (cardId, kpId) => ipcRenderer.invoke("kg:moveCard", cardId, kpId),
+  resolveAttribution: (items) => ipcRenderer.invoke("kg:resolveAttribution", items),
+  ensurePoint: (payload) => ipcRenderer.invoke("kg:ensurePoint", payload),
+  // v49.143 / D311 知识全谱
+  atlasStatus: () => ipcRenderer.invoke("atlas:status"),
+  atlasSearch: (q, opts) => ipcRenderer.invoke("atlas:search", q, opts || {}),
+  atlasNode: (id) => ipcRenderer.invoke("atlas:node", id),
+  atlasNeighbors: (id, opts) => ipcRenderer.invoke("atlas:neighbors", id, opts || {}),
+  atlasCandidates: (text, opts) => ipcRenderer.invoke("atlas:candidates", text, opts || {}),
+  atlasRoadmap: (targets) => ipcRenderer.invoke("atlas:roadmap", targets),
+  atlasDownloadStart: () => ipcRenderer.invoke("atlas:download:start"),
+  atlasDownloadCancel: () => ipcRenderer.invoke("atlas:download:cancel"),
+  onAtlasDownloadProgress: (callback) => {
+    const handler = (_e, p) => callback(p);
+    ipcRenderer.on("atlas:download:progress", handler);
+    return () => ipcRenderer.removeListener("atlas:download:progress", handler);
+  },
+  linkAtlas: (kpId, atlasId, atlasParent) => ipcRenderer.invoke("kg:linkAtlas", kpId, atlasId, atlasParent),
+  unmappedKps: () => ipcRenderer.invoke("kg:unmappedKps"),
+  setAtlasAlso: (kpId, atlasId, on) => ipcRenderer.invoke("kg:setAtlasAlso", kpId, atlasId, on),
+  // v49.147 / D316 解散知识点并给卡片重挂
+  reattachPlan: (kpIds) => ipcRenderer.invoke("kg:reattachPlan", kpIds),
+  reattachApply: (token, decisions) => ipcRenderer.invoke("kg:reattachApply", token, decisions),
+  reattachUndo: (undoToken) => ipcRenderer.invoke("kg:reattachUndo", undoToken),
+  onReattachProgress: (callback) => {
+    const handler = (_e, p) => callback(p);
+    ipcRenderer.on("kg:reattachProgress", handler);
+    return () => ipcRenderer.removeListener("kg:reattachProgress", handler);
+  },
+  recentLabels: (limit, text) => ipcRenderer.invoke("kg:recentLabels", limit, text),
+  contrastCandidate: () => ipcRenderer.invoke("kg:contrastCandidate"),
+  // v49.149 / D318 知识点＝义项
+  senseJudged: (payload) => ipcRenderer.invoke("kg:senseJudged", payload),
+  senseExamples: (limit) => ipcRenderer.invoke("kg:senseExamples", limit),
+  labelDefs: (labels) => ipcRenderer.invoke("kg:labelDefs", labels),
+  // v49.148 / D317 连线三层
+  edgeEvidence: (a, b) => ipcRenderer.invoke("kg:edgeEvidence", a, b),
+  connectPair: (payload) => ipcRenderer.invoke("kg:connectPair", payload),
+  undoConnect: (undo) => ipcRenderer.invoke("kg:undoConnect", undo),
+  dismissPair: (a, b) => ipcRenderer.invoke("kg:dismissPair", a, b),
+  undoDismiss: (undo) => ipcRenderer.invoke("kg:undoDismiss", undo),
+  updateRelation: (id, patch) => ipcRenderer.invoke("kg:updateRelation", id, patch),
+  explainPair: (payload) => ipcRenderer.invoke("kg:explainPair", payload),
+  relationAsked: (a, b, outcome) => ipcRenderer.invoke("kg:relationAsked", a, b, outcome),
+  unattachedCards: (limit) => ipcRenderer.invoke("kg:unattachedCards", limit),
+  attachCards: (payload) => ipcRenderer.invoke("kg:attachCards", payload),
+  addKnown: (payload) => ipcRenderer.invoke("kg:addKnown", payload),
+  vectorStatus: () => ipcRenderer.invoke("kg:vectorStatus"),
+  vectorSetMode: (mode, opts) => ipcRenderer.invoke("kg:vectorSetMode", mode, opts),
+  vectorDownload: (tier) => ipcRenderer.invoke("kg:vectorDownload", tier),
+  vectorCancel: () => ipcRenderer.invoke("kg:vectorCancel"),
+  vectorRemove: (tier) => ipcRenderer.invoke("kg:vectorRemove", tier),
+  onVectorProgress: (callback) => {
+    const handler = (_e, p) => callback(p);
+    ipcRenderer.on("kg:vectorProgress", handler);
+    return () => ipcRenderer.removeListener("kg:vectorProgress", handler);
+  },
+  markContrastHandled: (pair, action) => ipcRenderer.invoke("kg:markContrastHandled", pair, action)
+});
 contextBridge.exposeInMainWorld("knowledgeAPI", {
   listPoints: (filter) => ipcRenderer.invoke("knowledge:listPoints", filter || {}),
   // D158：只读——所选知识点归并族的并集（含所选 id 本身）
@@ -374,19 +457,6 @@ contextBridge.exposeInMainWorld("knowledgeAPI", {
   listRelations: (filter) => ipcRenderer.invoke("knowledge:listRelations", filter || {}),
   createRelation: (payload) => ipcRenderer.invoke("knowledge:createRelation", payload),
   deleteRelation: (id) => ipcRenderer.invoke("knowledge:deleteRelation", id),
-  listRefs: (kpId) => ipcRenderer.invoke("knowledge:listRefs", kpId),
-  createRef: (payload) => ipcRenderer.invoke("knowledge:createRef", payload),
-  deleteRef: (id) => ipcRenderer.invoke("knowledge:deleteRef", id),
-  listProposals: (filter) => ipcRenderer.invoke("knowledge:listProposals", filter || {}),
-  resolveProposal: (id, accept, overridePayload) => ipcRenderer.invoke("knowledge:resolveProposal", id, accept, overridePayload || null),
-  migrationSuggestions: () => ipcRenderer.invoke("knowledge:migrationSuggestions"),
-  // v41（K2-A，D38）：AI 抽取归一与关系（输入装配/裁决在主进程；AI 调用由渲染层编排）
-  kpClusters: () => ipcRenderer.invoke("knowledge:kpClusters"),
-  kpExtractPrepare: (opts) => ipcRenderer.invoke("knowledge:kpExtractPrepare", opts || {}),
-  kpExtractApply: (rawExtraction, rawRelations) => ipcRenderer.invoke("knowledge:kpExtractApply", rawExtraction, rawRelations),
-  acceptAllPending: () => ipcRenderer.invoke("knowledge:acceptAllPending"),
-  // v43（K2-B）：KnowledgeLint K4/K7/K8 报告型检查
-  lint: () => ipcRenderer.invoke("knowledge:lint")
 });
 
 // v48.80（D124 / 设计稿 §11.1）：学习者模型——轨道 / 推荐 / 学习事件 / 语言专用查询（一个通道一个方法）

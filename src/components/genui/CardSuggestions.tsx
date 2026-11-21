@@ -6,6 +6,7 @@ import { lintCard, needsAttribution, parseCloze, type CardDraft, type CardQualif
 import { sanitizeDomain } from "../../lib/udc";
 import { IconAlert } from "../icons";
 import { useT } from "../../lib/i18n";
+import KpAttributionChip from "./KpAttributionChip";
 
 // 防 AI 返回字段类型漂移导致渲染崩溃（ruleNotes/warnings 可能是字符串）
 export function toList(v: unknown): string[] {
@@ -193,6 +194,12 @@ export default function CardSuggestions({ panel, onAccept, onAcceptOcclusion, on
                   </div>
                 </div>
                 <div className="ai-draft-back">{d.back}</div>
+                {/* v49.138 / D305：知识点归属与侧面（接受卡片即确认归属） */}
+                {d.kpAttribution && (
+                  <div className="ai-draft-kp">
+                    <KpAttributionChip draft={d} onChange={(patch) => onEdit(i, patch)} />
+                  </div>
+                )}
                 {dIsOcc && occlLabel && (
                   <div className="ai-draft-notes mono">{T("区域 {n} · {label}", { n: (d.ord ?? d.occlusion?.ord ?? 0) + 1, label: occlLabel })}</div>
                 )}

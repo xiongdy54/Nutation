@@ -21,6 +21,10 @@ function computeKpLevel(input) {
   const extractCount = Number(input.extractCount) || 0;
   const passedUnitCount = Number(input.passedUnitCount) || 0;
   const selfExplainClear90 = Number(input.selfExplainClear90) || 0;
+  // D304（PARAM_VERSION 2）：知识图谱侧面。该 KP 有侧面标注的卡时，L4 的广度条件改为「通过的侧面 ≥ 3」；
+  // 全无侧面标注（存量与手动卡）沿用旧条件「≥3 张且卡片类型 ≥2 种」，避免存量 L4 无故降级。
+  const facetAnnotated = Boolean(input.facetAnnotated);
+  const passedFacetCount = Number(input.passedFacetCount) || 0;
   const reviewed = cards.filter((c) => c.reviewed);
   const n = reviewed.length;
   const meanR = n > 0 ? reviewed.reduce((s, c) => s + (Number(c.R) || 0), 0) / n : 0;
@@ -46,7 +50,7 @@ function computeKpLevel(input) {
     meanR >= lmParams.KP.R_SOLID &&
     longRatio >= lmParams.KP.LONG_RATIO &&
     lapses30Total === 0 &&
-    (hasDeep || (n >= 3 && types.size >= 2))
+    (hasDeep || (facetAnnotated ? passedFacetCount >= lmParams.KP.L4_FACETS : n >= 3 && types.size >= 2))
   ) {
     level = 4;
   } else if (n >= 1 && meanR >= lmParams.KP.R_CONSOL && stableRatio >= lmParams.KP.STABLE_RATIO) {
@@ -79,7 +83,9 @@ function computeKpLevel(input) {
     distinctDays,
     totalReviews,
     extractCount,
-    passedUnitCount
+    passedUnitCount,
+    passedFacetCount,
+    facetAnnotated
   };
   return { level, score, confidence, fading, metrics };
 }

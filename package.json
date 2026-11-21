@@ -37,12 +37,14 @@
     "dist:dir": "npm run build && electron-builder --dir --publish never"
   },
   "dependencies": {
+    "@huggingface/tokenizers": "0.2.0",
     "better-sqlite3": "13.0.3",
     "electron-updater": "^6.8.9",
     "fsrs-rs-nodejs": "^0.9.1",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.3",
     "markdown-it": "^14.3.1",
+    "onnxruntime-web": "1.22.0",
     "opencc-js": "^1.4.2",
     "pdfjs-dist": "^6.3.289",
     "sql.js": "^1.14.2",

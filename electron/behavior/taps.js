@@ -133,9 +133,6 @@ const TAPS = {
   "knowledge:unmergePoint": { type: "knowledge.op", ok: okNotFalse, project: (a) => ({ entity_type: "kp", entity_id: a[0] ? String(a[0]) : null, kp_id: a[0] ? String(a[0]) : null, props: { op: "unmerge" } }) },
   "knowledge:createRelation": { type: "knowledge.op", ok: okNotFalse, project: () => ({ props: { op: "relation" } }) },
   "knowledge:deleteRelation": { type: "knowledge.op", ok: okNotFalse, project: () => ({ props: { op: "deleteRelation" } }) },
-  "knowledge:createRef": { type: "knowledge.op", ok: okNotFalse, project: () => ({ props: { op: "ref" } }) },
-  "knowledge:resolveProposal": { type: "knowledge.op", ok: okNotFalse, project: () => ({ props: { op: "resolveProposal" } }) },
-  "knowledge:kpExtractApply": { type: "knowledge.op", ok: okNotFalse, project: () => ({ props: { op: "extractApply" } }) },
   "learner:saveTrack": { type: "learner.track_op", ok: okNotFalse, project: (a, r) => ({ entity_type: "track", entity_id: idOf(r), props: { op: "save", mode: a[0]?.mode ? String(a[0].mode).slice(0, 24) : null } }) },
   "learner:deleteTrack": { type: "learner.track_op", ok: okNotFalse, project: (a) => ({ entity_type: "track", entity_id: a[0] ? String(a[0]) : null, props: { op: "delete" } }) },
   "learner:setTrackMaterial": { type: "learner.track_op", ok: okNotFalse, project: (a) => ({ entity_type: "track", entity_id: a[0]?.trackId ? String(a[0].trackId) : null, props: { op: "setMaterial", mode: null } }) },
@@ -195,8 +192,6 @@ const COUNT_ONLY = {
     "dict:sources", "dict:cacheGet",
     "journal:list", "journal:dates", "journal:day", "journal:draft",
     "knowledge:listPoints", "knowledge:resolveFamilies", "knowledge:getPoint", "knowledge:listRelations",
-    "knowledge:listRefs", "knowledge:listProposals", "knowledge:migrationSuggestions", "knowledge:kpClusters",
-    "knowledge:kpExtractPrepare", "knowledge:lint",
     "learner:status", "learner:refresh", "learner:recommend", "learner:feedback", "learner:listTracks",
     "learner:kpLevels", "learner:unitText", "learner:contextReel", "learner:sentenceMine",
     "learner:placementSample", "learner:lexStats", "learner:rebuild",
@@ -238,7 +233,23 @@ const COUNT_ONLY = {
     "mindmap:cancel", "mindmap:delete", "mindmap:setActive",
     "mindmap:graphCancel", "mindmap:graphResume", "mindmap:graphSetView",
   ],
-  "知识点批量采纳 / 引用删除（并入 knowledge.op 预留）": ["knowledge:acceptAllPending", "knowledge:deleteRef"],
+  "知识图谱（v49.137 / D304：读为派生快照；写的真源是 kp_definition_versions / kg_events / cards，BDI 不复制事实）": [
+    "kg:graph", "kg:snapshotAt", "kg:today", "kg:cardPanel", "kg:appearances", "kg:atlasAppearances", "kg:defVersions",
+    "mapLink:refsForMap", "mapLink:refsForAtlas", "mapLink:setUserRef",
+    "kg:reviseDefinition", "kg:revertDefinition", "kg:archive", "kg:restore", "kg:setFacet", "kg:moveCard",
+    "kg:resolveAttribution", "kg:ensurePoint", "kg:recentLabels", "kg:contrastCandidate", "kg:markContrastHandled",
+    "kg:unattachedCards", "kg:attachCards", "kg:addKnown",
+    "kg:vectorStatus", "kg:vectorSetMode", "kg:vectorDownload", "kg:vectorCancel", "kg:vectorRemove",
+    // v49.149 / D318 知识点＝义项：辨析裁决（真源 kg_events sense_judged）、过去的辨析与定义摘要（只读）
+    "kg:senseJudged", "kg:senseExamples", "kg:labelDefs",
+  ],
+  "知识全谱（v49.143 / D311：随包只读参考数据；唯一写入＝知识点 ↔ 全谱节点对应，真源在 knowledge_points）": [
+    "atlas:status", "atlas:search", "atlas:node", "atlas:neighbors", "atlas:candidates", "atlas:roadmap",
+    "atlas:download:start", "atlas:download:cancel", "atlas:report",
+    "kg:linkAtlas", "kg:unmappedKps", "kg:setAtlasAlso",
+    "kg:reattachPlan", "kg:reattachApply", "kg:reattachUndo", // v49.147 / D316：解散知识点并重挂卡片（事实真源仍是 cards / knowledge_points / kg_events）
+    "kg:edgeEvidence", "kg:connectPair", "kg:undoConnect", "kg:dismissPair", "kg:undoDismiss", "kg:updateRelation", "kg:explainPair", "kg:relationAsked", // v49.148 / D317 连线三层（事实真源是 knowledge_relations / knowledge_relation_dismissals / learning_events / kg_events）
+  ],
 };
 
 const COUNT_ONLY_SET = new Set(Object.values(COUNT_ONLY).flat());

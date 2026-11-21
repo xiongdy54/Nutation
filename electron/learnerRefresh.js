@@ -7,6 +7,7 @@ const lmParams = require("./lmParams");
 const lmText = require("./lmText");
 const lmLex = require("./lmLex");
 const lmLevels = require("./lmLevels");
+const kgCore = require("./kgCore");
 const lmRecommend = require("./lmRecommend");
 const learnerDb = require("./learnerDb");
 const { readSettings } = require("./settingsStore");
@@ -730,6 +731,7 @@ async function stepKp() {
   const facts = await loadFacts();
   const now = Date.now();
   const cardKp = dbModule.resolveCardKpMap();
+  const cutoffHour = Number(readSettings().app?.dayCutoffHour) || 0;
   const decayCache = new Map();
   const decayOf = (configId) => {
     const key = String(configId || "");
@@ -850,12 +852,25 @@ async function stepKp() {
         reviewCount: reviews.length
       };
     });
+    // D304：侧面（知识图谱 §5.3）——每张有侧面的卡按延迟回忆闸门判「通过」；自评清楚记 why 通过
+    const facetPassed = new Set();
+    let facetAnnotated = false;
+    for (const card of cardsByKp.get(kpId) || []) {
+      const facet = kgCore.normFacet(card.facet);
+      if (!facet) continue;
+      facetAnnotated = true;
+      const revs = (reviewsByCard.get(String(card.id)) || []).map((r) => ({ t: Number(r.reviewedAt) || 0, grade: gradeOfRating(r.rating) }));
+      if (kgCore.cardLitAt(revs, cutoffHour) != null) facetPassed.add(facet);
+    }
+    if (facetAnnotated && (selfExplainClear.get(kpId) || 0) >= 1) facetPassed.add("why");
     const res = lmLevels.computeKpLevel({
       now,
       cards,
       extractCount: extractCountByKp.get(kpId) || 0,
       passedUnitCount: passedUnitsByKp.get(kpId) || 0,
-      selfExplainClear90: selfExplainClear.get(kpId) || 0
+      selfExplainClear90: selfExplainClear.get(kpId) || 0,
+      passedFacetCount: facetPassed.size,
+      facetAnnotated
     });
     const old = oldStates.get(kpId);
     rows.push({
