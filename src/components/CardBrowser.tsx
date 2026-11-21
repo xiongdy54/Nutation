@@ -22,7 +22,6 @@ import ImageLightbox from "./ImageLightbox";
 import { IconVolume, IconChevronDown } from "./icons";
 import { useDialogA11y } from "../lib/dialogA11y";
 import { useOverlayBackdrop } from "../lib/overlayDismiss";
-import KnowledgeManager from "./KnowledgeManager";
 // v48.61（D103）：血缘树纯函数（D87 邻接表口径 + D85 聚合计数，复用零新写路径）
 import { buildLineageTree, type LineageExtractRow, type LineageNode } from "../lib/cardLineage";
 // v48.61（D104）：背面辅助字段区（app.cardFaceExtras 三开关，与复习页同一组件）
@@ -57,7 +56,8 @@ interface SavedScope {
   limits?: unknown;
 }
 
-type Preset = "all" | "due" | "leech" | "deferred" | "knowledge" | "archived";
+// v49.141 / D308：「知识点」页签退役——知识点只有一个家：图谱页（整理已有卡片 / 节点详情）
+type Preset = "all" | "due" | "leech" | "deferred" | "archived";
 type BrowserCard = CardRecord & { docTitle?: string };
 type JumpToDoc = (
   docId: string,
@@ -440,23 +440,6 @@ export default function CardBrowser({
     }),
     [metaAll, deferredMap]
   );
-
-  // v48.111（D156）：知识点页签计数——KnowledgeBase 总数（limit:1 只为取 total；切页签时刷新）
-  const [kpTotal, setKpTotal] = useState<number | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    window.knowledgeAPI
-      ?.listPoints({ limit: 1 })
-      .then((res) => {
-        if (!cancelled) setKpTotal(res?.total ?? 0);
-      })
-      .catch(() => {
-        if (!cancelled) setKpTotal(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [preset]);
 
   // 类型筛选项从库内实际存在的类型动态生成（未知类型显示原文）
   const typeOptions = useMemo(() => {
@@ -1171,10 +1154,6 @@ export default function CardBrowser({
                 {T("今日暂缓")}<span className="tab-cnt">{counts.deferred}</span>
               </button>
             )}
-            {/* v40（K1，D37）：知识地基管理面（§9.1 K1-4 最小管理页） */}
-            <button className={preset === "knowledge" ? "active" : ""} onClick={() => setPreset("knowledge")}>
-              {T("知识点")}{kpTotal != null && <span className="tab-cnt">{kpTotal}</span>}
-            </button>
             {/* v48.60（D102）：已归档（不再关心）——默认列表不含归档，这里显式进入 */}
             <button className={preset === "archived" ? "active" : ""} onClick={() => setPreset("archived")}>
               {T("已归档")}<span className="tab-cnt">{counts.archived}</span>
@@ -1183,9 +1162,7 @@ export default function CardBrowser({
         </div>
       </div>
 
-      {preset === "knowledge" && <KnowledgeManager />}
-
-      {preset !== "knowledge" && (
+      {(
       <>
       {/* v48.40（D80）：工具行——better-layout「一盒一功能」：搜索 grow / 筛选 / 类别 / 来源书 各成一盒（border-strong 描边，16px 组距） */}
       <div className="cb-toolbar">

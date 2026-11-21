@@ -50,6 +50,8 @@ export interface MindmapTabProps {
   onJumpToText: (back: ReaderLocation | null) => void;
   onMakeCardsFromNode?: (payload: { nodeId: string; label: string; section: string; focus: string; unitAnchors: string[] }) => void;
   initialMapId?: string | null;
+  /** v49.146（T4）：点击挂靠标记 → 打开图谱（有对应知识点就聚焦它，否则打开该全谱节点卡） */
+  onOpenGraph?: (focusKpId?: string | null, focusAtlasId?: string | null) => void;
   initialResumeRunId?: string | null;
 }
 
@@ -147,6 +149,41 @@ export default function MindmapTab(props: MindmapTabProps) {
   }, [documentId]);
 
   const mapId = preview ? null : graph.mapId;
+  // v49.146（T4）：本图的全谱挂靠（每张图只读一次；节点 id → 挂靠列表）
+  const [refsByNode, setRefsByNode] = useState<Record<string, { atlasId: string; label: string | null; source: string }[]>>({});
+  const [refsTick, setRefsTick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const kg = (window as unknown as { kgAPI?: { mapLinkRefsForMap(id: string): Promise<{ nodeId: string; atlasId: string; label: string | null; source: string }[]> } }).kgAPI;
+    if (!mapId || !kg) { setRefsByNode({}); return; }
+    void kg.mapLinkRefsForMap(mapId).then((rows) => {
+      if (!alive) return;
+      const m: Record<string, { atlasId: string; label: string | null; source: string }[]> = {};
+      for (const r of rows || []) (m[r.nodeId] ||= []).push({ atlasId: r.atlasId, label: r.label, source: r.source });
+      setRefsByNode(m);
+    }).catch(() => { if (alive) setRefsByNode({}); });
+    return () => { alive = false; };
+  }, [mapId, refsTick]);
+  // D314 修订：挂靠由主进程在后台自动完成；每批写入后推送 mapLink:changed，这里重读本图挂靠
+  useEffect(() => {
+    const kg = (window as unknown as { kgAPI?: { onMapLinkChanged?(cb: (p: { mapId: string }) => void): () => void } }).kgAPI;
+    if (!mapId || !kg?.onMapLinkChanged) return;
+    return kg.onMapLinkChanged((p) => { if (p && p.mapId === mapId) setRefsTick((n) => n + 1); });
+  }, [mapId]);
+  const setLink = useCallback(async (nodeId: string, atlasId: string, on: boolean) => {
+    const kg = (window as unknown as { kgAPI?: { mapLinkSetUserRef(m: string, n: string, a: string, on: boolean): Promise<boolean> } }).kgAPI;
+    if (!mapId || !kg) return;
+    await kg.mapLinkSetUserRef(mapId, nodeId, atlasId, on).catch(() => false);
+    setRefsTick((n) => n + 1);
+  }, [mapId]);
+  const linkCounts = useMemo(() => Object.fromEntries(Object.entries(refsByNode).map(([k, v]) => [k, v.length])), [refsByNode]);
+  const openGraphFor = useCallback((atlasId: string) => {
+    const kg = (window as unknown as { kgAPI?: { atlasNode(id: string): Promise<{ kp?: { id: string } | null } | null> } }).kgAPI;
+    void (kg ? kg.atlasNode(atlasId).catch(() => null) : Promise.resolve(null)).then((n) => {
+      props.onOpenGraph?.(n?.kp?.id ?? null, atlasId);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.onOpenGraph]);
   const isV1 = !!meta && meta.schemaVersion !== 2;
   const genRun = Object.values(runs).find((r) => r.kind === "generate" && !FINAL_STAGES.has(r.stage)) || null;
   const allRun = Object.values(runs).find((r) => r.kind === "expandAll" && !FINAL_STAGES.has(r.stage)) || null;
@@ -701,6 +738,9 @@ export default function MindmapTab(props: MindmapTabProps) {
       onToggleFold={() => toggle(focusId)}
       onFocusNode={navigate}
       onSetPattern={setPattern}
+      links={refsByNode[selected.node.id]}
+      onSetLink={mapId ? (aid, on) => void setLink(selected.node.id, aid, on) : undefined}
+      onOpenGraph={props.onOpenGraph ? openGraphFor : undefined}
     />
   );
 
@@ -788,6 +828,7 @@ export default function MindmapTab(props: MindmapTabProps) {
               onGenerate={() => void handleGenerate()}
               onDeepen={(id) => void handleDeepen(id)}
               onCardOpen={() => setCardOpen(true)}
+              linkCounts={linkCounts}
             />,
             stageHost,
           )

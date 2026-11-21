@@ -6,7 +6,6 @@ export { formatRelatedCardLine, needsAttribution, normalizeQualifier } from "./d
 export type { CardQualifier, QualifierStance } from "./disambiguateText";
 // v48.77（D121 §3.2）：辨析弹窗编辑落库的字段语义（纯函数，零依赖文件；ReviewView/DisambiguateModal 共用）
 export { applyCardTextEdit } from "./disambiguateUi";
-import { autoQueueKpAiProcessing } from "./kpExtract";
 import { clampPct, normalizeShape, occlusionShapes, type OcclusionShape } from "./occlusion";
 import { settingsStore } from "./settings";
 // v49.8（D182）：AI 输出语言随界面语言（general explain 注入指令行；zh-CN 零变化）
@@ -212,10 +211,227 @@ export interface CardDraft {
   tags?: string[];
   // v48.77（D121 §2.6，R21）：AI 自报的归属/限定（不入库，仅批次 result_json 留痕与确认面板标签）
   qualifier?: CardQualifier | null;
+  // v49.138 / D305（R22，知识图谱 G4）：侧面与知识点归属。归属在草稿展示前由本地裁决解析（已有 / 新），
+  // 接受卡片即确认：新知识点此刻才建；null＝用户取消归属（卡仍可接受，不进图谱）
+  facet?: KgFacet | null;
+  kpAttribution?: KpAttribution | null;
+}
+
+import { senseVerdict, quoteInSource, termMatchOf, kpLabelLint, normRel, formatCandidateLine, formatSenseExamples, type SenseRel, type DiscernReason, type KpLint, type SenseCandidate, type SenseExample } from "./kgSense";
+export type KgFacet = "definition" | "why" | "example" | "contrast" | "relation";
+const KG_FACETS: KgFacet[] = ["definition", "why", "example", "contrast", "relation"];
+export interface KpAttribution {
+  /** AI 输出的批内 id（kp1…） */
+  key: string;
+  label: string;
+  definition: string | null;
+  kind: "concept" | "principle" | "method" | "fact" | null;
+  /** 本地裁决命中的已有知识点；null＝新 */
+  kpId: string | null;
+  kpLabel: string | null;
+  /** v49.140 / D307：语义匹配档给出的最相近已有知识点（只提示，用户点了才改挂） */
+  suggest?: { kpId: string; label: string } | null;
+  /** v49.143 / D311：全谱节点（"Q123"）；null＝全谱里没有含义相同的 → 接受时建为私有节点 */
+  atlasId?: string | null;
+  /** 全谱节点的消歧短语（草稿标签悬停显示） */
+  atlasGloss?: string | null;
+  /** v49.149 / D318：与 atlasId 的对照类型；缺省（旧草稿）＝same */
+  atlasRel?: SenseRel | null;
+  /** 材料原术语（AI 输出 term；旧格式退回 label） */
+  term?: string | null;
+  /** 支撑定义的材料原句（已核验命中材料时才保留） */
+  quote?: string | null;
+  /** 粒度提示（只提示，不阻断） */
+  lint?: KpLint[];
+  /** 辨析卡：本地裁决为 discern 时给出；chosen＝用户已点选 */
+  sense?: KpSense | null;
+}
+
+/** v49.149 / D318 辨析卡数据（设计 §3.4） */
+export interface KpSense {
+  aiRel: SenseRel | null;
+  reasons: DiscernReason[];
+  contrast: string | null;
+  candidate: { id: string; label: string; gloss: string | null; def: string | null; matchedGloss: string | null };
+  chosen?: SenseRel | "none" | null;
+}
+
+/** v49.143 / D311：全谱候选（本地字典召回，§6.2 第 1 步）；v49.149 / D318 增定义与命中方式 */
+export interface AtlasCandidate extends SenseCandidate {
+  gloss: string | null;
+}
+
+/** R22 归一：facet 封闭五值（非法 → null） */
+export function normalizeFacet(v: unknown): KgFacet | null {
+  return KG_FACETS.includes(v as KgFacet) ? (v as KgFacet) : null;
+}
+
+type KgBridge = {
+  resolveAttribution(items: { key: string; label: string; atlasId?: string | null; atlasRel?: SenseRel | null }[]): Promise<{ key: string; label: string; kpId: string | null; kpLabel: string | null; suggest?: { kpId: string; label: string } | null }[]>;
+  ensurePoint(p: { label: string; kpId?: string | null; definition?: string | null; kind?: string | null; sourceRef?: unknown; atlasId?: string | null; atlasRel?: SenseRel | null }): Promise<{ id: string; created: boolean }>;
+  recentLabels(limit?: number, text?: string): Promise<string[]>;
+  labelDefs?(labels: string[]): Promise<Record<string, string>>;
+  senseExamples?(limit?: number): Promise<SenseExample[]>;
+  atlasCandidates?(text: string, opts?: { limit?: number }): Promise<AtlasCandidate[]>;
+  atlasSearch?(q: string, opts?: { limit?: number }): Promise<(AtlasCandidate & { exact?: boolean })[]>;
+};
+function kgBridge(): KgBridge | null {
+  return ((window as unknown as { kgAPI?: KgBridge }).kgAPI) ?? null;
+}
+
+/**
+ * R22 归属解析（设计稿 §4.2 第 2 步，草稿展示前）：knowledgePoints[].label → 本地裁决 → 挂到每张卡。
+ * 语言词汇模式不做归属（Q6）；无 label 的旧格式输出静默跳过（退回既有簇键链路）。
+ */
+export async function attachKpAttribution(result: GenResult, mode: string, atlas?: Map<string, AtlasCandidate>, sourceText = ""): Promise<void> {
+  for (const c of result.cards) c.facet = normalizeFacet((c as { facet?: unknown }).facet);
+  if (mode === "card-vocab") return;
+  const api = kgBridge();
+  const kps = (result.knowledgePoints || []).filter((k) => k && typeof k.label === "string" && k.label.trim());
+  if (!api || kps.length === 0) return;
+  // v49.143 / D311：atlasId 只认本次注入的候选（越界＝AI 编造 → 作废，按「全谱里没有」处理）
+  // D315 修订「核心库不是全谱」：AI 没抄回编号的知识点，再按材料术语走一遍全谱搜索（本地没有时会同时查在线），
+  // 恰好一个「完全相同」命中才作为候选（尽力而为：并发 ≤4，任何错误吞掉）——是否等同交给 senseVerdict（D318）。
+  const termOf = (k: GenResult["knowledgePoints"][number]) => String((typeof k.term === "string" && k.term.trim()) || k.label).trim();
+  const fromMap = (k: GenResult["knowledgePoints"][number]): AtlasCandidate | null => {
+    const raw = typeof k.atlasId === "string" ? k.atlasId.trim().toUpperCase() : "";
+    return raw && atlas ? atlas.get(raw) ?? null : null;
+  };
+  const byName = new Map<string, AtlasCandidate>();
+  {
+    // AI 明确判为「都不是」（给了 atlasRel 字段且为 null）的不再回退搜索；旧格式（无 atlasRel 字段）照旧回退
+    const todo = kps.filter((k) => !fromMap(k) && !("atlasRel" in k && k.atlasRel === null && "unsure" in k));
+    let next = 0;
+    const worker = async () => {
+      while (next < todo.length) {
+        const k = todo[next++];
+        try {
+          const r = (await api.atlasSearch?.(termOf(k).replace(/[《》]/g, "").trim(), { limit: 5 })) || [];
+          const ex = r.filter((x) => x.exact);
+          if (ex.length === 1) byName.set(String(k.id), ex[0]);
+        } catch {
+          /* 尽力而为 */
+        }
+      }
+    };
+    if (api.atlasSearch) await Promise.all(Array.from({ length: Math.min(4, todo.length) }, worker));
+  }
+  // v49.149 / D318：本地裁决——何时静默接受、何时出辨析卡（src/lib/kgSense.ts senseVerdict）
+  const plans = kps.map((k) => {
+    const mapped = fromMap(k);
+    const cand = mapped ?? byName.get(String(k.id)) ?? null;
+    const viaFallback = !mapped && !!cand;
+    const term = termOf(k);
+    // 旧格式（R22 v10，无 atlasRel 字段）给了编号＝含义完全相同
+    const aiRel = viaFallback ? null : cand ? normRel(k.atlasRel) ?? ("atlasRel" in k ? null : "same") : null;
+    // 旧格式（无 atlasRel 字段 / 自定义模板没有 quote）不因缺引句而降级（审查建议 5）
+    const legacy = !("atlasRel" in k);
+    const quoteOk = legacy || quoteInSource(k.quote, sourceText);
+    const tm = cand ? termMatchOf(term, cand) : { termIsLabel: false, termMatchType: null };
+    const hasCandidate = !!cand && (viaFallback || aiRel != null || k.unsure === true);
+    const v = senseVerdict({ rel: aiRel, unsure: k.unsure === true, quoteOk, hasCandidate, viaFallback, ...tm });
+    const candLabel = cand ? cand.zh || cand.en || cand.ja || cand.id : "";
+    const label = v.rel === "same" && cand ? candLabel || term : v.mode === "discern" || v.rel ? term : String(k.label);
+    return { k, cand, term, v, quoteOk, label, candLabel };
+  });
+  let resolved: Awaited<ReturnType<KgBridge["resolveAttribution"]>> = [];
+  try {
+    resolved = await api.resolveAttribution(plans.map((p) => ({ key: String(p.k.id), label: p.label, atlasId: p.v.rel && p.cand ? p.cand.id : null, atlasRel: p.v.rel && p.cand ? p.v.rel : null })));
+  } catch {
+    return; // 裁决失败：草稿照常展示，不带归属（不阻断制卡）
+  }
+  const byKey = new Map<string, KpAttribution>();
+  plans.forEach((p, i) => {
+    const r = resolved[i];
+    if (!r || !r.label) return;
+    const k = p.k;
+    const kind = ["concept", "principle", "method", "fact"].includes(String(k.kind)) ? (k.kind as KpAttribution["kind"]) : null;
+    const definition = k.definition ? String(k.definition).trim() || null : null;
+    const a = p.cand && p.v.rel ? p.cand : null;
+    const sense: KpSense | null =
+      p.v.mode === "discern" && p.cand
+        ? {
+            aiRel: p.v.aiRel,
+            reasons: p.v.reasons,
+            contrast: typeof k.contrast === "string" && k.contrast.trim() ? k.contrast.trim() : null,
+            candidate: { id: p.cand.id, label: p.candLabel, gloss: p.cand.gloss ?? p.cand.glossEn ?? null, def: p.cand.def ?? p.cand.defEn ?? null, matchedGloss: p.cand.matchedGloss ?? null },
+            chosen: null
+          }
+        : null;
+    byKey.set(String(k.id), {
+      key: String(k.id),
+      label: r.label,
+      definition,
+      kind,
+      kpId: r.kpId,
+      kpLabel: r.kpLabel,
+      suggest: r.suggest ?? null,
+      atlasId: a ? a.id : null,
+      atlasGloss: a ? a.gloss ?? a.glossEn ?? null : null,
+      atlasRel: a ? p.v.rel : null,
+      term: p.term,
+      quote: typeof k.quote === "string" && quoteInSource(k.quote, sourceText) ? k.quote.trim() : null,
+      lint: kpLabelLint(r.label, definition),
+      sense
+    });
+  });
+  for (const c of result.cards) {
+    const a = c.knowledgePointId ? byKey.get(String(c.knowledgePointId)) : undefined;
+    if (a) c.kpAttribution = { ...a };
+  }
+}
+
+/**
+ * v49.143 / D311【全谱候选知识点】注入块：材料文本在全谱里的字典召回（本地、确定性），每行「编号｜名称｜说明」。
+ * 返回块文本与候选表（用于校验 AI 抄回的编号）；全谱不可用时返回空。
+ */
+export async function atlasCandidateBlock(mode: string, sourceText: string): Promise<{ block: string; map: Map<string, AtlasCandidate> }> {
+  const map = new Map<string, AtlasCandidate>();
+  if (mode === "card-vocab" || !sourceText.trim()) return { block: "", map };
+  try {
+    const list = (await kgBridge()?.atlasCandidates?.(sourceText, { limit: 40 })) || [];
+    for (const c of list) map.set(c.id.toUpperCase(), c);
+    if (!list.length) return { block: "", map };
+    // v49.149 / D318（R22 v11）：每行带定义与命中方式（材料里的术语是它的标签 / 同义 / 译名分化 / 未分类别名…）
+    const lines = list.map((c) => formatCandidateLine(c));
+    return { block: `【全谱候选知识点（编号｜名称｜类别，说明｜定义｜材料里的术语是它的哪种名称；按定义判断 atlasRel，名字相同不等于含义相同）】\n${lines.join("\n")}`, map };
+  } catch {
+    return { block: "", map };
+  }
+}
+
+/** 【用户已有知识点】注入块（R22：同义沿用原名）；取不到返回空串 */
+export async function knownKpBlock(mode: string, sourceText = ""): Promise<string> {
+  if (mode === "card-vocab") return "";
+  try {
+    // v49.140 / D307：按与本次材料最相近排序（字面二元组；开启向量档时叠加语义相似度）
+    const labels = (await kgBridge()?.recentLabels(40, sourceText)) || [];
+    if (!labels.length) return "";
+    // v49.149 / D318：名称后附定义摘要（按定义判断「同名不同义 / 异名同义」）
+    let defs: Record<string, string> = {};
+    try {
+      defs = (await kgBridge()?.labelDefs?.(labels)) || {};
+    } catch {
+      defs = {};
+    }
+    return `【用户已有知识点（含义相同必须沿用原名；括号内是定义摘要）】\n${labels.map((l) => (defs[l] ? `${l}（${defs[l]}）` : l)).join("、")}`;
+  } catch {
+    return "";
+  }
+}
+
+/** v49.149 / D318【你过去的辨析】块：用户在辨析卡上亲自确认的判断（≤6 条）；没有或取不到返回空串 */
+export async function senseExamplesBlock(mode: string): Promise<string> {
+  if (mode === "card-vocab") return "";
+  try {
+    return formatSenseExamples((await kgBridge()?.senseExamples?.(6)) || []);
+  } catch {
+    return "";
+  }
 }
 
 export interface GenResult {
-  knowledgePoints: { id: string; summary: string }[];
+  knowledgePoints: { id: string; summary: string; label?: string; term?: string | null; definition?: string | null; kind?: string; atlasId?: string | null; atlasRel?: string | null; unsure?: boolean; quote?: string | null; contrast?: string | null }[];
   blockReasons: string[];
   cards: CardDraft[];
   regions?: OcclusionRegion[];
@@ -704,6 +920,12 @@ export const cardGenerator: {
     // v48.77（D121 §2.1）：来源行 = 书名 · 作者 · 章节路径（sectionPath 优先于 section）
     // v49.135（D302）：与 AI 解释共用 formatSourceLine（输出逐字不变）
     const sourceLine = formatSourceLine(context);
+    // v49.138 / D305（R22）：已有知识点名称（模板外注入）
+    const kpBlock = await knownKpBlock(resolved, sourceText);
+    // v49.143 / D311（R22 v10）：全谱候选（AI 只能从中抄编号）
+    const atlasCand = await atlasCandidateBlock(resolved, sourceText);
+    // v49.149 / D318（R22 v11）：用户亲自确认过的辨析（只在有全谱候选时注入）
+    const senseBlock = atlasCand.block ? await senseExamplesBlock(resolved) : "";
     const sur = context.surrounding;
     const surroundingBlock =
       sur && (sur.before || sur.after)
@@ -720,7 +942,10 @@ export const cardGenerator: {
       context.existingCards?.length ? `【用户已有卡片（注意 R10 联想与干扰提示，禁止重复或换皮）】\n${context.existingCards.slice(0, context.existingCardsLimit ?? 10).join("\n")}` : "",
       relatedLines.length ? `【相关已有卡（含答案，用于发现答案冲突与限定缺失；禁止重复或换皮）】\n${relatedLines.join("\n")}` : "",
       context.userProfile ? `【用户画像（R9 个性化例子优先用）】\n${context.userProfile}` : "",
-      memoryBlock || ""
+      memoryBlock || "",
+      kpBlock,
+      atlasCand.block,
+      senseBlock
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -746,6 +971,8 @@ export const cardGenerator: {
     // v48.77（D121 §2.6）：qualifier 归一（非法 stance → null；不入库，仅留痕/面板标签）
     for (const c of result.cards) c.qualifier = normalizeQualifier((c as { qualifier?: unknown }).qualifier);
     result.cards = result.cards.flatMap((c) => expandClozeDraft(c));
+    // v49.138 / D305（R22）：侧面归一 + 知识点归属本地裁决（草稿展示前，接受卡片即确认）
+    await attachKpAttribution(result, resolved, atlasCand.map, sourceText);
     // v46（M14-UM2，§4.18-10）：memoryRef 本地子串校验（只验存在性，非相关性判定）——
     // 成功=「情境来自记忆」，失败=「情境来源存疑」（确认面板标注、接受时二次确认，不阻断）
     if (memoryBlock) {
@@ -1618,6 +1845,25 @@ export async function createAcceptedCard(
     splitCount: expanded.length
   });
   const ids: string[] = [];
+  // v49.138 / D305（设计稿 §4.2 第 4–5 步）：接受即确认归属——新知识点此刻才建（含 AI 第 1 版定义），卡片写正式 id
+  let attributedKpId: string | null = null;
+  if (d.kpAttribution && d.kpAttribution.label) {
+    try {
+      const r = await kgBridge()?.ensurePoint({
+        label: d.kpAttribution.label,
+        kpId: d.kpAttribution.kpId,
+        definition: d.kpAttribution.definition,
+        kind: d.kpAttribution.kind,
+        sourceRef: ctx.contextRef || d.kpAttribution.quote ? { documentId: ctx.contextRef ? (ctx.contextRef as { documentId?: string }).documentId ?? null : null, ...(d.kpAttribution.quote ? { quote: d.kpAttribution.quote } : {}) } : null,
+        atlasId: d.kpAttribution.atlasId ?? null,
+        // v49.149 / D318：对照类型（缺省＝same，兼容旧草稿）
+        atlasRel: d.kpAttribution.atlasId ? d.kpAttribution.atlasRel ?? "same" : null
+      });
+      attributedKpId = r?.id ?? null;
+    } catch {
+      attributedKpId = null; // 建点失败：卡照常入库，退回簇键链路
+    }
+  }
   for (const dd of expanded) {
     const cloze = dd.cardType === "cloze" ? dd.cloze || "" : "";
     const card = {
@@ -1641,7 +1887,8 @@ export async function createAcceptedCard(
       // v48.60（D101）：调用方传入的标签（如批注标签继承初值）原样落库；AI 草稿缺省 = []
       tags: dd.tags ?? [],
       domain: dd.domain ?? [],
-      knowledgePointId: dd.knowledgePointId || null,
+      knowledgePointId: attributedKpId || dd.knowledgePointId || null,
+      facet: normalizeFacet(dd.facet),
       // v41（K2-A，D38）：批次归组——AI 抽取归一的簇键（batch:<id>:<kp>）依据，消除跨材料 kp1 碰撞
       genBatchId: ctx.genBatchId || null,
       dictJson: ctx.dictJson ?? null,
@@ -1683,12 +1930,13 @@ export async function createAcceptedCard(
   if (ids.length) {
     const sources = expanded
       .map((dd) => ({
-        knowledgePointId: String(dd.knowledgePointId || "").trim(),
+        knowledgePointId: attributedKpId ? "" : String(dd.knowledgePointId || "").trim(),
         genBatchId: ctx.genBatchId || null,
         documentId: ctx.contextRef?.documentId || null
       }))
       .filter((s) => s.knowledgePointId);
-    if (sources.length) void autoQueueKpAiProcessing(sources);
+    // v49.141 / D308：制卡后后台「AI 整理」自动排队退役——R22 归属随卡确认；无归属的卡走图谱页「整理已有卡片」
+    void sources;
   }
   return ids;
 }

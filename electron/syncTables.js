@@ -12,9 +12,12 @@ const SYNC = [
   "knowledge_points", "knowledge_relations", "knowledge_external_refs", "knowledge_proposals",
   "insight_runs", "personal_meaning_candidates", "memory_runs",                     // 后三项 ⚠D-07
   "material_maps", "material_map_nodes", "material_map_edges", "material_map_runs", // runs ⚠D-07
+  "material_map_node_refs",            // v49.146 / D314 导图节点 ↔ 全谱挂靠（只软删）
+  "knowledge_relation_dismissals",     // v49.148 / D317 解除连线（无序对 + 证据快照；撤销＝软删）
   "ai_gen_batches",                    // ⚠D-07（卡片"生成信息区"引用它）
 ];
-const APPEND = ["review_logs", "reading_events", "review_skips", "fsrs_configs", "rec_feedback"];
+const APPEND = ["review_logs", "reading_events", "review_skips", "fsrs_configs", "rec_feedback",
+  "kp_definition_versions", "kg_events"];                // v49.137 / D304 知识图谱
 const LOCAL = [
   "users",                                    // 单行 local-user；账户体系上线时再定
   "extract_ops", "op_counter", "op_journal",  // 撤销栈：只撤销本机操作
@@ -25,6 +28,7 @@ const LOCAL = [
   "prompt_templates",                         // 每台设备启动时按代码播种（随机 id），同步会重复
   "app_meta",                                 // C-10 新增；其中 fsrsConfigId 将来按"资料库设置"同步，见附录 B
   "sync_tombstones",                          // 本项新增
+  "atlas_node_snapshots",                     // v49.146 / D315 全谱节点快照：可由全谱重建的缓存
   "decision_log",                             // v49.132 / D299 判断层留痕（不记正文；本机校准用，永不同步）
 ];
 /** 只在本机有意义的列：将来同步时不传输，由接收方重新分配 */
@@ -35,6 +39,8 @@ const NATURAL_KEYS = {
   track_materials: ["track_id", "library_item_id"],
   material_map_nodes: ["map_id", "node_id"],
   material_map_edges: ["map_id", "from_id", "to_id", "code"],
+  material_map_node_refs: ["map_id", "node_id", "atlas_id"],
+  knowledge_relation_dismissals: ["kp_a", "kp_b"],
 };
 /** 允许物理删除的表（同步/追加表的其他物理删除一律禁止，tests/sync-tables 静态扫描）。删除会经触发器写入 sync_tombstones。 */
 const PHYSICAL_DELETE_ALLOWLIST = [

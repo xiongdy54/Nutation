@@ -64,10 +64,15 @@ function runOne(file, runtime, timeoutSec) {
   return new Promise((resolve) => {
     const { cmd, args, env } = commandFor(runtime, file);
     const t0 = Date.now();
-    const childEnv = { ...process.env, ...env };
+    const childEnv = { NUT_ATLAS_NO_NET: "1", ...process.env, ...env }; // 测试默认不用在线全谱的默认地址（D315）
     // 宿主（如 Qoder/Electron 工具链）可能带有 ELECTRON_RUN_AS_NODE=1；真实 Electron 运行时必须清掉，
     // 否则 app 为 undefined、所有 electron 测试假失败。
     if (runtime === "electron") delete childEnv.ELECTRON_RUN_AS_NODE;
+    // 测试脚本未捕获异常 / 语法错误：打印并失败退出，不弹 Electron 错误对话框（tests/_electron-guard.cjs）
+    if (runtime === "electron") {
+      const guard = path.join(ROOT, "tests", "_electron-guard.cjs").split(path.sep).join("/");
+      childEnv.NODE_OPTIONS = `${childEnv.NODE_OPTIONS ? childEnv.NODE_OPTIONS + " " : ""}--require "${guard}"`;
+    }
     // C-11：每个测试注入独立的临时 NUTATION_USER_DATA（main.js pinUserData 命中即用），
     // 隔离 electron 运行时的 userData；结束后删除（Windows 下目录可能被短暂占用，重试）。
     const tmpUserData = fs.mkdtempSync(path.join(os.tmpdir(), "nutation-test-"));

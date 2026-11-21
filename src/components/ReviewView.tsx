@@ -28,6 +28,9 @@ import CardFaceExtrasBlock from "./CardFaceExtras";
 // v48.60（D101/D102）：答案揭示后快捷打标 + 「不再关心」归档
 import TagInput from "./TagInput";
 import { applyTagDelta, type TagVocabEntry } from "../lib/tags";
+import KpReviewPanel from "./kg/KpReviewPanel";
+import KgContrastOffer from "./kg/KgContrastOffer";
+import { kgApi } from "../lib/kg";
 // v48.63（D107）：标签功能总开关——复习页标签区与快捷打标入口受其控制
 import { useTagsEnabled } from "../lib/tagSettings";
 // v48.85（D129，B2/B3）：成长反馈——评分成功边界后拉取微反馈 + 收尾页会话成果汇总（只读，零写路径）
@@ -126,6 +129,27 @@ function GrowthSessionSummary({ fromTs }: { fromTs: number }) {
   );
 }
 
+/** v49.137 / D304：会话收尾的图谱变化（新点亮 / 回亮 / 侧面）——只陈述真实增量，空即不渲染 */
+function KgTodayRow({ onPlay }: { onPlay: () => void }) {
+  const T = useT();
+  const [d, setD] = useState<{ lit: number; refreshed: number; facets: number } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void kgApi()?.today().then((r) => { if (alive) setD(r); }).catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
+  if (!d || d.lit + d.refreshed + d.facets === 0) return null;
+  return (
+    <div className="growth-session" data-kg-today>
+      <p className="growth-session-title">{T("知识图谱")}</p>
+      <p>
+        {T("今天：新点亮 {lit}，回亮 {re}，侧面 {fa}", { lit: d.lit, re: d.refreshed, fa: d.facets })}{" "}
+        <button className="btn btn-secondary btn-sm" onClick={onPlay}>{T("播放今日生长")}</button>
+      </p>
+    </div>
+  );
+}
+
 // D88 §7.4：评分钮档名（预览 review.html 口径：重来/困难/良好/简单；色点承载语义色）。
 // 快捷键 title 气泡沿用 D77 口径（kbd 角标不采纳）：`重来（快捷键：1）· 间隔 10分` 式组装。
 const RATING_LABEL: Record<Rating, string> = { Again: "重来", Hard: "困难", Good: "良好", Easy: "简单" };
@@ -136,7 +160,8 @@ export default function ReviewView({
   scopeLimits,
   scopeTags,
   scopeKpIds,
-  onMaterialName
+  onMaterialName,
+  onLocateKp
 }: {
   onJumpToDoc?: (docId: string, anchor: { anchorText: string; anchorRatio?: number; cfi?: string; chapterIndex?: number; pageIndex?: number; imageAnchor?: { alt?: string; contextText?: string }; occlusion?: { rects: { x: number; y: number; w: number; h: number; ord: number }[]; shapes?: unknown; regionScope?: string; cardOrd?: number; assetPath?: string } }) => void;
   /** v48.22（D58 §6.8-8）：本书范围内的集中复习（阅读器「复习闪卡」入口） */
@@ -148,6 +173,8 @@ export default function ReviewView({
   scopeKpIds?: string[];
   /** v48.41（D81）：当前卡材料名上报（顶栏中间显示；无材料名时回调空串＝回落「复习」字样） */
   onMaterialName?: (name: string) => void;
+  /** v49.137 / D304：知识点面板「在图谱中定位」 */
+  onLocateKp?: (kpId: string) => void;
 } = {}) {
   const T = useT();
   const tagsEnabled = useTagsEnabled();
@@ -1149,6 +1176,10 @@ export default function ReviewView({
             {/* v48.85（D129 B3，§5.2）：会话成果汇总——deferredPanel 之后；仅 doneCount>0 时驱动
                 growthAPI.sessionSummary(sessionStartTs)；空命中组件自身零渲染（禁负面对照） */}
             {doneCount > 0 && <GrowthSessionSummary fromTs={sessionStartTs} />}
+            {/* v49.137 / D304（设计稿 §9.3）：今日回放入口并入会话成果汇总；空命中零渲染 */}
+            {doneCount > 0 && onLocateKp && <KgTodayRow onPlay={() => onLocateKp("")} />}
+            {/* v49.139 / D306：区分卡提议——只在收尾页、有混淆信号时、每学习日至多一次 */}
+            {doneCount > 0 && <KgContrastOffer />}
             <div className="settings-row">
               {canUndo && (
                 <button className="btn btn-secondary btn-sm" onClick={doUndo}>
@@ -1258,6 +1289,8 @@ export default function ReviewView({
         <div className="review-meta">
           {current!.dateStamp ? current!.dateStamp : ""}
         </div>
+        {/* v49.137 / D304：知识点面板（双链形态，设计稿 §11）——翻面前只给名称，翻面后一行定义，K 展开 */}
+        <KpReviewPanel cardId={current!.id} showBack={showBack} onLocate={onLocateKp} />
         {/* v48.60（D101）：答案揭示后的标签区——chips 只读 + 快捷添加（**正面永不显示**，防泄题 R6 同源）；
             v48.63（D107）：标签功能总开关关闭时整块不渲染 */}
         {showBack && tagsEnabled && (

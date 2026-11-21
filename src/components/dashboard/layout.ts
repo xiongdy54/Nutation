@@ -21,6 +21,7 @@ export function defaultLayoutV2(hidden: string[]): DashLayoutV2 {
     // 存量用户经 syncHidden「插到默认顺序前驱之后」规则自动可见（D122 一日时间轴同路径，无需迁移）。
     { id: "growth-events", size: "wide" },
     { id: "territory", size: "half" },
+    { id: "kg", size: "half" },
     { id: "domains", size: "half" },
     { id: "rhythm", size: "half" },
     { id: "ratings", size: "half" },

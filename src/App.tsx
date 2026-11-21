@@ -18,6 +18,7 @@ const SettingsPanel = lazy(() => import("./components/SettingsPanel"));
 import Dashboard from "./components/dashboard/Dashboard";
 // v48.80（D124）：数据页顶部「下一步」面板（不是 WidgetDef，不进布局编辑）；v48.81（D125）迁为顶栏独立页签页
 import NextStepsPanel from "./components/learner/NextStepsPanel";
+const KnowledgeGraphView = lazy(() => import("./components/kg/KnowledgeGraphView")); // 图谱页按需装载：守住主窗口首屏预算（D237）
 import { learnerSettings } from "./lib/learner";
 import { learnerStrings } from "./lib/learnerStrings";
 import { eventBus } from "./lib/eventbus";
@@ -82,11 +83,15 @@ type View =
       book?: { bytes: Uint8Array; name: string; engine?: "foliate" | "pdf" };
       jumpAnchor?: { anchorText: string; anchorRatio?: number; cfi?: string; chapterIndex?: number; pageIndex?: number; imageAnchor?: { alt?: string; contextText?: string }; occlusion?: { rects: { x: number; y: number; w: number; h: number; ord: number }[]; shapes?: unknown; regionScope?: string; cardOrd?: number; assetPath?: string } };
       /** v48.80（D124）：学习者模型「下一步」面板的 jump 动作返回来源页；v48.81（D125）面板页签化后返回「推荐」页 */
-      returnTo?: "review" | "queue" | "browse" | "stats" | "next";
+      returnTo?: "review" | "queue" | "browse" | "stats" | "next" | "graph";
+      /** D314：returnTo="graph" 时返回图谱并聚焦的知识点 */
+      returnKpId?: string;
       /** v48.13（P2）：从右下角指示器「打开导图」进入时置位——Reader 挂载后自动打开导图工作区 */
       openMindmap?: boolean;
       /** v48.13（P2）：要展示的导图版本（候选版本——按发布模型不激活，但用户点了就该看到它） */
       openMindmapMapId?: string | null;
+      /** v49.146（T4）：打开导图时要定位的节点（从图谱「出现在」进入） */
+      openMindmapNodeId?: string | null;
       /** v48.13（P3）：以同一 run 续跑（应用重启后发现未跑完的运行） */
       resumeRunId?: string | null;
     }
@@ -99,6 +104,8 @@ type View =
   // v48.114（D159）：journal（日记）视图随功能暂时移除（代码保留，重实装时按 §6.5 冻结契约回插）
   // v48.81（D125）：学习者模型「推荐」页签（面板模块名仍为「下一步」）——顶栏第 4 位；关闭学习者模型时页签收拢消失
   | { name: "next" }
+  // v49.137 / D304：知识图谱页（顶栏「图谱」，卡片与数据之间）；focusKpId＝从复习面板「在图谱中定位」进入
+  | { name: "graph"; focusKpId?: string | null; focusAtlasId?: string | null; replayToday?: boolean }
   | { name: "stats" };
 
 /** D270：侧栏制卡台只服务有阅读上下文的视图——阅读器 / 摘录队列 / 书内摘录会话。
@@ -118,7 +125,8 @@ const VIEW_ORDER: Record<View["name"], number> = {
   review: 2,
   next: 3,
   browse: 4,
-  stats: 5,
+  graph: 5,
+  stats: 6,
   reader: Number.POSITIVE_INFINITY
 };
 
@@ -141,8 +149,12 @@ const TOP_NAV = [
   { key: "queue", label: "摘录", match: (n: string) => n === "queue" || n === "extractSession" },
   { key: "review", label: "复习", match: (n: string) => n === "review" },
   { key: "browse", label: "卡片", match: (n: string) => n === "browse" },
+  { key: "graph", label: "图谱", match: (n: string) => n === "graph" },
   { key: "stats", label: "数据", match: (n: string) => n === "stats" }
 ] as const;
+
+// v49.152（D321）：本版本暂时隐藏「推荐」页签（学习者模型与 next 视图代码保留）；恢复＝改回 false
+const NEXT_TAB_HIDDEN = true;
 
 export default function App() {
   const T = useT(); // v49.8（D182）：语言切换时整树重渲染（顶栏导航/标题/按钮提示全量跟随）
@@ -573,10 +585,10 @@ export default function App() {
   // v48.13（P2）：右下角指示器「打开导图」——已在读该材料则就地打开工作区，
   // 否则先按 documentId 找回书架条目、载入内核，再带 openMindmap 标记进入（Reader 挂载后自动打开）。
   const openMaterialMap = useCallback(
-    async (documentId: string, mapId?: string | null, resumeRunId?: string | null) => {
+    async (documentId: string, mapId?: string | null, resumeRunId?: string | null, focusNodeId?: string | null) => {
       if (view.name === "reader" && view.doc.documentId === documentId) {
         // 就地更新：已在同一 reader 视图（不跨视图，不走 changeView 过渡）
-        setView({ ...view, openMindmap: true, openMindmapMapId: mapId ?? null, resumeRunId: resumeRunId ?? null });
+        setView({ ...view, openMindmap: true, openMindmapMapId: mapId ?? null, openMindmapNodeId: focusNodeId ?? null, resumeRunId: resumeRunId ?? null });
         return;
       }
       const itemId = await libraryApi.getItemIdByDocumentId(documentId);
@@ -584,7 +596,7 @@ export default function App() {
       const doc = await libraryApi.getDocument(itemId);
       if (!doc) return;
       const book = await loadReaderBook(itemId, doc);
-      changeView({ name: "reader", itemId, doc, book, openMindmap: true, openMindmapMapId: mapId ?? null, resumeRunId: resumeRunId ?? null });
+      changeView({ name: "reader", itemId, doc, book, openMindmap: true, openMindmapMapId: mapId ?? null, openMindmapNodeId: focusNodeId ?? null, resumeRunId: resumeRunId ?? null });
     },
     [view, changeView, loadReaderBook]
   );
@@ -650,7 +662,8 @@ export default function App() {
   const handleJumpToDoc = useCallback(async (
     docId: string,
     anchor: NonNullable<Extract<View, { name: "reader" }>["jumpAnchor"]>,
-    returnTo: "review" | "queue" | "browse" | "stats" | "next" = "review"
+    returnTo: "review" | "queue" | "browse" | "stats" | "next" | "graph" = "review",
+    returnKpId?: string
   ) => {
     if (returnTo === "review") {
       // 仅复习来源需要现场恢复标记（返回时恢复该卡与翻面状态）
@@ -663,7 +676,7 @@ export default function App() {
     const doc = await libraryApi.getDocument(itemId);
     if (doc) {
       const book = await loadReaderBook(itemId, doc);
-      changeView({ name: "reader", itemId, doc, book, jumpAnchor: anchor, returnTo });
+      changeView({ name: "reader", itemId, doc, book, jumpAnchor: anchor, returnTo, returnKpId });
     }
   }, [changeView, loadReaderBook]);
 
@@ -784,7 +797,7 @@ export default function App() {
         jumpAnchor={view.jumpAnchor}
         sourceTitle={view.doc.title}
         sourceAuthor={view.doc.author ?? undefined}
-        onBack={view.jumpAnchor ? () => changeView({ name: view.returnTo ?? "review" } as View) : backToShelf}
+        onBack={view.jumpAnchor ? () => changeView((view.returnTo === "graph" ? { name: "graph", focusKpId: view.returnKpId } : { name: view.returnTo ?? "review" }) as View) : backToShelf}
         appTone={theme}
         onToneOverride={setReaderTone}
         // 跳转进入（jumpAnchor 存在）时不传 onProgress：Reader 的滚动/卸载保存全部失效，
@@ -792,12 +805,14 @@ export default function App() {
         onProgress={view.jumpAnchor ? undefined : handleDocProgress}
         openMindmapInitially={Boolean(view.openMindmap)}
         openMindmapMapId={view.openMindmapMapId ?? null}
+        openMindmapNodeId={view.openMindmapNodeId ?? null}
+        onOpenGraph={(focusKpId, focusAtlasId) => changeView({ name: "graph", focusKpId: focusKpId ?? null, focusAtlasId: focusAtlasId ?? null })}
         resumeRunId={view.resumeRunId ?? null}
         onReviewExtracts={() => changeView({ name: "extractSession", bookItemIds: [view.itemId], title: view.doc.title })}
         onReviewCards={() => changeView({ name: "review", bookItemIds: [view.itemId], title: view.doc.title })}
         onOpenAnchorCards={(extractId) => changeView({ name: "browse", anchorExtractId: extractId })}
         // 就地清除标记（同一 reader 视图），非页面切换，不走 changeView
-        onMindmapOpened={() => setView((v) => (v.name === "reader" ? { ...v, openMindmap: false, resumeRunId: null } : v))}
+        onMindmapOpened={() => setView((v) => (v.name === "reader" ? { ...v, openMindmap: false, openMindmapNodeId: null, resumeRunId: null } : v))}
       />
     );
   } else if (view.name === "queue") {
@@ -832,7 +847,7 @@ export default function App() {
   } else if (view.name === "review") {
     // v48.41（D81）：顶栏显示当前卡材料名（无材料名回落「复习」/「复习 · 牌组名」）
     topTitle = sessionMaterial || (view.title ? T("复习 · {title}", { title: view.title }) : T("复习"));
-    mainContent = <ReviewView onJumpToDoc={handleJumpToDoc} bookItemIds={view.bookItemIds} scopeLimits={view.limits ?? null} scopeTags={view.scopeTags} scopeKpIds={view.scopeKpIds} onMaterialName={setSessionMaterial} />;
+    mainContent = <ReviewView onJumpToDoc={handleJumpToDoc} bookItemIds={view.bookItemIds} scopeLimits={view.limits ?? null} scopeTags={view.scopeTags} scopeKpIds={view.scopeKpIds} onMaterialName={setSessionMaterial} onLocateKp={(kpId) => changeView(kpId ? { name: "graph", focusKpId: kpId } : { name: "graph", replayToday: true })} />;
   } else if (view.name === "browse") {
     topTitle = T("卡片浏览");
     mainContent = (
@@ -853,6 +868,19 @@ export default function App() {
     // v48.81（D125）：「推荐」页签页（顶栏标题沿模块全名「下一步」，同 卡片→卡片浏览 模式）。关闭学习者模型时页签收拢消失，本视图由 App 退回数据页
     topTitle = LS.panel.title;
     mainContent = <NextStepsPanel />;
+  } else if (view.name === "graph") {
+    topTitle = T("知识图谱");
+    mainContent = (
+      <Suspense fallback={<div className="kg-page kg-empty">{T("正在生成知识图谱…")}</div>}>
+        <KnowledgeGraphView
+          initialFocusId={view.focusKpId ?? (view.focusAtlasId ? "atlas:" + view.focusAtlasId : null)}
+          autoReplayToday={Boolean(view.replayToday)}
+          onOpenMap={(documentId, mapId, nodeId) => void openMaterialMap(documentId, mapId, null, nodeId)}
+          onReview={(kpIds, title) => changeView({ name: "review", title, scopeKpIds: kpIds })}
+          onJumpToDoc={(docId, anchor, kpId) => void handleJumpToDoc(docId, anchor, "graph", kpId)}
+        />
+      </Suspense>
+    );
   } else if (view.name === "stats") {
     topTitle = T("统计数据");
     mainContent = <Dashboard />;
@@ -888,7 +916,7 @@ export default function App() {
             关闭学习者模型时经 .nav-collapse 横向收拢后卸载，右侧签前滑补位 */}
         <nav className="topbar-nav">
           {TOP_NAV.slice(0, 3).map(navItem)}
-          {(learnerEnabled === true || nextTabClosing) && (
+          {!NEXT_TAB_HIDDEN && (learnerEnabled === true || nextTabClosing) && (
             <span className={`nav-collapse${nextTabClosing ? "" : " is-open"}`}>
               <button
                 type="button"

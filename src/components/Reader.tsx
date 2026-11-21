@@ -152,6 +152,10 @@ interface Props {
   onMindmapOpened?: () => void;
   /** v48.13（P2）：要展示的导图版本 id（候选版本——不激活但仍应被看到） */
   openMindmapMapId?: string | null;
+  /** v49.146（T4）：打开导图后定位到的节点 id（图谱「出现在」→ 导图） */
+  openMindmapNodeId?: string | null;
+  /** v49.146（T4）：随文结构挂靠标记 → 打开图谱（有对应知识点则聚焦它，否则打开该全谱节点卡） */
+  onOpenGraph?: (focusKpId?: string | null, focusAtlasId?: string | null) => void;
   /** v48.13（P3）：以同一 run 续跑（应用重启后发现未跑完的运行） */
   resumeRunId?: string | null;
   /** v48.22（D58 §6.8-8）：集中复习本书的摘录 / 闪卡（按书范围会话） */
@@ -415,6 +419,8 @@ export default function Reader({
   openMindmapInitially,
   onMindmapOpened,
   openMindmapMapId,
+  openMindmapNodeId,
+  onOpenGraph,
   resumeRunId,
   onReviewExtracts,
   onReviewCards,
@@ -889,7 +895,7 @@ export default function Reader({
   // 从右下角指示器进入：直接开全景（不再展开侧栏）；标记即刻回执给 App 清除
   useEffect(() => {
     if (!openMindmapInitially) return;
-    openAtlas("indicator", null);
+    openAtlas("indicator", openMindmapNodeId ?? null);
     onMindmapOpened?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openMindmapInitially, onMindmapOpened]);
@@ -2675,6 +2681,7 @@ export default function Reader({
                     if (back) showBackChip(back);
                   }}
                   initialMapId={openMindmapMapId || null}
+                  onOpenGraph={onOpenGraph}
                   initialResumeRunId={resumeOnce}
                   onMakeCardsFromNode={(payload) => {
                     void runAICards(payload.section, undefined, "card-structure", { focus: payload.focus, mindmapNodeId: payload.nodeId });

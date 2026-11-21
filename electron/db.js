@@ -36,6 +36,11 @@ const {
   REVIEW_ANSWER_JUDGE_PROMPT,
   JOURNAL_INSIGHT_PROMPT,
   KNOWLEDGE_EXTRACTION_PROMPT,
+  KG_ATTACH_PROMPT,
+  KG_ATLAS_MAP_PROMPT,
+  KG_MAP_LINK_PROMPT,
+  KG_CARD_REATTACH_PROMPT,
+  KG_EDGE_JUDGE_PROMPT,
   KNOWLEDGE_RELATION_PROMPT,
   MATERIAL_DIFFICULTY_PROMPT,
   KNOWLEDGE_PROBE_PROMPT,
@@ -998,6 +1003,12 @@ async function initDb(opts = {}) {
   // 幂等重建（毫秒级）；是 C-10「结构变化只走 MIGRATIONS」规则的唯一登记例外（派生对象，不承载数据）。
   require("./syncTriggers").installSyncTriggers(db);
   migrateSettingsFactsToAppMeta();
+  try {
+    const nClean = kgDissolveCleanup();
+    if (nClean > 0) console.log(`[kg] 旧「解散」遗留的空化石知识点已清理 ${nClean} 个`);
+  } catch (e) {
+    console.error("[kg] 解散遗留清理失败（不阻塞启动，下次启动重试）：", e);
+  }
   // P1 时序：完成标记必须在 persist() 成功之后写（标记是重跑跳过的唯一安全网，先于数据落盘会在
   // 「标记已写、数据未持久化即崩溃」时把存量旧数据锁死在未回填态）——persist 抛错则此处不执行，
   // 标记不落盘，下次启动重跑可续（事务零残留；数据已持久化时重跑判定已合规 → 零写入 → 补标记）。
@@ -1927,6 +1938,8 @@ function insertCard(card) {
       now
     ]
   );
+  // v49.138 / D305：侧面随卡片确认落库（封闭五值，非法值丢弃不抛错——AI 批量制卡是多草稿循环）
+  if (card.facet && CARD_FACETS.includes(String(card.facet))) db.run("UPDATE cards SET facet = ? WHERE id = ?", [String(card.facet), id]);
   return id;
 }
 
@@ -3147,7 +3160,7 @@ function getCardGenInfo(cardId) {
 }
 
 // 制卡族播种目标版本（测试经 db.CARD_PROMPT_TARGET_VERSION 引用，升版只改这里）
-const CARD_PROMPT_TARGET_VERSION = 8;
+const CARD_PROMPT_TARGET_VERSION = 11; // v49.149 / D318：R22 v11 知识点＝义项
 
 function ensurePromptTemplates() {
   const now = Date.now();
@@ -3167,6 +3180,12 @@ function ensurePromptTemplates() {
   // v46（M14-UM2，§4.18-13）统一升到 7：组装 R20 记忆情境接地段（v6 基础文本不变，旧版本行留痕）。
   // v8（D121，v48.77）统一升到 8：R21 限定完整性（归属/应然实然/时空范围/框架口径四层）+ 输出字段 qualifier
   //   + 自检「限定排查」；请求装配新增【前后文】【相关已有卡】块（模板外注入）。旧版本行留痕。
+  // v9（v49.138 / D305）统一升到 9：R22 知识点归属与侧面（knowledgePoints[].label/definition/kind + cards[].facet），
+  //   请求装配新增【用户已有知识点】块（模板外注入）。旧版本行留痕。
+  // v10（v49.143 / D311）统一升到 10：R22 增 knowledgePoints[].atlasId（只能抄写【全谱候选知识点】里的编号，没有含义相同的填 null），
+  //   请求装配新增【全谱候选知识点】块（模板外注入，本地字典召回）。旧版本行留痕。
+  // v11（v49.149 / D318）统一升到 11：R22 v11 知识点＝义项——atlasRel 四型 / unsure / quote / contrast，比较定义不比较名字；
+  //   候选行带定义与命中方式，【用户已有知识点】带定义摘要，新增【你过去的辨析】块。旧版本行留痕。
   const seedScope = (scope, name, content) => {
     const rows = queryAll("SELECT MAX(version) AS v FROM prompt_templates WHERE scope = ?", [scope]);
     if (Number(rows[0]?.v || 0) >= CARD_PROMPT_TARGET_VERSION) return;
@@ -3175,16 +3194,16 @@ function ensurePromptTemplates() {
       [crypto.randomUUID(), scope, name, content, CARD_PROMPT_TARGET_VERSION, situationRequiredFor(scope), now]
     );
   };
-  seedScope("card-generation", "主制卡 v8", CARD_GEN_PROMPT);
-  seedScope("card-formula", "公式分解 v8", CARD_FORMULA_PROMPT);
-  seedScope("card-seq", "序列/背诵 v8", CARD_SEQ_PROMPT);
-  seedScope("card-enum", "枚举拆解 v8", CARD_ENUM_PROMPT);
+  seedScope("card-generation", "主制卡 v11", CARD_GEN_PROMPT);
+  seedScope("card-formula", "公式分解 v11", CARD_FORMULA_PROMPT);
+  seedScope("card-seq", "序列/背诵 v11", CARD_SEQ_PROMPT);
+  seedScope("card-enum", "枚举拆解 v11", CARD_ENUM_PROMPT);
   // card-literature：专用文学模板（v31 修复死代码；v30 的序列占位行保留留痕）
-  seedScope("card-literature", "文学/诗歌背诵 v8（专用模板）", CARD_LITERATURE_PROMPT);
-  seedScope("card-mnemonic", "助记双卡 v8", CARD_MNEMONIC_PROMPT);
-  seedScope("card-contrast", "对比卡 v8", CARD_CONTRAST_PROMPT);
-  seedScope("card-wording", "措辞优化 v8", CARD_WORDING_PROMPT);
-  seedScope("card-basic", "前置知识卡 v8", CARD_BASIC_PROMPT);
+  seedScope("card-literature", "文学/诗歌背诵 v11（专用模板）", CARD_LITERATURE_PROMPT);
+  seedScope("card-mnemonic", "助记双卡 v11", CARD_MNEMONIC_PROMPT);
+  seedScope("card-contrast", "对比卡 v11", CARD_CONTRAST_PROMPT);
+  seedScope("card-wording", "措辞优化 v11", CARD_WORDING_PROMPT);
+  seedScope("card-basic", "前置知识卡 v11", CARD_BASIC_PROMPT);
   // v32（M7，D31）：card-vocab 新 scope 首版 v1——既有 v6 目标版本不动，只增新 scope 行
   try {
     const vocabCount = queryAll("SELECT COUNT(*) AS n FROM prompt_templates WHERE scope = 'card-vocab'")[0]?.n || 0;
@@ -3383,7 +3402,17 @@ function ensurePromptTemplates() {
       ["material-difficulty", "材料难度画像 v1", MATERIAL_DIFFICULTY_PROMPT],
       ["knowledge-probe", "维度探针 v1", KNOWLEDGE_PROBE_PROMPT],
       ["frontier-explain", "推荐解释 v1", FRONTIER_EXPLAIN_PROMPT],
-      ["structure-analogy", "结构类比 v1", STRUCTURE_ANALOGY_PROMPT]
+      ["structure-analogy", "结构类比 v1", STRUCTURE_ANALOGY_PROMPT],
+      // v49.141 / D308：整理已有卡片（知识点与侧面标注）
+      ["kg-attach", "整理已有卡片 v1", KG_ATTACH_PROMPT],
+      // v49.144 / D312：知识点对应全谱（AI 只给标准条目名，本地查全谱）
+      ["kg-atlas-map", "知识点对应全谱 v1", KG_ATLAS_MAP_PROMPT],
+      // v49.146 / D314：导图节点挂靠全谱（候选封闭选择）
+      ["kg-map-link", "导图节点挂靠全谱 v1", KG_MAP_LINK_PROMPT],
+      // v49.147 / D316：解散知识点后给卡片重挂（候选封闭选择）
+      ["kg-card-reattach", "解散知识点重挂卡片 v1", KG_CARD_REATTACH_PROMPT],
+      // v49.148 / D317：连线三层的 AI 判断（候选对子封闭选择 + 引文校验）
+      ["kg-edge-judge", "知识点关系判断 v1", KG_EDGE_JUDGE_PROMPT]
     ]) {
       const n = queryAll("SELECT COUNT(*) AS n FROM prompt_templates WHERE scope = ?", [scope])[0]?.n || 0;
       if (Number(n) === 0) {
@@ -3392,6 +3421,16 @@ function ensurePromptTemplates() {
           [crypto.randomUUID(), scope, name, content, situationRequiredFor(scope), now]
         );
       }
+    }
+  } catch { /* 播种失败不阻塞启动 */ }
+  // D314 修订：kg-map-link v2（每节点 0–8 个、新增 more 条目名）。同上例：MAX(version) < 2 即插新行，v1 留痕。
+  try {
+    const mlMax = queryAll("SELECT MAX(version) AS v FROM prompt_templates WHERE scope = 'kg-map-link'")[0]?.v || 0;
+    if (Number(mlMax) < 2) {
+      db.run(
+        "INSERT INTO prompt_templates (id, scope, name, content, version, is_default, situation_required, created_at) VALUES (?, 'kg-map-link', '导图节点挂靠全谱 v2', ?, 2, 1, ?, ?)",
+        [crypto.randomUUID(), KG_MAP_LINK_PROMPT, situationRequiredFor("kg-map-link"), now]
+      );
     }
   } catch { /* 播种失败不阻塞启动 */ }
   // v48 批2（M15 重做，D41-③ / §4.19-3）：material-map-* 五 scope——四层管线（单元分析/归并/全书/终编辑）
@@ -6039,7 +6078,7 @@ const KP_RELATION_TYPES = [
   "prerequisite", "part_of", "related_to", "contrasts_with", "example_of",
   "application_of", "generalization_of", "specialization_of", "analogous_to"
 ];
-const KP_REF_KINDS = ["wikidata-qid", "wikipedia-url", "isbn", "doi", "custom"];
+const KP_REF_KINDS = ["wikidata-qid", "wikipedia-url", "isbn", "doi", "custom", "atlas-also"];
 const KP_MERGE_LOG_KEY = "k1MergeLog";
 
 function parseJsonSafe(text, fallback) {
@@ -6201,7 +6240,10 @@ function updateKnowledgePoint(id, patch, opts) {
     fields.push("canonical_label = ?");
     params.push(label);
   }
-  if (patch.description !== undefined) { fields.push("description = ?"); params.push(patch.description ? String(patch.description) : null); }
+  if (patch.description !== undefined && String(patch.description ?? "").trim() !== String(row.description ?? "").trim()) {
+    // D304：定义修订一律经版本表（只增不改），description 由 appendKpDefinitionRow 镜像
+    appendKpDefinitionRow(row.id, patch.description, "user", "manual_edit", null, Date.now());
+  }
   if (patch.domainId !== undefined) { fields.push("domain_id = ?"); params.push(patch.domainId ? String(patch.domainId) : null); }
   if (patch.parentKnowledgePointId !== undefined) { fields.push("parent_knowledge_point_id = ?"); params.push(patch.parentKnowledgePointId ? String(patch.parentKnowledgePointId) : null); }
   if (patch.aliases !== undefined) {
@@ -6251,6 +6293,8 @@ function mergeKnowledgePoints(sourceId, targetId, opts) {
     tgt.id, JSON.stringify(meta), now, src.id
   ]);
   db.run("UPDATE knowledge_points SET alias_json = ?, updated_at = ? WHERE id = ?", [JSON.stringify(tgtAliases), now, tgt.id]);
+  // D304：图谱回放与撤销的事件源；D307：manual＝用户手动合并（语义匹配提示的唯一触发信号）
+  appendKgEventRow("merged", tgt.id, { fromId: src.id, manual: Boolean(opts && opts.manual) }, now);
   persist();
   return { source: getKnowledgePoint(src.id), target: getKnowledgePoint(tgt.id) };
 }
@@ -6274,6 +6318,7 @@ function unmergeKnowledgePoint(sourceId, opts) {
   db.run("UPDATE knowledge_points SET status = 'active', merged_into = NULL, metadata_json = ?, updated_at = ? WHERE id = ?", [
     Object.keys(meta).length ? JSON.stringify(meta) : null, Date.now(), src.id
   ]);
+  appendKgEventRow("split", log.mergedInto, { newId: src.id }, Date.now()); // D304
   persist();
   return getKnowledgePoint(src.id);
 }
@@ -6329,6 +6374,14 @@ function listKnowledgeRelations(opts) {
 }
 
 function createKnowledgeRelation(payload, opts) {
+  const id = insertKnowledgeRelationRow(payload);
+  persist();
+  const row = queryAll("SELECT * FROM knowledge_relations WHERE id = ?", [id])[0];
+  return mapKpRelationRow(row);
+}
+
+// v49.148 / D317：校验 + 插入（不 persist，可在事务内调用）；返回新行 id
+function insertKnowledgeRelationRow(payload) {
   const type = String(payload?.relationType ?? "");
   if (!KP_RELATION_TYPES.includes(type)) throw new Error(`未知关系类型：${type || "(空)"}`);
   const fromId = String(payload?.fromKnowledgePointId ?? "");
@@ -6362,9 +6415,7 @@ function createKnowledgeRelation(payload, opts) {
       now, now
     ]
   );
-  persist();
-  const row = queryAll("SELECT * FROM knowledge_relations WHERE id = ?", [id])[0];
-  return mapKpRelationRow(row);
+  return id;
 }
 
 function deleteKnowledgeRelation(id, opts) {
@@ -7648,6 +7699,8 @@ function deleteMaterialMap(id) {
     db.run("DELETE FROM material_maps WHERE id = ?", [String(id)]);
     db.run("DELETE FROM material_map_nodes WHERE map_id = ?", [String(id)]);
     db.run("DELETE FROM material_map_edges WHERE map_id = ?", [String(id)]);
+    // v49.146 / D314：挂靠行是同步表，只软删（不新增物理删除）
+    db.run("UPDATE material_map_node_refs SET is_deleted = 1, updated_at = ?, sync_version = sync_version + 1 WHERE map_id = ? AND is_deleted = 0", [Date.now(), String(id)]);
     if (is_active) {
       db.run(
         "UPDATE material_maps SET is_active = 0 WHERE document_id = ? AND scope_anchor = ? AND is_active = 1",
@@ -8539,13 +8592,22 @@ const LEARNING_EVENT_SPECS = {
       return {
         text: String(p.text ?? "").slice(0, 4000),
         relatedKpId: p.relatedKpId ? String(p.relatedKpId) : null,
-        selfRating: p.selfRating
+        selfRating: p.selfRating,
+        // v49.148 / D317：来源入口（kg_relation_ask / kg_drag_link / kg_edge_panel / kg_restate …），只作留痕
+        ...(p.source ? { source: String(p.source).slice(0, 32) } : {})
       };
     }
   }
 };
 
 function addLearningEvent(evt) {
+  const r = insertLearningEventRow(evt);
+  if (r.ok) persist();
+  return r;
+}
+
+// v49.148 / D317：校验 + 插入（不 persist，可在事务内调用）
+function insertLearningEventRow(evt) {
   const e = evt && typeof evt === "object" ? evt : {};
   const kind = String(e.kind || "");
   const spec = LEARNING_EVENT_SPECS[kind];
@@ -8571,7 +8633,6 @@ function addLearningEvent(evt) {
       JSON.stringify(payload)
     ]
   );
-  persist();
   return { ok: true, id };
 }
 
@@ -8769,7 +8830,7 @@ function learnerFacts(opts) {
       "SELECT id, library_item_id AS libraryItemId, updated_at AS updatedAt, (markdown IS NOT NULL AND markdown != '') AS hasMarkdown, LENGTH(COALESCE(markdown,'')) AS markdownLen FROM documents WHERE is_deleted = 0 ORDER BY id ASC"
     ),
     cards: queryAll(
-      "SELECT id, card_type AS cardType, knowledge_point_id AS knowledgePointId, gen_batch_id AS genBatchId, context_ref_json AS contextRefJson, dict_json AS dictJson, domain, generated_by AS generatedBy, created_at AS createdAt, updated_at AS updatedAt, fsrs_json AS fsrsJson, fsrs_config_id AS fsrsConfigId FROM cards WHERE is_deleted = 0"
+      "SELECT id, card_type AS cardType, knowledge_point_id AS knowledgePointId, gen_batch_id AS genBatchId, context_ref_json AS contextRefJson, dict_json AS dictJson, domain, generated_by AS generatedBy, created_at AS createdAt, updated_at AS updatedAt, fsrs_json AS fsrsJson, fsrs_config_id AS fsrsConfigId, facet FROM cards WHERE is_deleted = 0"
     ),
     // C-16（F29 / §4.4.9）：学习者日志同样必须按 review_seq（插入序）排，
     // 墙钟会因校时/时区/恢复旧备份倒退，按它排会让分段与「首次达成」重算错序。
@@ -8978,7 +9039,1488 @@ function listDecisionLog(limit = 200) {
   });
 }
 
+// ---------- v49.137 / D304 知识图谱事实层（docs/design/KNOWLEDGE-GRAPH-DESIGN.md §6.3 / §7.6 / §12.1） ----------
+// kp_definition_versions 与 kg_events 都是 APPEND 表：只 INSERT，不 UPDATE / DELETE（tests/sync-tables 静态扫描）。
+const KP_DEF_REASONS = ["ai_draft", "manual_edit", "review_edit", "restate", "merge", "revert", "legacy"];
+const KP_DEF_AUTHORS = ["ai", "user", "legacy"];
+// contrast_handled（v49.139 / D306）：用户对某对易混知识点的区分卡提议作出决定（generated / dismissed），之后永不再提
+// relation_asked（v49.148 / D317）：复习页关系提问的结果（answered / skipped / unrelated），按对子 30 天冷却
+// sense_judged（v49.149 / D318）：用户在制卡草稿辨析卡上对「材料术语 vs 全谱条目」的裁决（回流到【你过去的辨析】）
+const KG_EVENT_KINDS = ["merged", "split", "archived", "restored", "edge_confirmed", "contrast_handled", "kp-dissolve", "relation_asked", "sense_judged"];
+const CARD_FACETS = ["definition", "why", "example", "contrast", "relation"];
+
+function appendKgEventRow(kind, kpId, payload, ts) {
+  if (!KG_EVENT_KINDS.includes(kind)) throw new Error("未知图谱事件：" + kind);
+  db.run("INSERT INTO kg_events (id, kind, ts, kp_id, payload_json) VALUES (?, ?, ?, ?, ?)", [
+    crypto.randomUUID(), kind, Number(ts) || Date.now(), kpId ? String(kpId) : null, JSON.stringify(payload || {})
+  ]);
+}
+
+function mapKpDefRow(r) {
+  return {
+    id: r.id, kpId: r.kp_id, seq: Number(r.seq), body: r.body, author: r.author, reason: r.reason,
+    sourceRef: parseJsonSafe(r.source_ref_json, null), createdAt: Number(r.created_at)
+  };
+}
+
+function listKpDefinitionVersions(kpId) {
+  return queryAll("SELECT * FROM kp_definition_versions WHERE kp_id = ? ORDER BY seq ASC", [String(kpId)]).map(mapKpDefRow);
+}
+
+// 追加一版定义（无事务包装的内部版本；调用方负责事务与 persist）。存量 description 在首次修订前补记为 legacy 第 1 版。
+function appendKpDefinitionRow(kpId, body, author, reason, sourceRef, now) {
+  const row = getKpRow(kpId);
+  if (!row) throw new Error("知识点不存在");
+  const text = String(body ?? "").trim();
+  if (!KP_DEF_REASONS.includes(reason)) throw new Error("未知定义修订原因：" + reason);
+  if (!KP_DEF_AUTHORS.includes(author)) throw new Error("未知定义作者：" + author);
+  let last = queryAll("SELECT MAX(seq) AS m FROM kp_definition_versions WHERE kp_id = ?", [row.id])[0]?.m || 0;
+  if (last === 0 && row.description && String(row.description).trim() && String(row.description).trim() !== text) {
+    db.run("INSERT INTO kp_definition_versions (id, kp_id, seq, body, author, reason, source_ref_json, created_at) VALUES (?, ?, 1, ?, 'legacy', 'legacy', NULL, ?)", [
+      crypto.randomUUID(), row.id, String(row.description).trim(), Number(row.created_at) || now
+    ]);
+    last = 1;
+  }
+  const cur = last ? queryAll("SELECT body FROM kp_definition_versions WHERE kp_id = ? AND seq = ?", [row.id, last])[0] : null;
+  if (cur && cur.body === text) return null; // 与最新版相同：不生成新版本
+  db.run("INSERT INTO kp_definition_versions (id, kp_id, seq, body, author, reason, source_ref_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
+    crypto.randomUUID(), row.id, last + 1, text, author, reason, sourceRef ? JSON.stringify(sourceRef) : null, now
+  ]);
+  db.run("UPDATE knowledge_points SET description = ?, updated_at = ? WHERE id = ?", [text || null, now, row.id]);
+  return last + 1;
+}
+
+/** 修订定义：生成新版本（只增不改），description 镜像最新版。返回 {kp, versions}。 */
+function reviseKpDefinition(kpId, payload) {
+  const p = payload || {};
+  const reason = String(p.reason || "manual_edit");
+  const author = String(p.author || (reason === "ai_draft" ? "ai" : "user"));
+  withTransaction(() => appendKpDefinitionRow(String(kpId), p.body, author, reason, p.sourceRef || null, Date.now()));
+  return { kp: getKnowledgePoint(String(kpId)), versions: listKpDefinitionVersions(String(kpId)) };
+}
+
+/** 回退到某个旧版本＝新增一版（reason=revert），历史不改 */
+function revertKpDefinition(kpId, seq) {
+  const v = queryAll("SELECT body FROM kp_definition_versions WHERE kp_id = ? AND seq = ?", [String(kpId), Number(seq)])[0];
+  if (!v) throw new Error("定义版本不存在");
+  return reviseKpDefinition(kpId, { body: v.body, reason: "revert", author: "user", sourceRef: { revertOf: Number(seq) } });
+}
+
+function listKgEvents(opts) {
+  const o = opts || {};
+  return queryAll("SELECT * FROM kg_events WHERE ts >= ? ORDER BY ts ASC, id ASC", [Number(o.since) || 0]).map((r) => ({
+    id: r.id, kind: r.kind, ts: Number(r.ts), kpId: r.kp_id, payload: parseJsonSafe(r.payload_json, {})
+  }));
+}
+
+function listAllKpDefinitionVersions() {
+  return queryAll("SELECT kp_id, seq, created_at FROM kp_definition_versions ORDER BY kp_id, seq").map((r) => ({
+    kpId: r.kp_id, seq: Number(r.seq), createdAt: Number(r.created_at)
+  }));
+}
+
+// 归档（设计稿 §4.4 / Q2）：status=deprecated + 暂停其卡（leech.suspended，reason=kp_archived）；恢复只解除本原因暂停的卡
+function archiveKnowledgePoint(kpId) {
+  const row = getKpRow(String(kpId));
+  if (!row) throw new Error("知识点不存在");
+  if (row.status !== "active") throw new Error("只有 active 状态的知识点可以归档");
+  const cardIds = [...dbResolveCardKpMapForKp(row.id)];
+  const now = Date.now();
+  withTransaction(() => {
+    db.run("UPDATE knowledge_points SET status = 'deprecated', updated_at = ? WHERE id = ?", [now, row.id]);
+    for (const cid of cardIds) {
+      const card = getCard(cid);
+      if (!card) continue;
+      const leech = card.leech || {};
+      if (leech.suspended) continue;
+      leech.suspended = true;
+      leech.suspendedAt = now;
+      leech.reason = "kp_archived";
+      db.run("UPDATE cards SET leech_json = ?, updated_at = ? WHERE id = ?", [JSON.stringify(leech), now, cid]);
+    }
+    appendKgEventRow("archived", row.id, { cardIds }, now);
+  });
+  return getKnowledgePoint(row.id);
+}
+
+function restoreKnowledgePoint(kpId) {
+  const row = getKpRow(String(kpId));
+  if (!row) throw new Error("知识点不存在");
+  if (row.status !== "deprecated") throw new Error("该知识点未归档");
+  const ev = queryAll("SELECT payload_json FROM kg_events WHERE kind = 'archived' AND kp_id = ? ORDER BY ts DESC LIMIT 1", [row.id])[0];
+  const cardIds = ev ? parseJsonSafe(ev.payload_json, {}).cardIds || [] : [];
+  const now = Date.now();
+  withTransaction(() => {
+    db.run("UPDATE knowledge_points SET status = 'active', updated_at = ? WHERE id = ?", [now, row.id]);
+    for (const cid of cardIds) {
+      const card = getCard(String(cid));
+      if (!card || !card.leech || card.leech.reason !== "kp_archived") continue;
+      const leech = { ...card.leech, suspended: false, suspendedAt: null };
+      delete leech.reason;
+      db.run("UPDATE cards SET leech_json = ?, updated_at = ? WHERE id = ?", [JSON.stringify(leech), now, String(cid)]);
+    }
+    appendKgEventRow("restored", row.id, { cardIds }, now);
+  });
+  return getKnowledgePoint(row.id);
+}
+
+function dbResolveCardKpMapForKp(kpId) {
+  const out = new Set();
+  for (const [cid, k] of resolveCardKpMap()) if (k === kpId) out.add(cid);
+  return out;
+}
+
+/** v49.139 / D306：记录区分卡提议的处理结果（pair＝两 id 字典序拼接） */
+function markContrastHandled(pair, action) {
+  const p = String(pair || "");
+  if (!/^[^|]+\|[^|]+$/.test(p)) throw new Error("非法知识点对");
+  if (!["generated", "dismissed"].includes(action)) throw new Error("非法处理结果");
+  appendKgEventRow("contrast_handled", null, { pair: p, action }, Date.now());
+  persist();
+  return true;
+}
+
+/** 卡片侧面（可空；封闭五值） */
+function setCardFacet(cardId, facet) {
+  const f = facet == null || facet === "" ? null : String(facet);
+  if (f !== null && !CARD_FACETS.includes(f)) throw new Error("未知侧面：" + f);
+  db.run("UPDATE cards SET facet = ?, updated_at = ? WHERE id = ? AND is_deleted = 0", [f, Date.now(), String(cardId)]);
+  persist();
+  return true;
+}
+
+/** 卡片改挂到另一个知识点（设计稿 §11.6 / §7.6 拆分＝把卡移到新节点）：写正式 id */
+function moveCardToKnowledgePoint(cardId, kpId) {
+  const kp = kpId ? getKpRow(String(kpId)) : null;
+  if (kpId && !kp) throw new Error("知识点不存在");
+  db.run("UPDATE cards SET knowledge_point_id = ?, updated_at = ? WHERE id = ? AND is_deleted = 0", [kp ? kp.id : null, Date.now(), String(cardId)]);
+  persist();
+  return true;
+}
+
+// v49.138 / D305（设计稿 §4.2 G4）：制卡草稿的知识点归属——本地裁决只认规范化键精确命中（canonical_label 或别名）；
+// 命中多个时取最近更新的根 KP；未命中＝「新」（此刻不建，接受卡片时才建）。
+function kgKpKeyIndex() {
+  const { normalizeKpLabel } = require("./kpNorm");
+  const idx = new Map();
+  const rows = queryAll("SELECT id, canonical_label, alias_json, updated_at FROM knowledge_points WHERE is_deleted = 0 AND status = 'active' ORDER BY updated_at DESC, id ASC");
+  for (const r of rows) {
+    for (const name of [r.canonical_label, ...parseJsonSafe(r.alias_json, [])]) {
+      const k = normalizeKpLabel(String(name || ""));
+      if (k && !idx.has(k)) idx.set(k, { id: r.id, label: r.canonical_label });
+    }
+  }
+  return { idx, norm: normalizeKpLabel };
+}
+
+/**
+ * items：[{key, label, atlasId?}] → [{key, label, kpId|null, kpLabel|null}]
+ * v49.143 / D311：带 atlasId 的按全谱身份找已有知识点（找不到即「新」，接受时按全谱建）；同名但挂了别的全谱节点的不算命中。
+ */
+function resolveKpAttribution(items) {
+  const { idx, norm } = kgKpKeyIndex();
+  return (Array.isArray(items) ? items : []).map((it) => {
+    const label = String(it?.label ?? "").trim().slice(0, 60);
+    const aId = atlasInt(it?.atlasId);
+    // v49.149 / D318：atlasRel 缺省＝same；同名已有知识点只在「义项兼容」时复用（kpSenseCompatible）
+    const rel = SENSE_RELS.includes(it?.atlasRel) ? it.atlasRel : "same";
+    if (aId) {
+      if (rel === "same") {
+        const byA = kpByAtlas(aId);
+        if (byA) return { key: String(it?.key ?? ""), label, kpId: byA.id, kpLabel: byA.label };
+      }
+      const hit = label ? findCompatibleKp(label, rel, aId) : null;
+      return hit ? { key: String(it?.key ?? ""), label, kpId: hit.id, kpLabel: hit.label } : { key: String(it?.key ?? ""), label, kpId: null, kpLabel: null };
+    }
+    const hit = label ? idx.get(norm(label)) : null;
+    return { key: String(it?.key ?? ""), label, kpId: hit ? hit.id : null, kpLabel: hit ? hit.label : null };
+  });
+}
+
+/** v49.143 / D311：全谱 id（"Q123" / 123）→ 整数；非法返回 null */
+function atlasInt(v) {
+  if (v == null || v === "") return null;
+  const s = String(v);
+  const n = Number(s[0] === "Q" || s[0] === "q" ? s.slice(1) : s);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+function kpByAtlas(n) {
+  return queryAll("SELECT id, canonical_label AS label, status FROM knowledge_points WHERE atlas_id = ? AND is_deleted = 0 AND merged_into IS NULL LIMIT 1", [n])[0] || null;
+}
+
+/**
+ * 接受卡片时确保知识点存在：已有（含规范化同名）直接返回；否则新建并写 AI 第 1 版定义（reason=ai_draft）。
+ * v49.143 / D311：给了 atlasId（全谱节点）时按全谱身份去重——已有对应知识点直接返回；同名但尚未挂全谱的旧知识点就地挂上；
+ * 给了 atlasParent（私有节点）时新建并记下全谱上级。
+ */
+function ensureKpForCard(payload) {
+  const label = String(payload?.label ?? "").trim().slice(0, 60);
+  if (!label) throw new Error("知识点名称为空");
+  // v49.149 / D318 知识点＝义项：与全谱四型对照——same＝atlas_id；narrower＝atlas_parent；split＝atlas_parent + atlas-split 引用；
+  // related＝atlas-also 引用。atlasRel 缺省＝same（旧调用口径）。
+  const rel = SENSE_RELS.includes(payload?.atlasRel) ? payload.atlasRel : "same";
+  const given = atlasInt(payload?.atlasId);
+  const aId = rel === "same" ? given : null;
+  let aParent = aId ? null : atlasInt(payload?.atlasParent);
+  let aRef = null;
+  if (given && rel !== "same") {
+    if (rel === "narrower" || rel === "split") aParent = given;
+    if (rel === "split") aRef = { kind: "atlas-split", value: "Q" + given };
+    if (rel === "related") aRef = { kind: "atlas-also", value: "Q" + given };
+  }
+  if (payload?.kpId) {
+    const row = getKpRow(String(payload.kpId));
+    // v49.149 / D318（审查修正）：指定的已有知识点也按对照类型补全全谱位置（只补空位，不改挂已有位置）
+    if (row && row.status === "active") {
+      fillKpAtlasPosition(row.id, aId, aParent, aRef);
+      return { id: row.id, created: false };
+    }
+  }
+  if (aId) {
+    const byA = kpByAtlas(aId);
+    if (byA) return { id: byA.id, created: false };
+  }
+  // 同名知识点可能有多个义项并存：逐个检查，用第一个兼容的；都不兼容（同名异义）→ 新建
+  const hit = findCompatibleKp(label, rel, given);
+  if (hit) {
+    if (!aId) {
+      // 同名已有知识点：复用；它还没有任何全谱位置时补上本次的上级 / 引用（已有位置的不改挂）
+      if (aParent || aRef) {
+        const cur = queryAll("SELECT atlas_id, atlas_parent FROM knowledge_points WHERE id = ?", [hit.id])[0] || {};
+        withTransaction(() => {
+          if (aParent && cur.atlas_id == null && cur.atlas_parent == null) db.run("UPDATE knowledge_points SET atlas_parent = ?, updated_at = ? WHERE id = ?", [aParent, Date.now(), hit.id]);
+          if (aRef && cur.atlas_id == null) addKpAtlasRef(hit.id, aRef.kind, aRef.value);
+        });
+      }
+      return { id: hit.id, created: false };
+    }
+    const cur = queryAll("SELECT atlas_id FROM knowledge_points WHERE id = ?", [hit.id])[0];
+    if (cur && cur.atlas_id == null) {
+      db.run("UPDATE knowledge_points SET atlas_id = ?, updated_at = ? WHERE id = ?", [aId, Date.now(), hit.id]);
+      return { id: hit.id, created: false, linked: true };
+    }
+    // 同名但指向另一个全谱节点（同名异义）：继续新建
+  }
+  const kind = ["concept", "principle", "method", "fact"].includes(payload?.kind) ? payload.kind : null;
+  const def = payload?.definition ? String(payload.definition).trim().slice(0, 2000) : "";
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  withTransaction(() => {
+    db.run(
+      `INSERT INTO knowledge_points (id, user_id, canonical_label, description, domain_id, parent_knowledge_point_id, status, merged_into, alias_json, language_variants_json, confidence, metadata_json, created_at, updated_at, atlas_id, atlas_parent)
+       VALUES (?, 'local-user', ?, NULL, NULL, NULL, 'active', NULL, '[]', '[]', NULL, ?, ?, ?, ?, ?)`,
+      [id, label, kind ? JSON.stringify({ kgKind: kind, origin: "card_accept" }) : JSON.stringify({ origin: "card_accept" }), now, now, aId, aParent]
+    );
+    if (def) appendKpDefinitionRow(id, def, "ai", "ai_draft", payload?.sourceRef || null, now);
+    if (aRef) addKpAtlasRef(id, aRef.kind, aRef.value);
+  });
+  return { id, created: true };
+}
+
+const SENSE_RELS = ["same", "narrower", "split", "related"];
+
+/**
+ * v49.149 / D318（审查修正）：同名已有知识点能否当作本次的同一义项复用。
+ * same（对全谱节点 a）：它没有任何全谱位置（atlas_id / atlas_parent / atlas-split 都空）才行——已挂别处或已是分化义项＝同名异义。
+ * narrower / split（对 a）：它没有 atlas_id，且上级为空或正是 a 才行。related / 无编号：照旧按名称复用。
+ */
+function kpSenseCompatible(kpId, rel, a) {
+  const cur = queryAll("SELECT atlas_id, atlas_parent FROM knowledge_points WHERE id = ?", [kpId])[0];
+  if (!cur) return false;
+  if (!a || rel === "related") return true;
+  if (rel === "same") {
+    if (cur.atlas_id === a) return true;
+    if (cur.atlas_id != null || cur.atlas_parent != null) return false;
+    return !queryAll("SELECT 1 FROM knowledge_external_refs WHERE knowledge_point_id = ? AND ref_kind = 'atlas-split' AND is_deleted = 0 LIMIT 1", [kpId]).length;
+  }
+  return cur.atlas_id == null && (cur.atlas_parent == null || cur.atlas_parent === a);
+}
+
+/**
+ * v49.149 / D318（复审修正）：同名（规范化后等于名称或别名）的全部活动知识点里，取第一个义项兼容的（最近更新优先）。
+ * 同名异义可以并存，所以不能只看名称索引里的那一个。
+ */
+function findCompatibleKp(label, rel, a) {
+  const { normalizeKpLabel } = require("./kpNorm");
+  const k = normalizeKpLabel(String(label || ""));
+  if (!k) return null;
+  const rows = queryAll("SELECT id, canonical_label, alias_json FROM knowledge_points WHERE is_deleted = 0 AND status = 'active' ORDER BY updated_at DESC, id ASC");
+  for (const r of rows) {
+    const names = [r.canonical_label, ...parseJsonSafe(r.alias_json, [])];
+    if (!names.some((n) => normalizeKpLabel(String(n || "")) === k)) continue;
+    if (kpSenseCompatible(r.id, rel, a)) return { id: r.id, label: r.canonical_label };
+  }
+  return null;
+}
+
+/** v49.149 / D318：给已有知识点补全全谱位置——只填空位（不改挂已有 atlas_id / atlas_parent），引用不重复写 */
+function fillKpAtlasPosition(kpId, aId, aParent, aRef) {
+  if (!aId && !aParent && !aRef) return;
+  const cur = queryAll("SELECT atlas_id, atlas_parent FROM knowledge_points WHERE id = ?", [kpId])[0] || {};
+  withTransaction(() => {
+    if (aId && cur.atlas_id == null && cur.atlas_parent == null && !kpByAtlas(aId)) db.run("UPDATE knowledge_points SET atlas_id = ?, updated_at = ? WHERE id = ?", [aId, Date.now(), kpId]);
+    if (aParent && cur.atlas_id == null && cur.atlas_parent == null) db.run("UPDATE knowledge_points SET atlas_parent = ?, updated_at = ? WHERE id = ?", [aParent, Date.now(), kpId]);
+    if (aRef && cur.atlas_id == null) addKpAtlasRef(kpId, aRef.kind, aRef.value);
+  });
+}
+
+/** v49.149 / D318：写一条知识点 ↔ 全谱引用（atlas-also / atlas-split）；已有同类同值的不重复写。调用方负责事务与 persist。 */
+function addKpAtlasRef(kpId, kind, value) {
+  if (!["atlas-also", "atlas-split"].includes(kind)) throw new Error("未知全谱引用：" + kind);
+  const has = queryAll("SELECT id FROM knowledge_external_refs WHERE knowledge_point_id = ? AND ref_kind = ? AND ref_value = ? AND is_deleted = 0", [kpId, kind, value]);
+  if (has.length) return;
+  db.run("INSERT INTO knowledge_external_refs (id, user_id, knowledge_point_id, ref_kind, ref_value, source_label, created_at) VALUES (?, 'local-user', ?, ?, ?, NULL, ?)", [crypto.randomUUID(), kpId, kind, value, Date.now()]);
+}
+
+/** v49.149 / D318：知识点「译名分化」的全谱节点（{ kpId: ["Q1", ...] }；不给 kpIds 时返回全部） */
+function kgAtlasSplitMap(kpIds) {
+  if (!db) return {};
+  const ids = Array.isArray(kpIds) ? kpIds.map(String) : null;
+  const rows = ids && ids.length === 0 ? [] : queryAll(
+    `SELECT knowledge_point_id AS kp, ref_value AS v FROM knowledge_external_refs WHERE ref_kind = 'atlas-split' AND is_deleted = 0${ids ? ` AND knowledge_point_id IN (${ids.map(() => "?").join(",")})` : ""} ORDER BY created_at ASC`,
+    ids || []
+  );
+  const out = {};
+  for (const r of rows) (out[r.kp] = out[r.kp] || []).includes(r.v) || out[r.kp].push(r.v);
+  return out;
+}
+
+/**
+ * v49.149 / D318：记录用户在辨析卡上的裁决（kg_events kind sense_judged，APPEND）。
+ * payload：{ term, atlasId, atlasLabel, aiRel, userRel, kpId? }；userRel ∈ same|narrower|split|related|none。
+ */
+function recordSenseJudged(payload) {
+  const term = String(payload?.term ?? "").trim().slice(0, 60);
+  const atlasLabel = String(payload?.atlasLabel ?? "").trim().slice(0, 60);
+  const a = atlasInt(payload?.atlasId);
+  const userRel = [...SENSE_RELS, "none"].includes(payload?.userRel) ? payload.userRel : null;
+  if (!term || !a || !userRel) throw new Error("辨析记录不完整");
+  const aiRel = SENSE_RELS.includes(payload?.aiRel) ? payload.aiRel : null;
+  appendKgEventRow("sense_judged", payload?.kpId || null, { term, atlasId: "Q" + a, atlasLabel, aiRel, userRel }, Date.now());
+  persist();
+  return { ok: true };
+}
+
+function senseJudgedRows() {
+  return queryAll("SELECT ts, payload_json FROM kg_events WHERE kind = 'sense_judged' ORDER BY ts DESC LIMIT 500")
+    .map((r) => ({ ts: Number(r.ts), ...parseJsonSafe(r.payload_json, {}) }))
+    .filter((x) => x.term && x.atlasId && x.userRel);
+}
+
+/**
+ * v49.149 / D318：【你过去的辨析】的素材——同一对（术语, 全谱节点）只取最近一次；用户推翻 AI 的排在前面。
+ * 返回 [{ term, atlasLabel, aiRel, userRel }]（≤ limit，默认 6）
+ */
+function senseExamples(limit) {
+  const n = Math.max(1, Math.min(20, Number(limit) || 6));
+  const seen = new Set();
+  const out = [];
+  for (const x of senseJudgedRows()) {
+    const k = x.term + "|" + x.atlasId;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ term: x.term, atlasLabel: x.atlasLabel || x.atlasId, aiRel: x.aiRel || null, userRel: x.userRel, overrode: !!x.aiRel && x.aiRel !== x.userRel, ts: x.ts });
+  }
+  out.sort((a, b) => Number(b.overrode) - Number(a.overrode) || b.ts - a.ts);
+  return out.slice(0, n).map(({ term, atlasLabel, aiRel, userRel }) => ({ term, atlasLabel, aiRel, userRel }));
+}
+
+/** v49.149 / D318：AI 判断与用户裁决的一致率（本地统计，不上传）。{ total, agree, byAiRel: { rel: { total, agree } } } */
+function senseStats() {
+  const latest = new Map();
+  for (const x of senseJudgedRows()) {
+    const k = x.term + "|" + x.atlasId;
+    if (!latest.has(k)) latest.set(k, x);
+  }
+  const byAiRel = {};
+  let total = 0;
+  let agree = 0;
+  for (const x of latest.values()) {
+    const key = x.aiRel || "unknown";
+    const b = (byAiRel[key] = byAiRel[key] || { total: 0, agree: 0 });
+    b.total += 1;
+    total += 1;
+    if (x.aiRel && x.aiRel === x.userRel) {
+      b.agree += 1;
+      agree += 1;
+    }
+  }
+  return { total, agree, byAiRel };
+}
+
+/** v49.149 / D318：给【用户已有知识点】附定义摘要——名称 → 最新定义前 30 字（无定义的不返回） */
+function kpLabelDefs(labels) {
+  const list = (Array.isArray(labels) ? labels : []).map((x) => String(x || "").trim()).filter(Boolean).slice(0, 200);
+  if (!list.length) return {};
+  const rows = queryAll(
+    `SELECT canonical_label AS label, description AS d FROM knowledge_points WHERE is_deleted = 0 AND status = 'active' AND canonical_label IN (${list.map(() => "?").join(",")}) ORDER BY updated_at DESC`,
+    list
+  );
+  const out = {};
+  for (const r of rows) {
+    const d = String(r.d || "").replace(/\s+/g, " ").trim();
+    if (d && !(r.label in out)) out[r.label] = [...d].slice(0, 30).join("") + ([...d].length > 30 ? "…" : "");
+  }
+  return out;
+}
+
+/**
+ * v49.143 / D311：把已有知识点挂到全谱节点（atlasId=null 解除）。同一全谱节点已被别的知识点占用时拒绝并给出对方，
+ * 由用户决定是否合并（不自动合并——合并会搬卡片，必须显式）。
+ */
+function linkKpAtlas(kpId, atlasId, atlasParent, opts) {
+  const row = getKpRow(String(kpId || ""));
+  if (!row) throw new Error("知识点不存在");
+  const aId = atlasInt(atlasId);
+  // v49.147 / D316：「是它」时知识点以全谱为准——名称对齐（旧名进别名）；已被另一个知识点占用 → 并入它（可解除合并）。
+  // 设置 kgRenameOnAtlasMatch（默认开；opts.rename 可显式覆盖）关闭时行为同 D312：只挂编号，占用即拒绝。
+  const renameOn = opts && typeof opts.rename === "boolean" ? opts.rename : (readSettings().app || {}).kgRenameOnAtlasMatch !== false;
+  if (aId) {
+    const other = kpByAtlas(aId);
+    if (other && other.id !== row.id) {
+      if (renameOn && other.status === "active" && row.status === "active") {
+        mergeKnowledgePoints(row.id, other.id);
+        return { id: row.id, atlasId: "Q" + aId, atlasParent: null, mergedInto: { id: other.id, label: other.label } };
+      }
+      const err = new Error(`全谱节点已对应知识点「${other.label}」，可以把两者合并`);
+      err.code = "ATLAS_TAKEN";
+      err.otherId = other.id;
+      throw err;
+    }
+  }
+  const parent = aId ? null : atlasInt(atlasParent);
+  let renamed = null;
+  let newLabel = null;
+  let newAliases = null;
+  if (aId && renameOn) {
+    try {
+      const n = require("./atlas").getNodes(["Q" + aId])[0];
+      const target = n ? String(n.zh || n.zht || n.en || n.ja || "").trim().slice(0, 60) : "";
+      const { normalizeKpLabel } = require("./kpNorm");
+      if (target && normalizeKpLabel(target) !== normalizeKpLabel(row.canonical_label)) {
+        const key = normalizeKpLabel(target);
+        const aliases = parseJsonSafe(row.alias_json, []).filter((a) => normalizeKpLabel(String(a)) !== key);
+        if (!aliases.includes(row.canonical_label)) aliases.push(row.canonical_label);
+        newLabel = target;
+        newAliases = aliases;
+        renamed = { from: row.canonical_label, to: target };
+      }
+    } catch { /* 全谱不可用：只挂编号 */ }
+  }
+  withTransaction(() => {
+    db.run("UPDATE knowledge_points SET atlas_id = ?, atlas_parent = ?, updated_at = ? WHERE id = ?", [aId, parent, Date.now(), row.id]);
+    if (renamed) db.run("UPDATE knowledge_points SET canonical_label = ?, alias_json = ? WHERE id = ?", [newLabel, JSON.stringify(newAliases), row.id]);
+    // v49.145 / D313：新位置与某条「也涉及」相同时，那条也涉及撤销（一个节点不能既是上级又是也涉及）
+    const pos = [aId, parent].filter(Boolean).map((n) => "Q" + n);
+    if (pos.length) db.run(`UPDATE knowledge_external_refs SET is_deleted = 1 WHERE knowledge_point_id = ? AND ref_kind = 'atlas-also' AND is_deleted = 0 AND ref_value IN (${pos.map(() => "?").join(",")})`, [row.id, ...pos]);
+    // v49.149 / D318：「译名分化」只对当前上级成立——改挂 / 选「是它」/ 撤销后，不等于新上级的分化标记一律软删（不留过期标记）
+    db.run("UPDATE knowledge_external_refs SET is_deleted = 1 WHERE knowledge_point_id = ? AND ref_kind = 'atlas-split' AND is_deleted = 0 AND ref_value <> ?", [row.id, parent ? "Q" + parent : ""]);
+  });
+  persist();
+  return { id: row.id, atlasId: aId ? "Q" + aId : null, atlasParent: parent ? "Q" + parent : null, ...(renamed ? { renamed } : {}) };
+}
+
+/**
+ * v49.147 / D316：解散并重挂——取知识点（含并入它的）全部未删卡片。返回 [{kpId, label, cards:[{cardId, front, back, raw}]}]（只读）。
+ * front / back 各截 300 字；raw＝卡片 knowledge_point_id 原值（撤销时原样写回）。非 active 的知识点不返回。
+ */
+function kpReattachCards(kpIds) {
+  if (!db) return [];
+  const map = resolveCardKpMap();
+  const out = [];
+  for (const id of [...new Set((Array.isArray(kpIds) ? kpIds : []).map(String))]) {
+    const kp = getKpRow(id);
+    if (!kp || kp.status !== "active" || kp.merged_into) continue;
+    const cids = [...map].filter(([, k]) => k === kp.id).map(([c]) => c);
+    const cards = [];
+    for (let i = 0; i < cids.length; i += 400) {
+      const part = cids.slice(i, i + 400);
+      for (const r of queryAll(
+        `SELECT id, front_markdown, back_markdown, note_text, knowledge_point_id FROM cards WHERE is_deleted = 0 AND id IN (${part.map(() => "?").join(",")}) ORDER BY created_at ASC, id ASC`,
+        part
+      )) {
+        cards.push({
+          cardId: String(r.id),
+          front: String(r.front_markdown || r.note_text || "").replace(/\s+/g, " ").trim().slice(0, 300),
+          back: String(r.back_markdown || "").replace(/\s+/g, " ").trim().slice(0, 300),
+          raw: r.knowledge_point_id == null ? null : String(r.knowledge_point_id)
+        });
+      }
+    }
+    out.push({ kpId: kp.id, label: kp.canonical_label, cards });
+  }
+  return out;
+}
+
+/** v49.147 / D316：与文本字面相近的 active 知识点（名称 / 别名二元组命中率 ≥ 0.3），排除 excludeIds。返回 [{id, label, atlasId}] */
+function kgSimilarKps(text, limit, excludeIds) {
+  if (!db) return [];
+  const ex = new Set((excludeIds || []).map(String));
+  const src = kgBigrams(text);
+  const rows = queryAll("SELECT id, canonical_label, alias_json, atlas_id FROM knowledge_points WHERE is_deleted = 0 AND status = 'active' AND merged_into IS NULL ORDER BY updated_at DESC, id ASC");
+  const scored = [];
+  for (const r of rows) {
+    if (ex.has(String(r.id))) continue;
+    let lex = 0;
+    for (const name of [r.canonical_label, ...parseJsonSafe(r.alias_json, [])]) {
+      const g = kgBigrams(name);
+      if (!g.size) continue;
+      let hit = 0;
+      for (const x of g) if (src.has(x)) hit += 1;
+      lex = Math.max(lex, hit / g.size);
+    }
+    if (lex >= 0.3) scored.push({ id: String(r.id), label: r.canonical_label, atlasId: r.atlas_id ? "Q" + r.atlas_id : null, score: lex });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, Math.max(1, Math.min(20, Number(limit) || 5))).map(({ id, label, atlasId }) => ({ id, label, atlasId }));
+}
+
+/** v49.147 / D316：全谱条目 → 现有 active 知识点（给计划生成归并候选用）；无则 null */
+function kpActiveByAtlas(atlasId) {
+  const n = atlasInt(atlasId);
+  const r = n ? kpByAtlas(n) : null;
+  return r && r.status === "active" ? { id: r.id, label: r.label } : null;
+}
+
+/**
+ * v49.147 / D316：确认解散并重挂（一个事务）。
+ * spec = { kpIds:[被解散的知识点], moves:[{cardId, target:{kind:"kp",kpId} | {kind:"atlas",atlasId,label}}] }
+ * 目标是全谱条目：已有知识点挂在该条目 → 用它（须 active）；否则新建（名称＝条目名，atlas_id＝条目）。
+ * 被解散的知识点名下不再有卡片 → 软删（is_deleted=1，图谱里整个消失）；仍有留下的 → 保留。每个被解散的知识点记一条 kg_events「kp-dissolve」（只记计数；全部移走时 payload.deleted=true）。
+ * 不碰 review_logs、不改卡片 fsrs（只改 cards.knowledge_point_id）。返回 {moved, created, archived(＝deleted，名称沿用), deleted, undo, perKp}；undo 交给 kpReattachUndo。
+ */
+function kpReattachApply(spec) {
+  const dissolved = new Set((spec?.kpIds || []).map(String));
+  const moves = Array.isArray(spec?.moves) ? spec.moves : [];
+  const now = Date.now();
+  const undo = { cards: [], created: [], archived: [] };
+  const perKp = new Map([...dissolved].map((k) => [k, { moved: 0, existing: 0, created: 0 }]));
+  const created = new Set();
+  withTransaction(() => {
+    const resolved = new Map(); // targetKey → kpId
+    for (const m of moves) {
+      const t = m.target || {};
+      const key = t.kind === "kp" ? "k:" + t.kpId : "a:" + atlasInt(t.atlasId);
+      let kpId = resolved.get(key);
+      if (!kpId) {
+        if (t.kind === "kp") {
+          const r = getKpRow(String(t.kpId));
+          if (!r || r.status !== "active" || r.merged_into || dissolved.has(r.id)) throw new Error("目标知识点不可用");
+          kpId = r.id;
+        } else {
+          const aId = atlasInt(t.atlasId);
+          if (!aId) throw new Error("全谱条目无效");
+          const have = queryAll("SELECT id, status FROM knowledge_points WHERE atlas_id = ? AND is_deleted = 0 AND merged_into IS NULL LIMIT 1", [aId])[0];
+          if (have) {
+            if (have.status !== "active" || dissolved.has(have.id)) throw new Error("该全谱条目对应的知识点已归档或正被解散，请先处理它");
+            kpId = have.id;
+          } else {
+            const label = String(t.label || "").trim().slice(0, 60);
+            if (!label) throw new Error("知识点名称为空");
+            kpId = crypto.randomUUID();
+            db.run(
+              `INSERT INTO knowledge_points (id, user_id, canonical_label, description, domain_id, parent_knowledge_point_id, status, merged_into, alias_json, language_variants_json, confidence, metadata_json, created_at, updated_at, atlas_id, atlas_parent)
+               VALUES (?, 'local-user', ?, NULL, NULL, NULL, 'active', NULL, '[]', '[]', NULL, ?, ?, ?, ?, NULL)`,
+              [kpId, label, JSON.stringify({ origin: "kp_reattach" }), now, now, aId]
+            );
+            created.add(kpId);
+            undo.created.push(kpId);
+          }
+        }
+        resolved.set(key, kpId);
+      }
+      const cur = queryAll("SELECT knowledge_point_id AS raw FROM cards WHERE id = ? AND is_deleted = 0", [String(m.cardId)])[0];
+      if (!cur) continue;
+      undo.cards.push({ cardId: String(m.cardId), raw: cur.raw == null ? null : String(cur.raw) });
+      db.run("UPDATE cards SET knowledge_point_id = ?, updated_at = ? WHERE id = ? AND is_deleted = 0", [kpId, now, String(m.cardId)]);
+      const s = perKp.get(String(m.fromKpId));
+      if (s) {
+        s.moved++;
+        if (created.has(kpId)) s.created++;
+        else s.existing++;
+      }
+    }
+    const remain = resolveCardKpMap();
+    for (const kp of dissolved) {
+      const row = getKpRow(kp);
+      const left = [...remain.values()].filter((k) => k === kp).length;
+      const s = perKp.get(kp);
+      let deletedNow = false;
+      if (row && row.status === "active" && left === 0 && s && s.moved > 0) {
+        // 解散后名下已无卡：软删（图谱里整个消失，不留化石态虚线空心圆）；撤销时恢复为 active
+        db.run("UPDATE knowledge_points SET is_deleted = 1, updated_at = ? WHERE id = ?", [now, kp]);
+        undo.archived.push(kp);
+        deletedNow = true;
+      }
+      if (s && s.moved > 0) appendKgEventRow("kp-dissolve", kp, { moved: s.moved, kept: left, existingTargets: s.existing, newTargets: s.created, ...(deletedNow ? { deleted: true } : {}) }, now);
+    }
+  });
+  return { moved: undo.cards.length, created: undo.created.slice(), archived: undo.archived.slice(), deleted: undo.archived.slice(), undo, perKp: Object.fromEntries(perKp) };
+}
+
+/**
+ * v49.148 / D316 修正：一次性清理——早先「解散」把空了的知识点归档成化石态，现改为软删。
+ * 判据：status='deprecated'、有 kg_events「kp-dissolve」行、名下（含并入它的家族）没有存活卡片 → is_deleted=1。
+ * 用户自己点「归档」的（无 kp-dissolve 行）一律不动。app_meta 标记 kg:dissolveCleanup:v1 幂等；opts.force 跳过标记（测试用）。返回清理个数。
+ */
+function kgDissolveCleanup(opts) {
+  if (!db) return 0;
+  const KEY = "kg:dissolveCleanup:v1";
+  if (!(opts && opts.force) && readAppMeta(KEY)) return 0;
+  const cands = queryAll(
+    "SELECT id FROM knowledge_points WHERE is_deleted = 0 AND status = 'deprecated' AND id IN (SELECT kp_id FROM kg_events WHERE kind = 'kp-dissolve' AND kp_id IS NOT NULL)"
+  ).map((r) => String(r.id));
+  let n = 0;
+  withTransaction(() => {
+    if (cands.length) {
+      const parent = new Map();
+      for (const r of queryAll("SELECT id, merged_into FROM knowledge_points WHERE is_deleted = 0")) parent.set(String(r.id), r.merged_into ? String(r.merged_into) : null);
+      const rootOf = (id) => {
+        let cur = id;
+        const seen = new Set();
+        while (parent.get(cur) && !seen.has(cur)) {
+          seen.add(cur);
+          cur = parent.get(cur);
+        }
+        return cur;
+      };
+      const family = new Map(cands.map((c) => [c, [c]]));
+      for (const id of parent.keys()) {
+        const root = rootOf(id);
+        if (root !== id && family.has(root)) family.get(root).push(id);
+      }
+      const now = Date.now();
+      for (const [kp, ids] of family) {
+        const live = queryAll(`SELECT COUNT(*) AS n FROM cards WHERE is_deleted = 0 AND knowledge_point_id IN (${ids.map(() => "?").join(",")})`, ids)[0]?.n || 0;
+        if (live > 0) continue;
+        db.run("UPDATE knowledge_points SET is_deleted = 1, sync_version = sync_version + 1, updated_at = ? WHERE id = ?", [now, kp]);
+        n++;
+      }
+    }
+    writeAppMeta(KEY, Date.now());
+  });
+  return n;
+}
+
+/** v49.147 / D316：撤销一次解散重挂：卡片挪回原值、恢复被软删的原知识点、删除本次新建且已无卡的知识点（软删） */
+function kpReattachUndo(undo) {
+  const u = undo || {};
+  const now = Date.now();
+  withTransaction(() => {
+    for (const c of u.cards || []) db.run("UPDATE cards SET knowledge_point_id = ?, updated_at = ? WHERE id = ? AND is_deleted = 0", [c.raw, now, String(c.cardId)]);
+    for (const kp of u.archived || []) {
+      const row = queryAll("SELECT id, is_deleted FROM knowledge_points WHERE id = ?", [String(kp)])[0];
+      if (!row || Number(row.is_deleted) !== 1) continue;
+      db.run("UPDATE knowledge_points SET is_deleted = 0, status = 'active', updated_at = ? WHERE id = ?", [now, row.id]);
+      appendKgEventRow("restored", row.id, { cardIds: [] }, now);
+    }
+    const map = resolveCardKpMap();
+    for (const kp of u.created || []) {
+      const row = getKpRow(String(kp));
+      if (!row) continue;
+      if ([...map.values()].some((k) => k === row.id)) continue; // 之后又挂上了别的卡：保留
+      db.run("UPDATE knowledge_points SET is_deleted = 1, updated_at = ? WHERE id = ?", [now, row.id]);
+    }
+  });
+  return { restored: (u.cards || []).length };
+}
+
+/** v49.145 / D313：知识点「也涉及」的全谱节点（{ kpId: ["Q1", ...] }；不给 kpIds 时返回全部） */
+function kgAtlasAlsoMap(kpIds) {
+  if (!db) return {};
+  const ids = Array.isArray(kpIds) ? kpIds.map(String) : null;
+  const rows = ids && ids.length === 0 ? [] : queryAll(
+    `SELECT knowledge_point_id AS kp, ref_value AS v FROM knowledge_external_refs WHERE ref_kind = 'atlas-also' AND is_deleted = 0${ids ? ` AND knowledge_point_id IN (${ids.map(() => "?").join(",")})` : ""} ORDER BY created_at ASC`,
+    ids || []
+  );
+  const out = {};
+  for (const r of rows) (out[r.kp] = out[r.kp] || []).includes(r.v) || out[r.kp].push(r.v);
+  return out;
+}
+
+/** v49.145 / D313：增 / 删一个「也涉及」。不能等于自身的对应节点或上级；重复添加不重复记。 */
+function kgSetAtlasAlso(kpId, atlasId, on) {
+  const row = getKpRow(String(kpId || ""));
+  if (!row) throw new Error("知识点不存在");
+  const n = atlasInt(atlasId);
+  if (!n) throw new Error("全谱节点无效");
+  const v = "Q" + n;
+  const cur = queryAll("SELECT atlas_id AS a, atlas_parent AS p FROM knowledge_points WHERE id = ?", [row.id])[0] || {};
+  const has = queryAll("SELECT id FROM knowledge_external_refs WHERE knowledge_point_id = ? AND ref_kind = 'atlas-also' AND ref_value = ? AND is_deleted = 0", [row.id, v]);
+  if (on) {
+    if (cur.a === n || cur.p === n) throw new Error("这个全谱节点已经是它的对应条目或上级");
+    if (!has.length) {
+      db.run("INSERT INTO knowledge_external_refs (id, user_id, knowledge_point_id, ref_kind, ref_value, source_label, created_at) VALUES (?, 'local-user', ?, 'atlas-also', ?, NULL, ?)", [crypto.randomUUID(), row.id, v, Date.now()]);
+      persist();
+    }
+  } else if (has.length) {
+    db.run("UPDATE knowledge_external_refs SET is_deleted = 1 WHERE knowledge_point_id = ? AND ref_kind = 'atlas-also' AND ref_value = ? AND is_deleted = 0", [row.id, v]);
+    persist();
+  }
+  return kgAtlasAlsoMap([row.id])[row.id] || [];
+}
+
+/** v49.143 / D311：全谱节点 → 已对应的知识点（{ "Q123": {id, label, status} }） */
+function kpsByAtlasIds(ids) {
+  const out = {};
+  for (const v of Array.isArray(ids) ? ids : []) {
+    const n = atlasInt(v);
+    if (!n) continue;
+    const r = kpByAtlas(n);
+    if (r) out["Q" + n] = r;
+  }
+  return out;
+}
+
+/**
+ * v49.146 / D314（T1）：知识点「出现在」——它的卡片来自哪些材料（只读）。
+ * 含并入它的知识点；材料身份 = context_ref_json.documentId（文档缺失 / 无 documentId 时退回
+ * source_ref_json.title 作纯文字条目）；按卡片数降序。anchor = 该材料里最近一张卡的跳原文锚点
+ * （形状同 CardBrowser 卡跳原文：anchorText/anchorRatio/cfi/chapterIndex/pageIndex/imageAnchor）。
+ * maps 留给 T4。
+ */
+function kgAppearances(kpId) {
+  if (!db) return { materials: [], maps: [] };
+  const family = resolveKpFamily(String(kpId || ""));
+  const kpIds = family.length ? family : [String(kpId || "")];
+  const rows = queryAll(
+    `SELECT id, front_markdown, note_text, context_ref_json, source_ref_json FROM cards
+     WHERE is_deleted = 0 AND knowledge_point_id IN (${kpIds.map(() => "?").join(",")})
+     ORDER BY created_at DESC, id ASC`,
+    kpIds
+  );
+  const docIds = [];
+  const parsed = rows.map((r) => {
+    const cr = safeParseObj(r.context_ref_json);
+    const sr = safeParseObj(r.source_ref_json);
+    const documentId = cr && typeof cr.documentId === "string" && cr.documentId ? cr.documentId : null;
+    if (documentId && !docIds.includes(documentId)) docIds.push(documentId);
+    return { r, cr, documentId, srcTitle: sr && typeof sr.title === "string" ? sr.title.trim() : "" };
+  });
+  const titleByDoc = new Map();
+  if (docIds.length) {
+    const ds = queryAll(
+      `SELECT d.id AS id, li.title AS title FROM documents d JOIN library_items li ON li.id = d.library_item_id
+       WHERE d.is_deleted = 0 AND d.id IN (${docIds.map(() => "?").join(",")})`,
+      docIds
+    );
+    for (const d of ds) titleByDoc.set(d.id, d.title);
+  }
+  const groups = new Map();
+  for (const p of parsed) {
+    const docOk = p.documentId && titleByDoc.has(p.documentId);
+    const title = docOk ? titleByDoc.get(p.documentId) : p.srcTitle;
+    if (!title) continue;
+    const key = docOk ? "d:" + p.documentId : "t:" + title;
+    let g = groups.get(key);
+    if (!g) {
+      // rows 已按 created_at 降序：首张即最近一张
+      const cr = p.cr || {};
+      g = {
+        documentId: docOk ? p.documentId : null,
+        title,
+        cardCount: 0,
+        cardId: p.r.id,
+        anchor: docOk
+          ? {
+              anchorText: cr.anchorText || p.r.front_markdown || p.r.note_text || "",
+              anchorRatio: cr.anchorRatio,
+              cfi: cr.cfi,
+              chapterIndex: cr.chapterIndex,
+              pageIndex: cr.pageIndex,
+              imageAnchor: cr.imageAnchor
+            }
+          : null
+      };
+      groups.set(key, g);
+    }
+    g.cardCount++;
+  }
+  const materials = [...groups.values()].sort((a, b) => b.cardCount - a.cardCount);
+  // T4：导图挂靠（知识点及并入家族的 atlas_id / atlas_parent / atlas-also）
+  const ids = new Set();
+  const kr = queryAll(`SELECT atlas_id AS a, atlas_parent AS p FROM knowledge_points WHERE id IN (${kpIds.map(() => "?").join(",")})`, kpIds);
+  for (const x of kr) { if (atlasInt(x.a)) ids.add(atlasInt(x.a)); if (atlasInt(x.p)) ids.add(atlasInt(x.p)); }
+  const al = queryAll(`SELECT ref_value AS v FROM knowledge_external_refs WHERE ref_kind = 'atlas-also' AND is_deleted = 0 AND knowledge_point_id IN (${kpIds.map(() => "?").join(",")})`, kpIds);
+  for (const x of al) if (atlasInt(x.v)) ids.add(atlasInt(x.v));
+  const cardedDocs = new Set(parsed.filter((p) => p.documentId).map((p) => p.documentId));
+  const maps = mapAppearancesByAtlas([...ids]).map((m) => ({ ...m, unCarded: !cardedDocs.has(m.documentId) }));
+  return { materials, maps };
+}
+
+/** T4：全谱编号集合 → 活动导图分组（{mapId, documentId, title, nodes:[{nodeId,title,path,blockStart,source}]}） */
+function mapAppearancesByAtlas(atlasIds) {
+  const ids = [...new Set((atlasIds || []).map(atlasInt).filter(Boolean))];
+  if (!db || !ids.length) return [];
+  const refRows = queryAll(
+    `SELECT r.map_id AS mapId, r.node_id AS nodeId, r.atlas_id AS atlasId, r.source AS source
+       FROM material_map_node_refs r JOIN material_maps m ON m.id = r.map_id
+      WHERE r.is_deleted = 0 AND m.is_deleted = 0 AND m.is_active = 1 AND r.atlas_id IN (${ids.map(() => "?").join(",")})
+      ORDER BY r.rowid`,
+    ids
+  );
+  // 同一节点可能挂了该知识点的多个全谱编号：合并；有任何非 ai 来源就不算「AI 建议」
+  const refMap = new Map();
+  for (const r of refRows) {
+    const k = r.mapId + "\u0000" + r.nodeId;
+    let e = refMap.get(k);
+    if (!e) { e = { mapId: r.mapId, nodeId: r.nodeId, source: r.source, atlasIds: [] }; refMap.set(k, e); }
+    e.atlasIds.push("Q" + r.atlasId);
+    if (r.source !== "ai") e.source = r.source;
+  }
+  const refs = [...refMap.values()];
+  if (!refs.length) return [];
+  const mapIds = [...new Set(refs.map((r) => r.mapId))];
+  const mrows = queryAll(
+    `SELECT m.id AS id, m.document_id AS documentId, m.title AS mtitle, li.title AS ltitle
+       FROM material_maps m LEFT JOIN documents d ON d.id = m.document_id LEFT JOIN library_items li ON li.id = d.library_item_id
+      WHERE m.id IN (${mapIds.map(() => "?").join(",")})`,
+    mapIds
+  );
+  const nodes = queryAll(
+    `SELECT map_id AS mapId, node_id AS nodeId, parent_id AS parentId, title, block_start AS blockStart FROM material_map_nodes
+      WHERE is_deleted = 0 AND map_id IN (${mapIds.map(() => "?").join(",")})`,
+    mapIds
+  );
+  const byMap = new Map();
+  for (const n of nodes) {
+    if (!byMap.has(n.mapId)) byMap.set(n.mapId, new Map());
+    byMap.get(n.mapId).set(n.nodeId, n);
+  }
+  const out = [];
+  for (const m of mrows) {
+    const nm = byMap.get(m.id) || new Map();
+    const list = [];
+    for (const r of refs.filter((x) => x.mapId === m.id)) {
+      const n = nm.get(r.nodeId);
+      if (!n) continue;
+      const path = [];
+      const seen = new Set([n.nodeId]);
+      let p = n.parentId ? nm.get(n.parentId) : null;
+      while (p && !seen.has(p.nodeId)) { seen.add(p.nodeId); path.unshift(p.title); p = p.parentId ? nm.get(p.parentId) : null; }
+      list.push({ nodeId: n.nodeId, title: n.title, path, blockStart: n.blockStart ?? null, source: r.source, atlasIds: r.atlasIds });
+    }
+    if (list.length) out.push({ mapId: m.id, documentId: m.documentId, title: m.ltitle || m.mtitle || "", nodes: list });
+  }
+  return out;
+}
+
+/** T4：按单个全谱编号查「出现在」导图 */
+function atlasAppearances(atlasId) {
+  return { maps: mapAppearancesByAtlas([atlasId]) };
+}
+
+/** v49.143 / D311：尚未挂全谱的知识点（迁移 §10 的输入） */
+function kgUnmappedKps() {
+  if (!db) return [];
+  const also = kgAtlasAlsoMap();
+  return queryAll("SELECT id, canonical_label AS label, alias_json AS aliasJson, description, atlas_parent AS atlasParent FROM knowledge_points WHERE is_deleted = 0 AND merged_into IS NULL AND status IN ('active','deprecated') AND atlas_id IS NULL ORDER BY updated_at DESC, id ASC").map((r) => ({
+    also: also[r.id] || [],
+    id: r.id,
+    label: r.label,
+    aliases: parseJsonSafe(r.aliasJson, []),
+    description: r.description || "",
+    atlasParent: r.atlasParent ? "Q" + r.atlasParent : null
+  }));
+}
+
+/**
+ * 【用户已有知识点】注入块用（只给名称，不给定义）。v49.140 / D307：给了材料文本时按「与材料字面最相近」排序——
+ * 名称与别名的字符二元组在材料中的命中率（CJK 逐字二元组、拉丁按词），命中的在前，余量用最近更新的补足。
+ * extraScores：可选 Map<kpId, number>（向量召回档的语义相似度，0..1），与字面分取大者。
+ */
+function kgBigrams(s) {
+  const t = String(s || "").toLowerCase().replace(/\s+/g, " ").trim(); // v49.149 / D318：修正丢失的反斜杠（原 /s+/ 把字母 s 当空白）
+  const out = new Set();
+  for (const w of t.match(/[a-z0-9]+/g) || []) out.add("w:" + w);
+  const cjk = t.replace(/[a-z0-9\s\p{P}]+/gu, "|");
+  for (let i = 0; i + 1 < cjk.length; i++) if (cjk[i] !== "|" && cjk[i + 1] !== "|") out.add(cjk.slice(i, i + 2));
+  for (const ch of cjk) if (ch !== "|" && cjk.length === 1) out.add(ch);
+  return out;
+}
+function recentKpLabels(limit, text, extraScores) {
+  const n = Math.max(1, Math.min(200, Number(limit) || 40));
+  const rows = queryAll("SELECT id, canonical_label, alias_json FROM knowledge_points WHERE is_deleted = 0 AND status = 'active' ORDER BY updated_at DESC, id ASC");
+  if (!text && !extraScores) return rows.slice(0, n).map((r) => r.canonical_label);
+  const src = kgBigrams(text);
+  const scored = rows.map((r, order) => {
+    let lex = 0;
+    for (const name of [r.canonical_label, ...parseJsonSafe(r.alias_json, [])]) {
+      const g = kgBigrams(name);
+      if (!g.size) continue;
+      let hit = 0;
+      for (const x of g) if (src.has(x)) hit += 1;
+      lex = Math.max(lex, hit / g.size);
+    }
+    const sem = extraScores && extraScores.get(r.id) != null ? Number(extraScores.get(r.id)) : 0;
+    return { label: r.canonical_label, score: Math.max(lex, sem), order };
+  });
+  scored.sort((a, b) => (b.score >= 0.3 ? 1 : 0) - (a.score >= 0.3 ? 1 : 0) || b.score - a.score || a.order - b.order);
+  return scored.slice(0, n).map((x) => x.label);
+}
+
+/**
+ * v49.141 / D308：还没挂到正式知识点的卡（「整理已有卡片」的输入）。排除已删除、已归档（status 非 active）、已挂靠、词汇卡（dict_json 非空）。
+ * legacy＝旧 knowledge_point_id 原值（簇编号或旧标签，只作 AI 参考）。
+ */
+function kgUnattachedCards(limit) {
+  if (!db) return [];
+  const mapped = resolveCardKpMap();
+  const rows = queryAll(
+    "SELECT id, front_markdown, back_markdown, note_text, card_type, knowledge_point_id FROM cards WHERE is_deleted = 0 AND (status IS NULL OR status = 'active') AND (dict_json IS NULL OR dict_json = '') ORDER BY created_at ASC, id ASC"
+  );
+  const out = [];
+  for (const r of rows) {
+    if (mapped.has(String(r.id))) continue;
+    const front = String(r.front_markdown || r.note_text || "").replace(/\s+/g, " ").trim();
+    if (!front && !String(r.back_markdown || "").trim()) continue;
+    out.push({ id: r.id, cardType: r.card_type, front: front.slice(0, 200), back: String(r.back_markdown || "").replace(/\s+/g, " ").trim().slice(0, 200), legacy: r.knowledge_point_id || null });
+    if (out.length >= Math.max(1, Math.min(2000, Number(limit) || 2000))) break;
+  }
+  return out;
+}
+
+/** v49.141 / D308：一组卡确认挂到某个知识点（不存在则此刻新建并写 AI 第 1 版定义）。返回 {kpId, attached} */
+function attachCardsToKp(payload) {
+  const p = payload || {};
+  const ids = (Array.isArray(p.cards) ? p.cards : []).filter((c) => c && c.cardId);
+  if (!ids.length) throw new Error("没有要挂靠的卡");
+  const kp = ensureKpForCard({ label: p.label, kpId: p.kpId || null, definition: p.definition || null, kind: p.kind || null });
+  const now = Date.now();
+  withTransaction(() => {
+    for (const c of ids) {
+      const facet = c.facet && CARD_FACETS.includes(String(c.facet)) ? String(c.facet) : null;
+      db.run("UPDATE cards SET knowledge_point_id = ?, facet = COALESCE(?, facet), updated_at = ? WHERE id = ? AND is_deleted = 0", [kp.id, facet, now, String(c.cardId)]);
+    }
+  });
+  return { kpId: kp.id, created: kp.created, attached: ids.length };
+}
+
+/** v49.141 / D308（设计稿 §4.5 已有知识）：新建知识点并同时生成一张定义卡——节点仍要靠复习点亮 */
+function addKnownKnowledge(payload) {
+  const label = String(payload?.label ?? "").trim();
+  const def = String(payload?.definition ?? "").trim();
+  if (!label) throw new Error("知识点名称为空");
+  if (!def) throw new Error("请写一句定义");
+  const kp = ensureKpForCard({ label });
+  if (kp.created) appendKpDefinitionRow(kp.id, def, "user", "manual_edit", null, Date.now());
+  const made = createCard({ frontMarkdown: `「${label}」是什么？`, backMarkdown: def, noteText: label, cardType: "qa", knowledgePointId: kp.id, facet: "definition", generatedBy: "manual" });
+  persist();
+  return { kpId: kp.id, cardId: made && typeof made === "object" ? made.id : made };
+}
+
+/** v49.140 / D307：向量召回用的 active 知识点（名称 / 别名 / 定义） */
+function kgActiveKpRows() {
+  if (!db) return [];
+  return queryAll("SELECT id, canonical_label, alias_json, description FROM knowledge_points WHERE is_deleted = 0 AND status = 'active' ORDER BY id");
+}
+
+// ---------- v49.148 / D317 知识图谱连线分三层（docs/design/KG-EDGE-LAYERS.md） ----------
+// 证据汇总与状态判定在 electron/kgEdges.js（纯函数）；这里只做事实读取与写操作。
+const KG_PAIR_TYPES = ["related_to", "prerequisite", "part_of", "contrasts_with", "example_of", "application_of", "generalization_of", "specialization_of"];
+
+/** 无序对规范化：kp_a < kp_b */
+function kgPairKey(a, b) {
+  const x = String(a || "");
+  const y = String(b || "");
+  return x < y ? [x, y] : [y, x];
+}
+
+/** 一个知识点及并入它的家族（不存在时退回自身） */
+function kgFamilyOf(id) {
+  const f = resolveKpFamily(String(id || ""));
+  return f.length ? f : [String(id || "")];
+}
+
+// v49.154（D322 性能）：卡片挂靠导图节点 = "v2:<mapId>:<nodeId>"（由 mindmapV2Core.deriveCardFields 生成）。
+// 旧 SQL 用 substr(json_extract(cards.context_ref_json), ...) 与 material_maps.id 做前缀连接，
+// 无法走索引，复杂度 O(卡片 × 活动导图)：10 万张卡 × 1000 份导图时每次重建图谱要跑分钟级。
+// 拆成两步：① 单表扫一遍 cards（每张卡只 json_extract 一次）；② JS 解析出 (mapId, nodeId) 去重后，
+// 按 map_id 分组、node_id IN (…) 批量等值查 material_map_nodes（命中 idx_mmnodes_key(map_id, node_id)）。
+// mapId 是 crypto.randomUUID()（不含 ':'），nodeId 可能是 t0 / t0.g1 之类——故第一个 ':' 前是 mapId，其余全是 nodeId。
+const MM_MAP_CARD_CHUNK = 400;
+
+function mmMapCardNodeLookupSql(nodeCount) {
+  const ph = new Array(Math.max(1, nodeCount)).fill("?").join(",");
+  return `SELECT m.document_id AS documentId, n.map_id AS mapId, n.node_id AS nodeId, n.parent_id AS parentNodeId
+    FROM material_map_nodes n
+    JOIN material_maps m ON m.id = n.map_id AND m.is_active = 1 AND m.is_deleted = 0
+    WHERE n.map_id = ? AND n.node_id IN (${ph}) AND n.is_deleted = 0`;
+}
+
+/** 解析 "v2:<mapId>:<nodeId>"；格式不合法（缺段）返回 null。nodeId 允许含 ':'。 */
+function parseMindmapNodeRef(ref) {
+  const s = ref == null ? "" : String(ref);
+  if (!s.startsWith("v2:")) return null;
+  const rest = s.slice(3);
+  const sep = rest.indexOf(":");
+  if (sep <= 0 || sep >= rest.length - 1) return null;
+  return { mapId: rest.slice(0, sep), nodeId: rest.slice(sep + 1) };
+}
+
+/** 卡片挂靠导图节点（只读）。行形状与旧实现一致：{documentId, mapId, nodeId, parentNodeId, kpId}。 */
+function kgMapCardNodes() {
+  if (!db) return [];
+  // ① 一次扫卡片：json_extract 每卡一次；CASE 保证非法 JSON 不抛错（与旧实现的 json_valid 等价）。
+  const cards = queryAll(
+    `SELECT c.knowledge_point_id AS kpId,
+            CASE WHEN json_valid(c.context_ref_json) THEN json_extract(c.context_ref_json, '$.mindmapNodeId') END AS ref
+     FROM cards c
+     JOIN knowledge_points k ON k.id = c.knowledge_point_id AND k.is_deleted = 0 AND k.merged_into IS NULL
+     WHERE c.is_deleted = 0 AND c.knowledge_point_id IS NOT NULL`
+  );
+  // mapId → nodeId → Set(kpId)：同一节点上多个知识点都要保留（M2），同一知识点只留一份。
+  const byMap = new Map();
+  for (const r of cards) {
+    const parsed = parseMindmapNodeRef(r.ref);
+    if (!parsed) continue;
+    let nodes = byMap.get(parsed.mapId);
+    if (!nodes) { nodes = new Map(); byMap.set(parsed.mapId, nodes); }
+    let kps = nodes.get(parsed.nodeId);
+    if (!kps) { kps = new Set(); nodes.set(parsed.nodeId, kps); }
+    kps.add(r.kpId);
+  }
+  // ② 按导图分组、节点 id 分块等值查——每块都命中 idx_mmnodes_key。
+  const out = [];
+  for (const [mapId, nodes] of byMap) {
+    const nodeIds = [...nodes.keys()];
+    for (let i = 0; i < nodeIds.length; i += MM_MAP_CARD_CHUNK) {
+      const chunk = nodeIds.slice(i, i + MM_MAP_CARD_CHUNK);
+      for (const row of queryAll(mmMapCardNodeLookupSql(chunk.length), [mapId, ...chunk])) {
+        const kps = nodes.get(String(row.nodeId));
+        if (!kps) continue;
+        for (const kpId of kps) {
+          out.push({
+            documentId: row.documentId,
+            mapId: String(row.mapId),
+            nodeId: String(row.nodeId),
+            parentNodeId: row.parentNodeId == null ? null : String(row.parentNodeId),
+            kpId
+          });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** 测试/诊断口：kgMapCardNodes 的节点查询计划（EXPLAIN QUERY PLAN），用来确认走了 idx_mmnodes_key。 */
+function explainMapCardNodeLookup(mapId, nodeIds) {
+  if (!db) return [];
+  const ids = Array.isArray(nodeIds) ? nodeIds.map(String) : [];
+  return queryAll("EXPLAIN QUERY PLAN " + mmMapCardNodeLookupSql(ids.length), [String(mapId), ...ids]);
+}
+
+/** 图谱连线证据的事实读取（只读） */
+function kgEdgeFacts() {
+  if (!db) return { dismissals: [], mapParent: [], mapSame: [], mapRefs: [], mapCardNodes: [], extractCards: [], extractTexts: [], cardTexts: [], annotations: [], userDefs: [], explains: [], judgments: [], relationsFull: [], relationAsked: [] };
+  return {
+    dismissals: queryAll("SELECT kp_a AS a, kp_b AS b, evidence_keys_json AS keysJson, dismiss_count AS count, dismissed_at AS at FROM knowledge_relation_dismissals WHERE is_deleted = 0"),
+    // M1：活动导图里父节点挂靠 × 子节点挂靠
+    mapParent: queryAll(
+      `SELECT m.document_id AS documentId, m.id AS mapId, p.node_id AS parentNodeId, c.node_id AS childNodeId, rp.atlas_id AS parentAtlas, rc.atlas_id AS childAtlas
+       FROM material_maps m
+       JOIN material_map_nodes c ON c.map_id = m.id AND c.is_deleted = 0 AND c.parent_id IS NOT NULL
+       JOIN material_map_nodes p ON p.map_id = m.id AND p.node_id = c.parent_id AND p.is_deleted = 0
+       JOIN material_map_node_refs rc ON rc.map_id = m.id AND rc.node_id = c.node_id AND rc.is_deleted = 0
+       JOIN material_map_node_refs rp ON rp.map_id = m.id AND rp.node_id = p.node_id AND rp.is_deleted = 0
+       WHERE m.is_active = 1 AND m.is_deleted = 0 LIMIT 200000`
+    ),
+    // M2：同一导图节点挂了多个全谱条目
+    mapSame: queryAll(
+      `SELECT m.document_id AS documentId, m.id AS mapId, r1.node_id AS nodeId, r1.atlas_id AS atlasA, r2.atlas_id AS atlasB
+       FROM material_maps m
+       JOIN material_map_node_refs r1 ON r1.map_id = m.id AND r1.is_deleted = 0
+       JOIN material_map_node_refs r2 ON r2.map_id = m.id AND r2.node_id = r1.node_id AND r2.is_deleted = 0 AND r2.atlas_id > r1.atlas_id
+       WHERE m.is_active = 1 AND m.is_deleted = 0 LIMIT 200000`
+    ),
+    // M1/M2 的挂法来源（v49.153 / D322 / T4）：活动导图里每个存活节点的全谱挂靠。
+    // 与下方的卡片挂靠取并集后，在 kgEdges.collectPairs 里统一算父↔子 / 同节点。
+    mapRefs: queryAll(
+      `SELECT m.document_id AS documentId, m.id AS mapId, n.node_id AS nodeId, n.parent_id AS parentNodeId, r.atlas_id AS atlasId
+       FROM material_maps m
+       JOIN material_map_nodes n ON n.map_id = m.id AND n.is_deleted = 0
+       JOIN material_map_node_refs r ON r.map_id = m.id AND r.node_id = n.node_id AND r.is_deleted = 0
+       WHERE m.is_active = 1 AND m.is_deleted = 0 LIMIT 200000`
+    ),
+    // M1/M2 的第二种挂法（v49.153 / D322 / T4）：卡片 context_ref_json.mindmapNodeId = "v2:<mapId>:<nodeId>"
+    // → 这张卡的知识点落在该节点上（私有知识点没有 atlas_id 也能挂）。两段式读取见 kgMapCardNodes()：
+    // 先单表扫卡片再按 (map_id, node_id) 等值查节点——旧实现的前缀连接无法走索引（O(卡片×导图)）。
+    mapCardNodes: kgMapCardNodes(),
+    // M3：同一条摘录制出的卡片
+    extractCards: queryAll(
+      `SELECT id AS cardId, json_extract(context_ref_json, '$.extractId') AS extractId FROM cards
+       WHERE is_deleted = 0 AND json_valid(context_ref_json) AND json_extract(context_ref_json, '$.extractId') IS NOT NULL`
+    ),
+    // M4（v49.153 / D322 / T3）：只取「制过卡的摘录」的原文（卡片属于未合并的知识点），供摘录原文匹配
+    extractTexts: queryAll(
+      `SELECT e.id AS extractId, e.content_markdown AS text FROM extracts e
+       WHERE e.is_deleted = 0 AND e.id IN (
+         SELECT json_extract(c.context_ref_json, '$.extractId') FROM cards c
+         JOIN knowledge_points k ON k.id = c.knowledge_point_id AND k.is_deleted = 0 AND k.merged_into IS NULL
+         WHERE c.is_deleted = 0 AND json_valid(c.context_ref_json)
+           AND json_extract(c.context_ref_json, '$.extractId') IS NOT NULL
+       ) LIMIT 20000`
+    ),
+    // M4 卡片正文：未合并知识点的卡片（只有显式 generated_by=manual 才算用户自己写的，AI / 导入 / 空值都是弱证据）。
+    // v49.153 / D322 / T4 审查修正：只取正反面前 600 字（SQL substr），并按 id 排序——长卡不再整段读入，截断结果确定。
+    cardTexts: queryAll(
+      `SELECT c.id AS cardId, c.knowledge_point_id AS kpId, c.generated_by AS generatedBy,
+              (substr(COALESCE(c.front_markdown, ''), 1, 600) || char(10) || substr(COALESCE(c.back_markdown, ''), 1, 600)) AS text
+       FROM cards c
+       JOIN knowledge_points k ON k.id = c.knowledge_point_id AND k.is_deleted = 0 AND k.merged_into IS NULL
+       WHERE c.is_deleted = 0 ORDER BY c.id LIMIT 50000`
+    ),
+    // U2：就地批注
+    annotations: queryAll("SELECT id, comment FROM extracts WHERE is_deleted = 0 AND comment IS NOT NULL AND TRIM(comment) <> ''"),
+    // U3：用户写的定义版本
+    userDefs: queryAll("SELECT id, kp_id AS kpId, body FROM kp_definition_versions WHERE author = 'user'"),
+    // U1：自我解释（带 relatedKpId 的才成对）
+    explains: queryAll("SELECT id, kp_id AS kpId, ts, payload_json AS payloadJson FROM learning_events WHERE kind = 'self_explain' AND is_deleted = 0"),
+    judgments: queryAll("SELECT id, status, payload_json AS payloadJson, created_at AS createdAt FROM knowledge_proposals WHERE scope = 'kg-edge-judge' AND is_deleted = 0"),
+    relationsFull: queryAll("SELECT id, from_knowledge_point_id AS fromId, to_knowledge_point_id AS toId, relation_type AS type, source, created_at AS createdAt FROM knowledge_relations WHERE is_deleted = 0"),
+    relationAsked: queryAll("SELECT ts, payload_json AS payloadJson FROM kg_events WHERE kind = 'relation_asked'")
+  };
+}
+
+/** 对子之间（含并入家族）的未删关系行 */
+function kgRelationsBetween(a, b) {
+  const fa = kgFamilyOf(a);
+  const fb = kgFamilyOf(b);
+  const ph = (n) => n.map(() => "?").join(",");
+  return queryAll(
+    `SELECT * FROM knowledge_relations WHERE is_deleted = 0 AND
+     ((from_knowledge_point_id IN (${ph(fa)}) AND to_knowledge_point_id IN (${ph(fb)})) OR
+      (from_knowledge_point_id IN (${ph(fb)}) AND to_knowledge_point_id IN (${ph(fa)})))`,
+    [...fa, ...fb, ...fb, ...fa]
+  );
+}
+
+function kgDismissalRow(a, b) {
+  const [x, y] = kgPairKey(a, b);
+  return queryAll("SELECT * FROM knowledge_relation_dismissals WHERE kp_a = ? AND kp_b = ?", [x, y])[0] || null;
+}
+
+/** 两个知识点（含并入家族）之间所有未撤销的解除记录（合并不改写行，读取按族展开） */
+function kgDismissalRowsFamily(a, b) {
+  const fa = kgFamilyOf(a);
+  const fb = kgFamilyOf(b);
+  const ph = (n) => n.map(() => "?").join(",");
+  return queryAll(
+    `SELECT * FROM knowledge_relation_dismissals WHERE is_deleted = 0 AND
+     ((kp_a IN (${ph(fa)}) AND kp_b IN (${ph(fb)})) OR (kp_a IN (${ph(fb)}) AND kp_b IN (${ph(fa)})))`,
+    [...fa, ...fb, ...fb, ...fa]
+  );
+}
+
+/** 对子（含并入家族）的待定 AI 判断提案置为 accepted / rejected；返回被改动的提案 id（撤销时恢复为 pending） */
+function kgResolveJudgments(a, b, status) {
+  const fa = new Set(kgFamilyOf(a));
+  const fb = new Set(kgFamilyOf(b));
+  const rows = queryAll("SELECT id, payload_json FROM knowledge_proposals WHERE scope = 'kg-edge-judge' AND status = 'pending' AND is_deleted = 0");
+  const now = Date.now();
+  const ids = [];
+  for (const r of rows) {
+    const p = parseJsonSafe(r.payload_json, {}) || {};
+    const x = String(p.kpA || "");
+    const y = String(p.kpB || "");
+    if ((fa.has(x) && fb.has(y)) || (fa.has(y) && fb.has(x))) {
+      db.run("UPDATE knowledge_proposals SET status = ?, resolved_at = ? WHERE id = ?", [status, now, r.id]);
+      ids.push(r.id);
+    }
+  }
+  return ids;
+}
+
+/** 撤销时把提案恢复为待定 */
+function kgReopenJudgments(ids) {
+  for (const id of Array.isArray(ids) ? ids : []) db.run("UPDATE knowledge_proposals SET status = 'pending', resolved_at = NULL WHERE id = ? AND scope = 'kg-edge-judge'", [String(id)]);
+}
+
+/**
+ * 解除一对知识点之间的连线：软删两者之间的关系行、拒绝待定的 AI 判断、写 / 更新解除记录（证据快照）。
+ * evidenceKeys 由 kgService 依当前证据给出。返回撤销所需的数据。
+ */
+function kgDismissPair(a, b, evidenceKeys) {
+  const [x, y] = kgPairKey(a, b);
+  if (!x || !y || x === y) throw new Error("需要两个不同的知识点");
+  const keys = [...new Set((Array.isArray(evidenceKeys) ? evidenceKeys : []).map(String))].slice(0, 2000);
+  const now = Date.now();
+  return withTransaction(() => {
+    const rels = kgRelationsBetween(x, y);
+    for (const r of rels) db.run("UPDATE knowledge_relations SET is_deleted = 1, updated_at = ? WHERE id = ?", [now, r.id]);
+    const judgmentIds = kgResolveJudgments(x, y, "rejected");
+    const prev = kgDismissalRow(x, y);
+    if (prev) {
+      const base = prev.is_deleted ? 0 : Number(prev.dismiss_count) || 0;
+      db.run(
+        "UPDATE knowledge_relation_dismissals SET evidence_keys_json = ?, dismiss_count = ?, dismissed_at = ?, is_deleted = 0, updated_at = ? WHERE id = ?",
+        [JSON.stringify(keys), base + 1, now, now, prev.id]
+      );
+    } else {
+      db.run(
+        "INSERT INTO knowledge_relation_dismissals (id, user_id, kp_a, kp_b, evidence_keys_json, dismiss_count, dismissed_at, created_at, updated_at) VALUES (?, 'local-user', ?, ?, ?, 1, ?, ?, ?)",
+        [crypto.randomUUID(), x, y, JSON.stringify(keys), now, now, now]
+      );
+    }
+    return {
+      a: x,
+      b: y,
+      relationIds: rels.map((r) => r.id),
+      judgmentIds,
+      prev: prev ? { keysJson: prev.evidence_keys_json, count: Number(prev.dismiss_count) || 0, at: Number(prev.dismissed_at) || 0, deleted: Boolean(prev.is_deleted) } : null
+    };
+  });
+}
+
+/** 撤销一次解除（会话内）：恢复被软删的关系行，解除记录回到之前的样子 */
+function kgUndoDismiss(undo) {
+  const u = undo && typeof undo === "object" ? undo : {};
+  const [x, y] = kgPairKey(u.a, u.b);
+  if (!x || !y) throw new Error("撤销数据不完整");
+  const now = Date.now();
+  withTransaction(() => {
+    for (const id of Array.isArray(u.relationIds) ? u.relationIds : []) db.run("UPDATE knowledge_relations SET is_deleted = 0, updated_at = ? WHERE id = ?", [now, String(id)]);
+    kgReopenJudgments(u.judgmentIds);
+    const row = kgDismissalRow(x, y);
+    if (row) {
+      if (!u.prev || u.prev.deleted) db.run("UPDATE knowledge_relation_dismissals SET is_deleted = 1, updated_at = ? WHERE id = ?", [now, row.id]);
+      else db.run("UPDATE knowledge_relation_dismissals SET evidence_keys_json = ?, dismiss_count = ?, dismissed_at = ?, updated_at = ? WHERE id = ?", [String(u.prev.keysJson || "[]"), Number(u.prev.count) || 1, Number(u.prev.at) || now, now, row.id]);
+    }
+  });
+  return true;
+}
+
+/**
+ * 确认 / 新建一对知识点之间的关系（图上拖线、关系面板确认、复习提问回答）：
+ * 一个事务内——已有同对关系就沿用（不重复建），否则新建；撤销该对的解除；接受待定的 AI 判断；有说明就写一条 self_explain。
+ * 返回 { relationId, created, eventId, undo }。
+ */
+function kgConnectPair(payload) {
+  const p = payload || {};
+  const fromId = String(p.fromId || "");
+  const toId = String(p.toId || "");
+  if (!getKpRow(fromId) || !getKpRow(toId)) throw new Error("关系端点的知识点不存在");
+  if (fromId === toId) throw new Error("自循环关系一律拒绝（§4.6）");
+  const type = KG_PAIR_TYPES.includes(String(p.type)) ? String(p.type) : "related_to";
+  const text = String(p.explanation ?? "").trim().slice(0, 4000);
+  const rating = ["clear", "partial", "stuck"].includes(p.selfRating) ? p.selfRating : "clear";
+  const source = String(p.source || "kg_edge_panel").slice(0, 32);
+  return withTransaction(() => {
+    const existing = kgRelationsBetween(fromId, toId);
+    let relationId = existing[0] ? existing[0].id : null;
+    let created = false;
+    if (!relationId) {
+      relationId = insertKnowledgeRelationRow({ fromKnowledgePointId: fromId, toKnowledgePointId: toId, relationType: type, source: "user", sourceRef: { via: source } });
+      created = true;
+    }
+    // 撤销该对（含并入家族）的全部解除记录
+    const undismissed = kgDismissalRowsFamily(fromId, toId).map((r) => r.id);
+    for (const id of undismissed) db.run("UPDATE knowledge_relation_dismissals SET is_deleted = 1, updated_at = ? WHERE id = ?", [Date.now(), id]);
+    const judgmentIds = kgResolveJudgments(fromId, toId, "accepted");
+    let eventId = null;
+    if (text) {
+      const r = insertLearningEventRow({ kind: "self_explain", kp_id: fromId, payload: { text, relatedKpId: toId, selfRating: rating, source } });
+      if (!r.ok) throw new Error(r.error || "写入说明失败");
+      eventId = r.id;
+    }
+    return { relationId, created, type, eventId, undo: { relationId: created ? relationId : null, eventId, dismissalIds: undismissed, judgmentIds } };
+  });
+}
+
+/** 撤销一次连线（会话内）：删掉新建的关系与说明，恢复解除记录 */
+function kgUndoConnect(undo) {
+  const u = undo && typeof undo === "object" ? undo : {};
+  const now = Date.now();
+  withTransaction(() => {
+    if (u.relationId) db.run("UPDATE knowledge_relations SET is_deleted = 1, updated_at = ? WHERE id = ?", [now, String(u.relationId)]);
+    if (u.eventId) db.run("UPDATE learning_events SET is_deleted = 1 WHERE id = ? AND kind = 'self_explain'", [String(u.eventId)]);
+    const dis = Array.isArray(u.dismissalIds) ? u.dismissalIds : u.dismissalId ? [u.dismissalId] : [];
+    for (const id of dis) db.run("UPDATE knowledge_relation_dismissals SET is_deleted = 0, updated_at = ? WHERE id = ?", [now, String(id)]);
+    kgReopenJudgments(u.judgmentIds);
+  });
+  return true;
+}
+
+/** 改关系类型 / 反转方向（已确认的线） */
+function kgUpdateRelation(id, patch) {
+  const row = queryAll("SELECT * FROM knowledge_relations WHERE id = ? AND is_deleted = 0", [String(id)])[0];
+  if (!row) throw new Error("关系不存在");
+  const p = patch || {};
+  const type = p.type && KG_PAIR_TYPES.includes(String(p.type)) ? String(p.type) : row.relation_type;
+  let from = row.from_knowledge_point_id;
+  let to = row.to_knowledge_point_id;
+  if (p.reverse) [from, to] = [to, from];
+  return withTransaction(() => {
+    if (type === "prerequisite") {
+      // 自身这条边先排除在外再查环（事务内，查完即恢复；出错整体回滚）
+      db.run("UPDATE knowledge_relations SET is_deleted = 1 WHERE id = ?", [row.id]);
+      const check = wouldCreatePrerequisiteCycle(from, to);
+      db.run("UPDATE knowledge_relations SET is_deleted = 0 WHERE id = ?", [row.id]);
+      if (check.cycle) throw new Error(`prerequisite 建环被拒绝：${check.path.join(" → ")}`);
+    }
+    const dup = queryAll(
+      "SELECT id FROM knowledge_relations WHERE from_knowledge_point_id = ? AND to_knowledge_point_id = ? AND relation_type = ? AND is_deleted = 0 AND id <> ?",
+      [from, to, type, row.id]
+    );
+    if (dup.length) throw new Error("同一对知识点之间已存在同类型关系（唯一约束 from,to,type）");
+    db.run("UPDATE knowledge_relations SET relation_type = ?, from_knowledge_point_id = ?, to_knowledge_point_id = ?, updated_at = ? WHERE id = ?", [type, from, to, Date.now(), row.id]);
+    return mapKpRelationRow(queryAll("SELECT * FROM knowledge_relations WHERE id = ?", [row.id])[0]);
+  });
+}
+
+/** 只写一句说明（已确认的线补说明、关系面板输入框） */
+function kgExplainPair(payload) {
+  const p = payload || {};
+  const text = String(p.text ?? "").trim();
+  if (!text) throw new Error("说明为空");
+  if (!getKpRow(String(p.kpId || "")) || !getKpRow(String(p.relatedKpId || ""))) throw new Error("知识点不存在");
+  const r = addLearningEvent({
+    kind: "self_explain",
+    kp_id: String(p.kpId),
+    payload: { text: text.slice(0, 4000), relatedKpId: String(p.relatedKpId), selfRating: ["clear", "partial", "stuck"].includes(p.selfRating) ? p.selfRating : "clear", source: String(p.source || "kg_edge_panel") }
+  });
+  if (!r.ok) throw new Error(r.error || "写入说明失败");
+  return { eventId: r.id };
+}
+
+/** 复习页关系提问的结果留痕（30 天冷却） */
+function kgRelationAsked(a, b, outcome) {
+  const [x, y] = kgPairKey(a, b);
+  if (!x || !y) return false;
+  appendKgEventRow("relation_asked", x, { pair: `${x}|${y}`, outcome: ["answered", "skipped", "unrelated"].includes(outcome) ? outcome : "skipped" }, Date.now());
+  persist();
+  return true;
+}
+
+/** 关系面板证据明细的查表（只读）：材料标题、导图节点标题、摘录片段 / 原文锚点、批注、用户定义、说明、AI 判断 */
+function kgEvidenceLookup(req) {
+  const r = req || {};
+  const ph = (n) => n.map(() => "?").join(",");
+  const uniq = (xs) => [...new Set((Array.isArray(xs) ? xs : []).map(String).filter(Boolean))].slice(0, 200);
+  const docIds = uniq(r.docIds);
+  const extractIds = uniq(r.extractIds);
+  const eventIds = uniq(r.eventIds);
+  const defIds = uniq(r.defIds);
+  const proposalIds = uniq(r.proposalIds);
+  const mapNodes = (Array.isArray(r.mapNodes) ? r.mapNodes : []).slice(0, 200);
+  const out = { docs: {}, nodes: {}, extracts: {}, events: {}, defs: {}, proposals: {} };
+  if (docIds.length) {
+    for (const d of queryAll(`SELECT d.id AS id, li.title AS title FROM documents d JOIN library_items li ON li.id = d.library_item_id WHERE d.id IN (${ph(docIds)})`, docIds)) out.docs[d.id] = d.title;
+  }
+  for (const m of mapNodes) {
+    const row = queryAll("SELECT title FROM material_map_nodes WHERE map_id = ? AND node_id = ?", [String(m.mapId), String(m.nodeId)])[0];
+    if (row) out.nodes[`${m.mapId}|${m.nodeId}`] = row.title;
+  }
+  if (extractIds.length) {
+    for (const e of queryAll(`SELECT id, document_id AS documentId, content_markdown AS content, comment, context_ref_json AS ctx FROM extracts WHERE is_deleted = 0 AND id IN (${ph(extractIds)})`, extractIds)) {
+      const cr = parseJsonSafe(e.ctx, {}) || {};
+      const text = String(e.content || "").replace(/\s+/g, " ").trim();
+      out.extracts[e.id] = {
+        documentId: e.documentId,
+        snippet: text.slice(0, 160),
+        text: text.slice(0, 600),
+        comment: String(e.comment || "").trim().slice(0, 400),
+        anchor: { anchorText: cr.anchorText || text.slice(0, 200), anchorRatio: cr.anchorRatio, cfi: cr.cfi, chapterIndex: cr.chapterIndex, pageIndex: cr.pageIndex, imageAnchor: cr.imageAnchor }
+      };
+    }
+  }
+  if (eventIds.length) {
+    for (const e of queryAll(`SELECT id, kp_id AS kpId, ts, payload_json AS pj FROM learning_events WHERE id IN (${ph(eventIds)})`, eventIds)) {
+      const p = parseJsonSafe(e.pj, {}) || {};
+      out.events[e.id] = { kpId: e.kpId, ts: Number(e.ts), text: String(p.text || ""), rating: p.selfRating || null, relatedKpId: p.relatedKpId || null };
+    }
+  }
+  if (defIds.length) {
+    for (const d of queryAll(`SELECT id, kp_id AS kpId, body, created_at AS createdAt FROM kp_definition_versions WHERE id IN (${ph(defIds)})`, defIds)) out.defs[d.id] = { kpId: d.kpId, body: String(d.body || "").slice(0, 400), createdAt: Number(d.createdAt) };
+  }
+  if (proposalIds.length) {
+    for (const q of queryAll(`SELECT id, status, payload_json AS pj, created_at AS createdAt FROM knowledge_proposals WHERE id IN (${ph(proposalIds)})`, proposalIds)) out.proposals[q.id] = { status: q.status, payload: parseJsonSafe(q.pj, {}) || {}, createdAt: Number(q.createdAt) };
+  }
+  return out;
+}
+
+/** AI 判断：写一条 kg-edge-judge 提案（pending＝推断）。同对子 + 同证据指纹已有就跳过 */
+function kgAddJudgment(j) {
+  const p = j || {};
+  const [x, y] = kgPairKey(p.kpA, p.kpB);
+  if (!x || !y || x === y) return { created: false };
+  // §3.4：AI 判的「前置」同样走建环检查——会成环的不收
+  if (String(p.type) === "prerequisite" && wouldCreatePrerequisiteCycle(String(p.fromId || x), String(p.toId || y)).cycle) return { created: false, skipped: "cycle" };
+  return createKnowledgeProposal({
+    proposalKind: "relation",
+    scope: "kg-edge-judge",
+    confidence: null,
+    fingerprint: `kg-edge-judge:${x}|${y}:${String(p.evidenceFp || "")}`,
+    payload: {
+      kpA: x,
+      kpB: y,
+      relationType: String(p.type || "related_to"),
+      fromKnowledgePointId: String(p.fromId || x),
+      toKnowledgePointId: String(p.toId || y),
+      quote: String(p.quote || "").slice(0, 300),
+      sourceKey: String(p.sourceKey || ""),
+      evidenceFp: String(p.evidenceFp || ""),
+      aiAssisted: true
+    }
+  });
+}
+
+/** 图谱缓存指纹：任何影响图谱的事实变化都会改变它（只读、O(1) 级聚合） */
+function kgFingerprint() {
+  if (!db) return "0";
+  const q = (sql) => JSON.stringify(queryAll(sql)[0] || {});
+  return [
+    q("SELECT COUNT(*) AS n, MAX(review_seq) AS m FROM review_logs"),
+    q("SELECT COUNT(*) AS n, MAX(updated_at) AS m FROM cards"),
+    q("SELECT COUNT(*) AS n, MAX(updated_at) AS m FROM knowledge_points"),
+    q("SELECT COUNT(*) AS n, MAX(updated_at) AS m FROM knowledge_relations"),
+    q("SELECT COUNT(*) AS n FROM kp_definition_versions"),
+    q("SELECT COUNT(*) AS n FROM kg_events"),
+    q("SELECT COUNT(*) AS n, MAX(ts) AS m, SUM(is_deleted) AS d FROM learning_events WHERE kind = 'self_explain'"),
+    // v49.148 / D317 连线三层的证据来源
+    q("SELECT COUNT(*) AS n, MAX(updated_at) AS m, SUM(is_deleted) AS d FROM knowledge_relation_dismissals"),
+    q("SELECT COUNT(*) AS n, MAX(COALESCE(resolved_at, created_at)) AS m FROM knowledge_proposals WHERE scope = 'kg-edge-judge'"),
+    q("SELECT COUNT(*) AS n, MAX(updated_at) AS m FROM extracts"),
+    q("SELECT COUNT(*) AS n, MAX(updated_at) AS m FROM material_map_node_refs"),
+    q("SELECT COUNT(*) AS n, MAX(updated_at) AS m, SUM(is_active) AS a FROM material_maps"),
+    q("SELECT COUNT(*) AS n, MAX(updated_at) AS m FROM material_map_nodes"),
+    q("SELECT COUNT(*) AS n FROM kg_events WHERE kind = 'relation_asked'"),
+    getCutoffHour()
+  ].join("|");
+}
+
+/** 图谱一次性事实读取（只读）：卡片侧面 / 到期、定义版本时间、图谱事件、已归档 KP */
+function kgFacts() {
+  if (!db) return { cards: [], kps: [], defVersions: [], kgEvents: [], cardKp: new Map() };
+  return {
+    cards: queryAll("SELECT id, card_type AS cardType, facet, fsrs_json AS fsrsJson, fsrs_config_id AS fsrsConfigId, leech_json AS leechJson FROM cards WHERE is_deleted = 0"),
+    kps: queryAll("SELECT id, canonical_label AS label, description, status, merged_into AS mergedInto, alias_json AS aliasJson, domain_id AS domainId, metadata_json AS metadataJson, created_at AS createdAt, atlas_id AS atlasId, atlas_parent AS atlasParent FROM knowledge_points WHERE is_deleted = 0 AND status IN ('active', 'deprecated')"),
+    relations: queryAll("SELECT id, from_knowledge_point_id AS fromId, to_knowledge_point_id AS toId, relation_type AS type, created_at AS createdAt FROM knowledge_relations WHERE is_deleted = 0"),
+    atlasAlso: kgAtlasAlsoMap(),
+    atlasSplit: kgAtlasSplitMap(),
+    defVersions: listAllKpDefinitionVersions(),
+    kgEvents: listKgEvents({}),
+    reviewLogs: queryAll("SELECT card_id AS cardId, rating, reviewed_at AS reviewedAt FROM review_logs ORDER BY review_seq ASC"),
+    fsrsConfigs: queryAll("SELECT id, weights_json AS weightsJson, scheduler_options_json AS schedulerOptionsJson FROM fsrs_configs"),
+    selfExplain: queryAll("SELECT kp_id AS kpId, ts, payload_json AS payloadJson FROM learning_events WHERE kind = 'self_explain' AND is_deleted = 0"),
+    cutoffHour: getCutoffHour()
+  };
+}
+
 module.exports = {
+  // v49.146 / D314：mapLink.js 的 db 访问口（同一连接、同一事务语义）
+  _mapLinkDb: () => ({ queryAll, run: (sql, p) => db.run(sql, p), withTransaction, readAppMeta, writeAppMeta }),
+  // v49.137 / D304 知识图谱
+  listKpDefinitionVersions, reviseKpDefinition, revertKpDefinition, listKgEvents, archiveKnowledgePoint,
+  restoreKnowledgePoint, setCardFacet, moveCardToKnowledgePoint, kgFacts, kgFingerprint, appendKpDefinitionRow,
+  resolveKpAttribution, ensureKpForCard, linkKpAtlas, kpReattachCards, kgSimilarKps, kpActiveByAtlas, kpReattachApply, kpReattachUndo, kgDissolveCleanup, kgAppearances, atlasAppearances,kgUnmappedKps, kgAtlasAlsoMap, kgSetAtlasAlso, kpsByAtlasIds, atlasInt, recentKpLabels, markContrastHandled, kgActiveKpRows,
+  kgUnattachedCards, attachCardsToKp, addKnownKnowledge,
+  // v49.148 / D317 连线三层
+  kgEdgeFacts, kgDismissPair, kgUndoDismiss, kgConnectPair, kgUndoConnect, kgUpdateRelation, kgExplainPair, kgRelationAsked, kgEvidenceLookup, kgAddJudgment, kgPairKey,
+  // 诊断/测试口（只读）：卡片挂靠导图节点的读取与查询计划（D322 性能）
+  _kgMapCardNodes: kgMapCardNodes,
+  _mapCardNodeLookupPlan: explainMapCardNodeLookup,
   appendDecisionLog,
   patchLastDecisionLog,
   listDecisionLog,
@@ -9122,6 +10664,11 @@ module.exports = {
   setAIGenBatchStatus,
   ensurePromptTemplates,
   CARD_PROMPT_TARGET_VERSION,
+  recordSenseJudged,
+  senseExamples,
+  senseStats,
+  kpLabelDefs,
+  kgAtlasSplitMap,
   getPromptTemplate,
   getPromptTemplateVersion,
   listPromptTemplates,

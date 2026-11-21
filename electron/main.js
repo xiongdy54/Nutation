@@ -1180,7 +1180,12 @@ ipcMain.handle("ai:getConfig", async () => {
   const { apiKey, ...safe } = await getAIConfig();
   return safe;
 });
-ipcMain.handle("ai:setConfig", (_e, partial) => setAIConfig(partial || {}));
+ipcMain.handle("ai:setConfig", async (_e, partial) => {
+  const r = await setAIConfig(partial || {});
+  try { void getMapLinkAuto().onAiSettingsChanged(); } catch { /* 挂靠重扫失败不影响设置 */ }
+  try { void getKgEdgeJudge().onAiSettingsChanged(); } catch { /* 关系判断失败不影响设置 */ }
+  return r;
+});
 ipcMain.handle("ai:test", () => testConnection());
 ipcMain.handle("ai:listModels", () => listModels());
 // 本地运行时探测（v48.68 / D112）：Ollama/LM Studio 端口探针，永不抛错（未命中返回 detected:false）
@@ -1578,29 +1583,202 @@ ipcMain.handle("knowledge:resolveFamilies", (_e, ids) => {
   }
   return [...out];
 });
+// v49.137 / D304 知识图谱（electron/kgService.js；快照 / 事件流只读，写入只经 db.js 的事实函数）
+ipcMain.handle("kg:graph", (_e, opts) => require("./kgService").getGraph(opts || {}));
+ipcMain.handle("kg:snapshotAt", (_e, t) => require("./kgService").snapshotAt(Number(t)));
+ipcMain.handle("kg:today", () => require("./kgService").today());
+ipcMain.handle("kg:cardPanel", (_e, cardId) => require("./kgService").cardPanel(String(cardId)));
+ipcMain.handle("kg:appearances", (_e, kpId) => dbModule.kgAppearances(String(kpId)));
+ipcMain.handle("kg:atlasAppearances", (_e, atlasId) => dbModule.atlasAppearances(atlasId));
+// v49.146 / D315（T8）全谱纠错上报：只发白名单字段（electron/atlasReport.js）
+ipcMain.handle("atlas:report", (_e, payload) => require("./atlasReport").report(payload || {}));
+// v49.146 / D314 导图节点 ↔ 全谱挂靠（electron/mapLink.js）
+// D314 修订：挂靠由主进程自动完成（electron/mapLinkAuto.js：引擎完成广播 / 启动扫描 / AI 设置变更触发）；渲染层只读与手动改。
+// 单向推送 `mapLink:changed` 载荷 `{ mapId }`（先例＝settings:changed，不计入 invoke 清单；渲染层订阅 = kgAPI.onMapLinkChanged）。
+let mapLinkAutoSingleton = null;
+const mapLinkDeltaTimers = new Map();
+// v49.148 / D317 连线三层的 AI 判断：后台串行（启动后约 40 秒、AI 设置变更、导图挂靠变化后 30 秒防抖）
+let kgEdgeJudgeSingleton = null;
+let kgEdgeJudgeTimer = null;
+function getKgEdgeJudge() {
+  if (kgEdgeJudgeSingleton) return kgEdgeJudgeSingleton;
+  const { createKgEdgeJudge } = require("./kgEdgeJudge");
+  kgEdgeJudgeSingleton = createKgEdgeJudge({
+    chatStream: (opts, send) => chatStream(opts, send),
+    getAIConfig: () => getAIConfig(),
+    getPromptTemplate: (scope) => getPromptTemplate(scope)
+  });
+  return kgEdgeJudgeSingleton;
+}
+function scheduleKgEdgeJudge(ms) {
+  if (kgEdgeJudgeTimer) clearTimeout(kgEdgeJudgeTimer);
+  kgEdgeJudgeTimer = setTimeout(() => {
+    kgEdgeJudgeTimer = null;
+    try { void getKgEdgeJudge().sweep(); } catch { /* 判断失败不影响图谱 */ }
+  }, ms);
+}
+function getMapLinkAuto() {
+  if (mapLinkAutoSingleton) return mapLinkAutoSingleton;
+  const { createMapLinkAuto } = require("./mapLinkAuto");
+  mapLinkAutoSingleton = createMapLinkAuto({
+    chatStream: (opts, send) => chatStream(opts, send),
+    getAIConfig: () => getAIConfig(),
+    getPromptTemplate: (scope) => getPromptTemplate(scope),
+    broadcast: (payload) => {
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w.isDestroyed()) w.webContents.send("mapLink:changed", payload);
+      }
+      scheduleKgEdgeJudge(30000); // v49.148 / D317：挂靠变了，材料层证据可能变了
+    }
+  });
+  return mapLinkAutoSingleton;
+}
+ipcMain.handle("mapLink:refsForMap", (_e, mapId) => require("./mapLink").refsForMap(String(mapId)));
+ipcMain.handle("mapLink:refsForAtlas", (_e, ids) => require("./mapLink").refsForAtlas(ids));
+ipcMain.handle("mapLink:setUserRef", (_e, mapId, nodeId, atlasId, on) => require("./mapLink").setUserRef(String(mapId), String(nodeId), atlasId, !!on));
+ipcMain.handle("kg:defVersions", (_e, kpId) => dbModule.listKpDefinitionVersions(String(kpId)));
+ipcMain.handle("kg:reviseDefinition", (_e, kpId, payload) => dbModule.reviseKpDefinition(String(kpId), payload || {}));
+ipcMain.handle("kg:revertDefinition", (_e, kpId, seq) => dbModule.revertKpDefinition(String(kpId), Number(seq)));
+ipcMain.handle("kg:archive", (_e, kpId) => dbModule.archiveKnowledgePoint(String(kpId)));
+ipcMain.handle("kg:restore", (_e, kpId) => dbModule.restoreKnowledgePoint(String(kpId)));
+ipcMain.handle("kg:setFacet", (_e, cardId, facet) => dbModule.setCardFacet(String(cardId), facet == null ? null : String(facet)));
+ipcMain.handle("kg:resolveAttribution", (_e, items) => require("./kgVector").resolveAttribution(items || []));
+ipcMain.handle("kg:ensurePoint", (_e, payload) => dbModule.ensureKpForCard(payload || {}));
+ipcMain.handle("kg:recentLabels", (_e, limit, text) => require("./kgVector").relevantKpLabels(limit, text ? String(text).slice(0, 20000) : ""));
+ipcMain.handle("kg:contrastCandidate", () => require("./kgService").contrastCandidate());
+// v49.149 / D318 知识点＝义项：辨析卡裁决回流、【你过去的辨析】素材、【用户已有知识点】定义摘要
+ipcMain.handle("kg:senseJudged", (_e, payload) => dbModule.recordSenseJudged(payload || {}));
+ipcMain.handle("kg:senseExamples", (_e, limit) => dbModule.senseExamples(limit));
+ipcMain.handle("kg:labelDefs", (_e, labels) => dbModule.kpLabelDefs(Array.isArray(labels) ? labels : []));
+// v49.148 / D317 连线三层：关系面板证据、确认 / 拖线连线、解除（证据快照）、改类型、补说明、复习页关系提问留痕
+function kgWrite(fn) {
+  const r = fn();
+  require("./kgService").invalidate?.();
+  return r;
+}
+ipcMain.handle("kg:edgeEvidence", (_e, a, b) => require("./kgService").edgeEvidence(String(a || ""), String(b || "")));
+ipcMain.handle("kg:connectPair", (_e, payload) => {
+  const p = payload || {};
+  const r = kgWrite(() => dbModule.kgConnectPair(p));
+  // v49.156 / D325：只在新建了确认关系时异步上报（已存在的关系不是新确认；补报由启动重试覆盖）
+  if (r && r.created) {
+    setImmediate(() => {
+      try {
+        void require("./atlasShare").queue({ fromId: p.fromId, toId: p.toId, type: r.type }).catch(() => {});
+      } catch { /* ignore */ }
+    });
+  }
+  return r;
+});
+ipcMain.handle("kg:undoConnect", (_e, undo) => kgWrite(() => dbModule.kgUndoConnect(undo || {})));
+ipcMain.handle("kg:dismissPair", (_e, a, b) => require("./kgService").dismissPair(String(a || ""), String(b || "")));
+ipcMain.handle("kg:undoDismiss", (_e, undo) => kgWrite(() => dbModule.kgUndoDismiss(undo || {})));
+ipcMain.handle("kg:updateRelation", (_e, id, patch) => kgWrite(() => dbModule.kgUpdateRelation(String(id || ""), patch || {})));
+ipcMain.handle("kg:explainPair", (_e, payload) => kgWrite(() => dbModule.kgExplainPair(payload || {})));
+ipcMain.handle("kg:relationAsked", (_e, a, b, outcome) => kgWrite(() => dbModule.kgRelationAsked(String(a || ""), String(b || ""), String(outcome || ""))));
+ipcMain.handle("kg:markContrastHandled", (_e, pair, action) => dbModule.markContrastHandled(String(pair || ""), String(action || "")));
+// v49.143 / D311 知识全谱（electron/atlas.js：随包只读参考数据；写入只有知识点 ↔ 全谱节点的对应关系）
+ipcMain.handle("atlas:status", () => ({ ...require("./atlas").status(), download: require("./atlasDownload").state() }));
+// v49.146 / D315 完整全谱下载（用户主动触发；atlasFullUrl 为空则拒绝）
+ipcMain.handle("atlas:download:start", async (e) => {
+  const r = await require("./atlasDownload").start((p) => {
+    if (!e.sender.isDestroyed()) e.sender.send("atlas:download:progress", p);
+  });
+  return { ...require("./atlas").status(), download: r };
+});
+ipcMain.handle("atlas:download:cancel", () => require("./atlasDownload").cancel());
+ipcMain.handle("atlas:search", (_e, q, opts) => require("./atlas").searchAsync(String(q || ""), opts || {}));
+ipcMain.handle("atlas:node", async (_e, id) => {
+  const n = await require("./atlas").nodeAsync(String(id || ""));
+  return n ? { ...n, kp: dbModule.kpsByAtlasIds([n.id])[n.id] || null } : null;
+});
+ipcMain.handle("atlas:neighbors", (_e, id, opts) => require("./kgService").atlasNeighbors(String(id || ""), opts || {}));
+ipcMain.handle("atlas:candidates", (_e, text, opts) => require("./atlas").candidates(String(text || ""), opts || {}));
+ipcMain.handle("atlas:roadmap", async (_e, targets) => {
+  const g = await require("./kgService").getGraph({});
+  const mastered = g.snapshot.nodes.filter((n) => n.atlasId && (n.state === "lit" || n.state === "solid" || n.state === "firm")).map((n) => n.atlasId);
+  const r = require("./atlas").roadmap(Array.isArray(targets) ? targets : [targets], mastered);
+  const kps = dbModule.kpsByAtlasIds(r.gap.map((n) => n.id));
+  return { ...r, gap: r.gap.map((n) => ({ ...n, kp: kps[n.id] || null })) };
+});
+ipcMain.handle("kg:linkAtlas", (_e, kpId, atlasId, atlasParent) => {
+  const r = dbModule.linkKpAtlas(String(kpId || ""), atlasId == null ? null : String(atlasId), atlasParent == null ? null : String(atlasParent));
+  void require("./atlasSnapshot").ensureAsync([r.atlasId, r.atlasParent].filter(Boolean)).catch(() => {}); // D315 快照
+  require("./kgService").invalidate?.();
+  return r;
+});
+ipcMain.handle("kg:unmappedKps", () => dbModule.kgUnmappedKps());
+// v49.147 / D316 解散知识点并给卡片重挂：计划（含 AI 封闭选择，进度推送）→ 确认（单事务）→ 撤销；候选表 / 撤销数据留在主进程
+let kpReattachSingleton = null;
+function getKpReattach() {
+  if (kpReattachSingleton) return kpReattachSingleton;
+  kpReattachSingleton = require("./kpReattach").createKpReattach({
+    chatStream: (opts, send) => chatStream(opts, send),
+    getAIConfig: () => getAIConfig(),
+    getPromptTemplate: (scope) => getPromptTemplate(scope)
+  });
+  return kpReattachSingleton;
+}
+ipcMain.handle("kg:reattachPlan", (e, kpIds) =>
+  getKpReattach().plan(Array.isArray(kpIds) ? kpIds.map(String).slice(0, 200) : [], {
+    onProgress: (p) => {
+      if (!e.sender.isDestroyed()) e.sender.send("kg:reattachProgress", p);
+    }
+  })
+);
+ipcMain.handle("kg:reattachApply", async (_e, token, decisions) => {
+  const r = await getKpReattach().apply(String(token || ""), Array.isArray(decisions) ? decisions : []);
+  if (r.atlasIds.length) void require("./atlasSnapshot").ensureAsync(r.atlasIds).catch(() => {}); // D315 快照
+  require("./kgService").invalidate?.();
+  return { moved: r.moved, created: r.created, archived: r.archived, archivedIds: r.archivedIds, undoToken: r.undoToken };
+});
+ipcMain.handle("kg:reattachUndo", (_e, undoToken) => {
+  const r = getKpReattach().undo(String(undoToken || ""));
+  require("./kgService").invalidate?.();
+  return r;
+});
+// v49.145 / D313 知识点「也涉及」的全谱节点
+ipcMain.handle("kg:setAtlasAlso", (_e, kpId, atlasId, on) => {
+  const r = dbModule.kgSetAtlasAlso(String(kpId || ""), String(atlasId || ""), Boolean(on));
+  if (on) void require("./atlasSnapshot").ensureAsync([atlasId]).catch(() => {}); // D315 快照
+  require("./kgService").invalidate?.();
+  return r;
+});
+// v49.140 / D307 语义匹配（可选向量档；下载与 api 档是用户主动触发的联网面）
+ipcMain.handle("kg:vectorStatus", () => require("./kgVector").status());
+ipcMain.handle("kg:vectorSetMode", (_e, mode, opts) => require("./kgVector").setMode(String(mode || ""), opts || {}));
+ipcMain.handle("kg:vectorDownload", (e, tier) =>
+  require("./kgVector").download(String(tier || ""), (p) => {
+    if (!e.sender.isDestroyed()) e.sender.send("kg:vectorProgress", p);
+  })
+);
+ipcMain.handle("kg:vectorCancel", () => require("./kgVector").cancelDownload());
+ipcMain.handle("kg:vectorRemove", (_e, tier) => require("./kgVector").remove(String(tier || "")));
+// v49.141 / D308 整理已有卡片 / 已有知识
+ipcMain.handle("kg:unattachedCards", (_e, limit) => dbModule.kgUnattachedCards(limit));
+ipcMain.handle("kg:attachCards", (_e, payload) => dbModule.attachCardsToKp(payload || {}));
+ipcMain.handle("kg:addKnown", (_e, payload) => dbModule.addKnownKnowledge(payload || {}));
+ipcMain.handle("kg:moveCard", (_e, cardId, kpId) => dbModule.moveCardToKnowledgePoint(String(cardId), kpId ? String(kpId) : null));
 ipcMain.handle("knowledge:getPoint", (_e, id) => dbModule.getKnowledgePoint(String(id)));
 ipcMain.handle("knowledge:createPoint", (_e, payload) => dbModule.createKnowledgePoint(payload || {}));
 ipcMain.handle("knowledge:updatePoint", (_e, id, patch) => dbModule.updateKnowledgePoint(String(id), patch || {}));
-ipcMain.handle("knowledge:mergePoints", (_e, sourceId, targetId) => dbModule.mergeKnowledgePoints(String(sourceId), String(targetId)));
+ipcMain.handle("knowledge:mergePoints", (_e, sourceId, targetId) => dbModule.mergeKnowledgePoints(String(sourceId), String(targetId), { manual: true }));
 ipcMain.handle("knowledge:unmergePoint", (_e, id) => dbModule.unmergeKnowledgePoint(String(id)));
 ipcMain.handle("knowledge:listRelations", (_e, filter) => dbModule.listKnowledgeRelations(filter || {}));
-ipcMain.handle("knowledge:createRelation", (_e, payload) => dbModule.createKnowledgeRelation(payload || {}));
+ipcMain.handle("knowledge:createRelation", (_e, payload) => {
+  const p = payload || {};
+  const r = dbModule.createKnowledgeRelation(p);
+  // v49.156 / D325：确认落库成功后异步上报（默认关；失败静默，不阻塞也不影响 IPC 返回）
+  setImmediate(() => {
+    try {
+      void require("./atlasShare").queue({ fromId: p.fromKnowledgePointId, toId: p.toKnowledgePointId, type: r && r.relationType }).catch(() => {});
+    } catch { /* ignore */ }
+  });
+  return r;
+});
 ipcMain.handle("knowledge:deleteRelation", (_e, id) => dbModule.deleteKnowledgeRelation(String(id)));
-ipcMain.handle("knowledge:listRefs", (_e, kpId) => dbModule.listKnowledgeExternalRefs(String(kpId)));
-ipcMain.handle("knowledge:createRef", (_e, payload) => dbModule.createKnowledgeExternalRef(payload || {}));
-ipcMain.handle("knowledge:deleteRef", (_e, id) => dbModule.deleteKnowledgeExternalRef(String(id)));
-ipcMain.handle("knowledge:listProposals", (_e, filter) => dbModule.listKnowledgeProposals(filter || {}));
-ipcMain.handle("knowledge:resolveProposal", (_e, id, accept, overridePayload) => dbModule.resolveKnowledgeProposal(String(id), !!accept, overridePayload || null));
-ipcMain.handle("knowledge:migrationSuggestions", () => dbModule.buildKnowledgeMigrationSuggestions());
 
-// v41（K2-A，D38）：AI 抽取归一与关系——主进程只做输入装配与裁决（AI 调用由渲染层编排）
-ipcMain.handle("knowledge:kpClusters", () => dbModule.listKpClusters());
-ipcMain.handle("knowledge:kpExtractPrepare", (_e, opts) => dbModule.buildKpExtractionInput(opts || {}));
-ipcMain.handle("knowledge:kpExtractApply", (_e, rawExtraction, rawRelations) => dbModule.applyKpExtraction(rawExtraction, rawRelations));
-ipcMain.handle("knowledge:acceptAllPending", () => dbModule.acceptAllPendingKnowledgeProposals());
 
-// v43（K2-B）：KnowledgeLint K4/K7/K8 报告型检查（只读，非阻断）
-ipcMain.handle("knowledge:lint", () => dbModule.runKnowledgeLint());
 
 // ---------- v48.80（D124 / 设计稿 §11.1）：学习者模型 learner:*（16 个通道；除 status 外每个
 // handler 第一行检查总开关，关闭时立即返回 {ok:false, disabled:true}，不读写任何库） ----------
@@ -2064,10 +2242,23 @@ function getMindmapEngineV2() {
       for (const w of BrowserWindow.getAllWindows()) {
         if (!w.isDestroyed()) w.webContents.send("mindmap:changed", payload);
       }
+      // D314 修订：生成 / 深挖 run 完成（含部分完成）→ 后台把节点挂靠到全谱（静默；按节点续跑）
+      if (payload && (payload.stage === "completed" || payload.stage === "partial") && payload.documentId) {
+        try { void getMapLinkAuto().notifyDocument(payload.documentId); } catch { /* 挂靠失败不影响导图 */ }
+      }
     },
     broadcastDelta: (payload) => {
       for (const w of BrowserWindow.getAllWindows()) {
         if (!w.isDestroyed()) w.webContents.send("mindmap:delta", payload);
+      }
+      // 单节点展开等不走 changed 广播的增量：该文档 15 秒内没有新增量后再排队挂靠（按节点续跑，重复排队无害）
+      const docId = payload && payload.documentId;
+      if (docId) {
+        clearTimeout(mapLinkDeltaTimers.get(docId));
+        mapLinkDeltaTimers.set(docId, setTimeout(() => {
+          mapLinkDeltaTimers.delete(docId);
+          try { void getMapLinkAuto().notifyDocument(docId); } catch { /* 挂靠失败不影响导图 */ }
+        }, 15000));
       }
     }
   });
@@ -2252,6 +2443,20 @@ app.whenReady().then(async () => {
   setTimeout(() => {
     if (learnerRefresh.learnerEnabled()) void learnerRefresh.refresh();
   }, 20000);
+  // v49.154 / D323 / A2：启动后约 60 秒后台预取知识点挂靠的全谱节点的边分片（完整库 / 联网关闭时不发请求；失败静默退避）
+  setTimeout(() => {
+    try { void require("./kgService").prefetchAtlasEdges().catch(() => {}); } catch { /* ignore */ }
+  }, 60000);
+  // v49.156 / D325：启动后约 65 秒补报上次未成功的确认关系（开关关闭时零动作；失败静默）
+  setTimeout(() => {
+    try { void require("./atlasShare").retryPending().catch(() => {}); } catch { /* ignore */ }
+  }, 65000);
+  // D314 修订：启动后约 20 秒后台扫描一次：补挂靠还有未处理节点的活动导图
+  setTimeout(() => {
+    try { void getMapLinkAuto().sweep(); } catch { /* ignore */ }
+  }, 20000);
+  // v49.148 / D317：启动后约 40 秒判断一次材料层候选对子的关系（无 AI 配置时什么都不做）
+  scheduleKgEdgeJudge(40000);
   // C-25：macOS 需要应用菜单（Cmd+C/V/X/A/Z 与 Cmd+Q 依赖菜单 role 生效）；非 mac 返回 null 保持无菜单栏现状
   require("./appMenu").applyAppMenu();
   // C-09：收紧默认 session 的权限请求与检查（必须早于任何窗口创建；四窗口均未使用自定义 partition）
@@ -2358,6 +2563,8 @@ app.whenReady().then(async () => {
     }
     throw e;
   }
+  // D315：启动后延迟为「已挂靠但缺快照」的全谱编号补快照（缓存；失败静默，不挡启动）
+  setTimeout(() => { void require("./atlasSnapshot").ensureMissing().catch(() => {}); }, 8000).unref?.();
   // D248（v49.77）：BDI 在 initDb 之后异步初始化——打开失败/用户关闭只停用采集，不阻塞启动。
   // ready-to-show 前刻意不 await：DDL 与会话修复不进入首窗关键路径（设计稿 §13 启动预算）。
   void behavior.init({

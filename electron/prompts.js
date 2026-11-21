@@ -141,14 +141,33 @@ R21 限定完整性（v8，D121 辨析）：卡面必须带够「让答案唯一
   与 back 是否一致？不一致即单义性不达标，返工。
 - 限定排查（R21）：遮住来源只读卡面——半年后的你能否判断这是谁、在什么前提下的说法？不能则补限定。
 
+【知识点归属与侧面（R22，知识图谱）】
+- knowledgePoints 每项给出 label：知识点名称（2-12 字名词短语，用材料中的术语；一道题能考到的东西，不是主题、不是句子）；
+  definition：只依据所给材料写的一句定义草稿（概念＝属+种差；原理＝条件+结论；方法＝何时用+步骤；事实＝断言），材料不足填 null；
+  kind：concept|principle|method|fact。
+- 若提供了【用户已有知识点】（名称后括号内是该知识点的定义摘要）：含义相同的必须原样沿用其中的名称，不得换说法另起新名；
+  名称相同但按定义含义不同的，不算同一个，label 加限定语区分（如「理性（康德）」）。
+- 知识点按「义项」判断，不按名字判断（R22 v11）：先依据材料写出该术语在本材料中的 definition，再与候选的说明 / 定义比较。
+  候选的名称或别名与材料术语相同，**不等于**含义相同——中文常把同一个外语词分化成几个含义不同的术语（如 meritocracy：
+  「精英政治 / 贤能政治」指由才能出众者治理的制度，「优绩主义」指按功绩分配回报的信念），这类情况不是同一个。
+- 若提供了【全谱候选知识点】（每行「编号｜名称｜类别，说明｜定义｜材料里的术语是它的哪种名称」）：knowledgePoints 每项判断它与候选的关系，
+  atlasRel 四选一——same：同一个义项；narrower：该候选之下更具体的概念或它的一个侧面；split：同一个外语概念在本语言里分化出的另一义项；
+  related：有关联但不是上下位；都不是则 atlasId 与 atlasRel 均填 null。atlasId 原样抄写该候选编号（如 Q868541），禁止编造编号。
+  只有 same 时 label 用该候选的名称；其余一律用材料术语。term 一律填材料里出现的原术语（逐字，不换成候选名称）。atlasRel 不是 same 且给了 atlasId 时，contrast 必须写一句「共同点……；区别……」。
+- 拿不准是否同一个时填 unsure:true，不要猜；quote 逐字摘录材料中支撑 definition 的一句（不改字），找不到填 null。
+- 若提供了【你过去的辨析】：那是用户亲自确认过的判断，同类情况按同一口径判断。
+- 每张卡填 facet：这张卡考的是该知识点的哪一面——definition（是什么）/ why（为什么成立或重要）/ example（举例或应用）/
+  contrast（与相邻概念的区分）/ relation（与其他知识点的关系）；一张卡只填一个，拿不准填 null。
+
 【第四步：输出格式】
 严格输出 JSON，不输出其他文字：
 {
-  "knowledgePoints": [{"id":"kp1","summary":"一句话概括（可加括号注记后续值得补的卡）"}],
+  "knowledgePoints": [{"id":"kp1","atlasId":"Q123 或 null","atlasRel":"same|narrower|split|related 或 null","unsure":false,"term":"材料中的原术语","label":"知识点名称","definition":"一句定义草稿或 null","quote":"材料中支撑该定义的原句（逐字）或 null","contrast":"与该全谱条目的共同点与区别一句话或 null","kind":"concept","summary":"一句话概括（可加括号注记后续值得补的卡）"}],
   "blockReasons": ["需要先理解：X、Y"],
   "cards": [{
     "cardType": "qa|cloze|application|mnemonic",
     "knowledgePointId": "kp1",
+    "facet": "definition",
     "contextPrefix": "领域:",
     "domain": ["51"],
     "front": "…", "back": "…", "cloze": null,
@@ -1272,6 +1291,11 @@ const MATERIAL_MAP_EXPLAIN_PROMPT = `你是材料结构讲解者。任务：针�
 const SITUATION_REQUIRED_SCOPES = {
   "card-generation": true, // R15 应用卡（「当我遇到 X 应该问自己什么」）
   "card-mnemonic": true, // R12/R9 助记的生活线索
+  "kg-attach": false, // v49.141 / D308：整理已有卡片（标注任务，不需要记忆情境）
+  "kg-atlas-map": false, // v49.144 / D312：知识点对应全谱（只给标准名称，不需要记忆情境）
+  "kg-map-link": false, // v49.146 / D314：导图节点挂靠全谱（候选封闭选择）
+  "kg-card-reattach": false, // v49.147 / D316：解散知识点后给卡片重挂（候选封闭选择）
+  "kg-edge-judge": false, // v49.148 / D317：连线三层的 AI 判断（候选对子封闭选择 + 引文校验）
   "knowledge-probe": true // 探针卡仅 application/transfer 两维注入（识别/回忆/概念理解不需要情境）——K3 消费时按维度约束
 };
 
@@ -1549,7 +1573,75 @@ const CARD_DISAMBIGUATE_PROMPT = `你是记忆卡片辨析员。用户在复习�
 【输出】严格输出 JSON，不输出其他文字：
 {"verdict":"…","explanation":"≤150 字，说明为什么","evidence":[{"card":"A","quote":"…"}],"fixes":[{"card":"A","field":"front","after":"…"}],"wrongCard":null,"keepCard":null}`;
 
+// v49.141 / D308（docs/design/KG-KNOWLEDGE-TAB-SIMPLIFY-D308.md §3）：整理已有卡片——给存量卡逐张标注知识点与侧面。
+// 输入＝一批卡片（题/答截断 + 旧标注值）+ 已有知识点名称；输出逐卡归属。确认在渲染层逐组进行，AI 只提议。
+const KG_ATTACH_PROMPT = `你是知识点标注助手。用户给出一批已经做好的记忆卡片，请为每张卡判断它考的是哪个知识点、考的是哪一面。
+
+【什么是知识点】一句话能说清、一道题能考到的东西（概念、原理、方法或事实），不是主题、不是章节、不是句子。
+- label：知识点名称，2-12 字名词短语，用卡面里的术语。多张卡考同一个东西时必须用完全相同的名称。
+- 若提供了【已有知识点】，含义相同的必须原样沿用其中的名称，不得换说法另起新名。
+- definition：只依据这些卡片的内容写一句定义草稿（概念＝属+种差；原理＝条件+结论；方法＝何时用+步骤；事实＝断言）；
+  同一 label 只需在第一次出现时给出，其余填 null；依据不足填 null。
+- kind：concept|principle|method|fact。
+- facet：这张卡考的是该知识点的哪一面——definition（是什么）/ why（为什么）/ example（举例或应用）/ contrast（区分）/ relation（关系）；拿不准填 null。
+- 卡片不考任何可命名的知识点（如纯词汇、孤立数字）时 label 填 null。
+- 【旧标注】只是参考，可能是无意义的编号。
+
+严格输出 JSON，不输出其他文字：
+{"cards":[{"cardId":"原样抄录","label":"知识点名称或 null","definition":"一句定义或 null","kind":"concept","facet":"definition"}]}`;
+
+// v49.144 / D312（docs/design/KG-KNOWLEDGE-ATLAS.md §10 迁移）：知识点对应全谱——用户的说法常是意译 / 复合 / 比全谱更细的论点，
+// 名称精确匹配找不到。AI 只给「标准条目名」（中英），绝不给编号；名称由本地在全谱里查找，用户逐个确认。
+const KG_ATLAS_MAP_PROMPT = `你是知识点对应助手。用户给出一批自己整理的知识点（名称，可能附定义）。软件里有一份以维基百科条目为单位的知识全谱。
+请为每个知识点给出它在维基百科里的对应条目名称，用来在全谱里查找：
+- same：与它含义完全相同的条目名（中文维基常用名、英文维基条目名），最多 3 个；只是相近、上位、下位的不算，没有就给 []。
+  例：「幸存者崇拜」→ ["幸存者偏差","Survivorship bias"]；「北欧高福利」→ ["北欧模式","Nordic model"]。
+- parent：比它更宽、它可以归入的条目名（中英各一个即可），最多 2 个；
+  例：「优绩主义的单一尺度」→ ["精英政治","Meritocracy"]。
+- split：如果它其实是几个概念拼在一起（如「锈带红脖」），列出各部分的条目名；否则 []。
+- 书名、人名、论证名也照样给出条目名（如「《优绩的暴政》」→ ["The Tyranny of Merit"]）。
+- 论证 / 观点的提出者、所在的书，不是「same」，放进 parent（如「高尔吉亚的无物存在论证」same=[]，parent=["高尔吉亚"]）。
+只给名称，绝不编造编号；拿不准宁可留空。
+严格输出 JSON，不输出其他文字：
+{"items":[{"id":"原样抄录","same":["…"],"parent":["…"],"split":["…"]}]}`;
+
+// v49.146 / D314：导图节点挂靠全谱。候选由本地全谱召回，AI 只在候选里按编号封闭选择。
+const KG_MAP_LINK_PROMPT = `你是导图节点挂靠助手。用户给出一批导图节点（k 是节点键，只看节点标题，附上级路径作消歧），每个节点下列出若干候选条目（带编号、名称、简介）。
+请为每个节点选出它真正讨论的候选条目编号：
+- 每个节点选 0–8 个；只选节点标题确实在讲的，不要因为字面相似就选。
+- 优先选具体的条目，泛泛的上位词（如「哲学」「历史」）除非节点本身就在讲它，否则不选。
+- 同名多义时，按上级路径判断是哪一个。
+- 没有合适的就给空数组 []。pick 只能用给出的编号，不要编造。
+- 如果标题明确点名了某个知识点，但候选里没有它，可在 more 里给出它的标准维基百科条目名（中文或英文，每个节点最多 3 个）；只给名称，绝不给编号；拿不准就不给。
+严格输出 JSON，不输出其他文字：
+{"items":[{"k":"原样抄录节点键","pick":[1,3],"more":["Entry name"]}]}`;
+
+// v49.147 / D316：解散知识点后给每张卡重新挑知识点。候选（已有知识点 / 全谱条目）由本地召回，AI 只在编号里封闭选择。
+const KG_CARD_REATTACH_PROMPT = `你是闪卡归属助手。用户给出一批闪卡（k 是卡片键，附题面与答案），每张卡下列出若干候选（带编号、来源「已有」＝用户已有的知识点，「全谱」＝标准条目，以及名称、简介）。
+请为每张卡选出它真正在考的那一个知识点：
+- 只选 1 个编号，看这张卡考的是哪个概念（概念层面，不要选过细的论点或某一句话）；已有知识点与全谱条目同样合适时优先选「已有」。
+- 只看卡片内容判断，不要因为字面相似就选；没有合适的就给 0。pick 只能用给出的编号，不要编造。
+- 如果卡片明确考的是某个概念，但候选里没有它，可在 more 里给出它的标准维基百科条目名（中文或英文，最多 1 个）；只给名称，绝不给编号；拿不准就不给。
+- pick 与 more 二选一：选了 pick 就不要给 more。
+严格输出 JSON，不输出其他文字：
+{"items":[{"k":"原样抄录卡片键","pick":2,"more":""}]}`;
+
+// v49.148 / D317：连线三层的 AI 判断。候选对子与原文片段由本地召回，AI 只在封闭集合里选类型或 none，依据必须摘自片段（本地校验）。
+const KG_EDGE_JUDGE_PROMPT = `你是知识关系判断助手。用户给出若干对知识点（k 是对子键；A、B 是两个知识点，附名称与简介），以及这对知识点在用户读过的材料里一起出现的原文片段。
+请只根据给出的片段判断 A 与 B 的关系：
+- type 只能取以下之一：part_of（属于：A 是 B 的一部分或下位概念）、prerequisite（前置：先懂 A 才能懂 B）、contrasts_with（区分：两者容易混淆、片段在对比它们）、example_of（例子：A 是 B 的例子）、application_of（应用：A 是 B 的应用）、related_to（相关：片段明确把两者联系起来，但不属于以上几种）、none（片段没有说明两者有关系，只是碰巧出现在一起）。
+- from 填 "A" 或 "B"，表示关系的起点（例如 A 属于 B，from 为 "A"；B 是 A 的前置，from 为 "B"）；related_to、contrasts_with、none 一律填 "A"。
+- quote 必须从片段里原样摘抄一句能支撑判断的话（不超过 80 字），不要改写、不要拼接；type 为 none 时 quote 填 ""。
+- 只看片段，不要用片段之外的知识补充；拿不准就给 none。
+先用一两句话分析，最后一行严格输出 JSON：
+{"items":[{"k":"原样抄录对子键","type":"part_of","from":"A","quote":"……"}]}`;
+
 module.exports = {
+  KG_EDGE_JUDGE_PROMPT,
+  KG_ATTACH_PROMPT,
+  KG_ATLAS_MAP_PROMPT,
+  KG_MAP_LINK_PROMPT,
+  KG_CARD_REATTACH_PROMPT,
   CARD_DISAMBIGUATE_PROMPT,
   // v46（M14-UM2，§4.18-13）：制卡族 v6→v7——组装 R20 记忆接地段（基础文本不变，v6 行留痕）
   CARD_GEN_PROMPT: CARD_GEN_PROMPT + R20_SITUATION_SECTION,

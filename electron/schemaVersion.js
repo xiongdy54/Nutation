@@ -5,14 +5,14 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const SCHEMA_VERSION = 7; // 每新增一个 MIGRATIONS 项就 +1，并与最后一项的 version 相等
+const SCHEMA_VERSION = 12; // 每新增一个 MIGRATIONS 项就 +1，并与最后一项的 version 相等
 
 // C-18a（审计）：due 表达式——只在「JSON 合法且 $.due 是数值」时取出，其余一律为 NULL
 // （NULL = 交给 JS 精确判定，见 db.js 的 TODAY_QUEUE_DUE_SQL 快速路径）。
 // 建索引与查询必须引用**同一个常量字符串**，SQLite 才能把查询表达式匹配到索引。
 const DUE_EXPR = "(CASE WHEN json_valid(fsrs_json) AND json_type(fsrs_json, '$.due') IN ('integer','real') THEN json_extract(fsrs_json, '$.due') END)";
 
-/** 未来的迁移写在这里：{ version: 6, name: "…", up(db) { db.exec("…") } }（当前最后一项为 version 7）。禁止修改已发布的项。 */
+/** 未来的迁移写在这里：{ version: 6, name: "…", up(db) { db.exec("…") } }（当前最后一项为 version 9）。禁止修改已发布的项。 */
 const MIGRATIONS = [
   {
     version: 2,
@@ -151,6 +151,116 @@ const MIGRATIONS = [
         );
         CREATE INDEX IF NOT EXISTS idx_decision_log_spec_hash ON decision_log(spec_id, input_hash, at);
         CREATE INDEX IF NOT EXISTS idx_decision_log_at ON decision_log(at);
+      `);
+    }
+  },
+  {
+    // v49.137 / D304：知识图谱（docs/design/KNOWLEDGE-GRAPH-DESIGN.md §12.1）。
+    // kp_definition_versions：定义版本只增不改（APPEND）；knowledge_points.description 镜像最新版。
+    // kg_events：合并 / 拆分 / 归档 / 恢复 / 关系确认的追加式事件（APPEND，Q7 裁决独立建表）。
+    // cards.facet：卡片考的侧面（definition/why/example/contrast/relation，可空）。
+    version: 8,
+    name: "knowledge_graph",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS kp_definition_versions (
+          id TEXT PRIMARY KEY,
+          kp_id TEXT NOT NULL,
+          seq INTEGER NOT NULL,
+          body TEXT NOT NULL,
+          author TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          source_ref_json TEXT,
+          created_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_kpdv_kp_seq ON kp_definition_versions(kp_id, seq);
+        CREATE TABLE IF NOT EXISTS kg_events (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          kp_id TEXT,
+          payload_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_kg_events_ts ON kg_events(ts);
+      `);
+      const cols = db.prepare("PRAGMA table_info(cards)").all().map((c) => c.name);
+      if (!cols.includes("facet")) db.exec("ALTER TABLE cards ADD COLUMN facet TEXT");
+    }
+  },
+  {
+    // v49.143 / D311 知识全谱：知识点＝对随包只读全谱节点的引用（atlas_id，Wikidata 数字 id）；
+    // 全谱外的私有节点必须有全谱上级（atlas_parent）。同一全谱节点只能对应一个未删除、未并入的知识点。
+    version: 9,
+    name: "kp_atlas_ref",
+    up(db) {
+      const cols = db.prepare("PRAGMA table_info(knowledge_points)").all().map((c) => c.name);
+      if (!cols.includes("atlas_id")) db.exec("ALTER TABLE knowledge_points ADD COLUMN atlas_id INTEGER");
+      if (!cols.includes("atlas_parent")) db.exec("ALTER TABLE knowledge_points ADD COLUMN atlas_parent INTEGER");
+      db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_kp_atlas ON knowledge_points(atlas_id) WHERE atlas_id IS NOT NULL AND is_deleted = 0 AND merged_into IS NULL");
+    }
+  },
+  {
+    // v49.146 / D314 导图 ↔ 图谱联动：导图节点对全谱节点的挂靠（source: ai | user | match）。
+    // 软删行保留＝用户已拒绝，补挂不再覆盖。
+    version: 10,
+    name: "material_map_node_refs",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS material_map_node_refs (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          map_id TEXT NOT NULL,
+          node_id TEXT NOT NULL,
+          atlas_id INTEGER NOT NULL,
+          source TEXT NOT NULL,
+          confidence REAL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          sync_version INTEGER NOT NULL DEFAULT 0,
+          is_deleted INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_mmrefs_key ON material_map_node_refs(map_id, node_id, atlas_id);
+        CREATE INDEX IF NOT EXISTS idx_mmrefs_atlas ON material_map_node_refs(atlas_id);
+      `);
+    }
+  },
+  {
+    // v49.146 / D315 全谱节点快照（LOCAL）：已挂靠节点的名称 / 说明 / 上级链，断网或无完整库时照常显示。
+    // 可由全谱重建的缓存，不是事实源，不同步。
+    version: 11,
+    name: "atlas_node_snapshots",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS atlas_node_snapshots (
+          atlas_id INTEGER PRIMARY KEY,
+          json TEXT NOT NULL,
+          atlas_built_at INTEGER,
+          updated_at INTEGER NOT NULL
+        );
+      `);
+    }
+  },
+  {
+    // v49.148 / D317 解除连线＝对当时的证据说「不」：无序对（kp_a < kp_b）+ 解除时的证据键快照。
+    // 证据都在快照里时不画；出现快照外的材料层 / 你的层新证据则重新以淡色推断线出现。撤销解除＝软删。
+    version: 12,
+    name: "knowledge_relation_dismissals",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS knowledge_relation_dismissals (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          kp_a TEXT NOT NULL,
+          kp_b TEXT NOT NULL,
+          evidence_keys_json TEXT NOT NULL DEFAULT '[]',
+          dismiss_count INTEGER NOT NULL DEFAULT 1,
+          dismissed_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          sync_version INTEGER NOT NULL DEFAULT 0,
+          is_deleted INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_krd_pair ON knowledge_relation_dismissals(kp_a, kp_b);
       `);
     }
   }

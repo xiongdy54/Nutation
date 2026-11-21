@@ -4488,8 +4488,8 @@ html[data-wb-open="1"][data-wb-place="right"] .app-main { margin-right: var(--wb
   border-color: transparent;
   cursor: default;
 }
-.review-bar .grade:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.review-bar .grade.recommended:focus-visible { outline-color: var(--ink); } /* 填充钮上 outline 取 --ink（§9/§7.4） */
+/* D320：评分钮自带整框，聚焦＝同一根框变强调色（不再外挂 2px 环；推荐档的 --ink 环随之退役——常态与他钮同灰，无填充） */
+.review-bar .grade:focus-visible { outline: none; border-color: var(--accent); }
 /* hover 抬升 -3px 专属档已删除（D120/方案 §4 禁抬升，.grade hover 位移全部移除）；按压反馈走 D88 块 .grade:active */
 /* 滚动根：仍是真滚动容器（面包屑测试 L251/L489 硬条件），底栏是它的最后一个流内子节点 */
 .review-wrap {
@@ -6759,7 +6759,7 @@ body.reader-surface {
   height: 32px; /* sm 档：与同排 .btn-sm 等高（原 padding 3px 8px 算出 ≈24px，同栏三种高度并存） */
   padding: 0 var(--sp-2);
 }
-.cb-search:focus { border-color: var(--border-strong); }
+.cb-search:focus { border-color: var(--accent); } /* D320：聚焦＝同一根框变强调色（环已去，灰阶加深不足以指示焦点） */
 .cb-table {
   margin: 0 var(--sp-4);
   border-top: var(--bw-hairline) solid var(--border-subtle);
@@ -7289,7 +7289,7 @@ body.reader-surface {
 }
 /* 原 `outline: none` 特异性压过全局 :focus-visible → 键盘焦点不可见。
    保留全局焦点环，这里只加边框加深作为附加提示。 */
-.journal-search:focus { border-color: var(--border-strong); }
+.journal-search:focus { border-color: var(--accent); } /* D320：同上 */
 .journal-search-meta {
   display: flex;
   align-items: center;
@@ -10930,6 +10930,8 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
   font-size: 12px;
   color: var(--accent);
   cursor: pointer;
+  /* .flow-layer 整层 pointer-events:none，只有显式声明的元素才可点；漏了这行按钮会把点击透传给下层正文 */
+  pointer-events: auto;
 }
 .flow-progress {
   height: 1px;
@@ -11095,6 +11097,15 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
 .ag-fold { background: none; border: none; padding: 0 2px; font: inherit; font-variant-numeric: tabular-nums; color: inherit; cursor: pointer; }
 .ag-fold:hover { color: color-mix(in srgb, var(--ag-fg) 90%, transparent); }
 .ag-fold-cell { position: absolute; right: 0; bottom: 2px; font-size: 10.5px; }
+/* v49.146（T4）：导图节点的全谱挂靠标记（小圆点 + 数量） */
+.ag-link { position: absolute; right: 0; top: 0; display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--accent); pointer-events: none; }
+.ag-link i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.atlas-card-links { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; font-size: 12px; }
+.atlas-card-links button { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.atlas-card-links .atlas-link-x { margin-left: 2px; color: var(--text-helper, inherit); text-decoration: none; }
+.atlas-card-links .atlas-add-link { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.atlas-card-links .atlas-add-link-input { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: transparent; color: inherit; min-width: 120px; }
+.atlas-card-links .atlas-add-link-hits { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; }
 .ag:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 60%, transparent); }
 .ag:hover .ag-text { color: var(--ag-fg); }
 .ag[data-kind="cell"]:hover, .ag[data-kind="colhead"]:hover { box-shadow: none; }
@@ -11151,4 +11162,35 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
 @media (prefers-reduced-motion: reduce) {
   .atlas-world, .atlas-stage .ag, .atlas-stage .atlas-svg path, .atlas-stage .atlas-svg rect, .atlas-stage .atlas-svg circle, .atlas-card,
   .reader-atlas-toggle-label, .reader-engine-controls > * { transition-duration: 0ms; transition-delay: 0ms; animation-duration: 0ms; animation-delay: 0ms; }
+}
+
+/* ============================================================
+   v49.151 / D320 键盘焦点口径（用户 2026-11-21：「大圈套小圈…黑框变成主题强调色框」）
+   静止态自带可见整框的控件：聚焦＝同一根框变 --accent，不再外挂全局 :focus-visible 的 2px 环。
+   无整框（透明框 / 只有下缘线 / 图标钮 / 勾选滑块 / 边框本就是 accent）的控件继续走全局环——
+   环仍是它们唯一的焦点指示（§5.1 不得移除焦点环且无等价替代）。
+   本节必须放在全文件末尾：与各类 :hover 的 border-color（同特异性）靠源序取胜。 */
+/* 文本类输入：:where 归零特异性，自带更具体 :focus-visible 规则的输入（.bare-num 等）不受影响 */
+input:where(:not([type="checkbox"], [type="radio"], [type="range"])):focus-visible,
+textarea:focus-visible,
+select:focus-visible { outline: none; border-color: var(--accent); }
+/* 描边按钮 / 小芯片：已处于 active / on / 选中态者边框本就是 accent，聚焦无可见变化，故排除（保留环） */
+.btn-outline:focus-visible,
+.btn-danger-outline:focus-visible,
+.dd-btn:focus-visible,
+.kb-key:not(.capturing):focus-visible,
+.swatch:not(.on):focus-visible,
+.btn-rail:focus-visible,
+.bg-activity-btn:not(.is-primary):focus-visible,
+.skin-card:not(.active):focus-visible,
+.growth-pager-btn:not([aria-current="page"]):focus-visible,
+.growth-pager-gap:focus-visible,
+.dict-lang-chip:not(.active):focus-visible { outline: none; border-color: var(--accent); }
+/* 例外：边框被去掉 / 本为透明的上下文——环是唯一指示，恢复全局环 */
+.side-dock .dd-btn:focus-visible,
+.wb-more .dd-btn:focus-visible,
+.reader-engine-controls .btn-outline:focus-visible,
+.growth-pager-input:focus-visible {
+  outline: var(--focus-outline-width) solid var(--focus-outline-color);
+  outline-offset: var(--focus-outline-offset);
 }
