@@ -2944,4 +2944,5 @@ export const en: Record<string, string | { one: string; other: string }> = {
   "这像一句话，不像一个知识点——可以改名，或只把它当卡片内容": "This reads like a sentence, not a knowledge point — rename it, or keep it as card content only",
   "名称偏长——知识点通常是一个术语": "The name is long — a knowledge point is usually a single term",
   "还没有定义：接受后可在图谱里补": "No definition yet: you can add one in the graph after accepting",
+  "复制 AI 输出的全部内容": "Copy the full AI output",
 };

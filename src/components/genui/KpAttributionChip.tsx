@@ -115,7 +115,7 @@ export default function KpAttributionChip({ draft, onChange }: { draft: CardDraf
   return (
     <span className="ai-kp-chip" data-testid="draft-kp" data-kp-state={state}>
       {editing ? (
-        <span className="ai-kp-edit">
+        <span className="ai-kp-chip-edit">
           <input
             className="ai-kp-input"
             value={val}
