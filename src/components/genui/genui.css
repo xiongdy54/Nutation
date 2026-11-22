@@ -378,16 +378,26 @@
 
 /* v49.138 / D305：AI 草稿的知识点归属标签 */
 .ai-draft-kp { margin-top: var(--sp-1); }
+/* v49.163 / D333：整枚标签只有一个框（外框）——名称输入、侧面下拉一律无边无底，与名称/状态/✕ 同排平铺；
+   聚焦（含键盘）＝外框转 accent，内部控件不再各画一圈（此前外框 + 输入框 + 下拉框 + 焦点环层层相套）。 */
 .ai-kp-chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  padding: 0 var(--sp-1);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xs);
+  gap: var(--sp-2);
+  min-height: 28px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0 var(--sp-2);
+  border: var(--bw-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-control);
   font-size: var(--fs-meta);
   color: var(--text-secondary);
+  transition: border-color var(--dur-hover) var(--ease-theme);
 }
+.ai-kp-chip:hover { border-color: var(--border-strong); }
+.ai-kp-chip:focus-within { border-color: var(--accent); }
+/* 草稿内占满一行：✕ 落行尾，与下方按钮行左缘对齐 */
+.ai-draft-kp .ai-kp-chip { display: flex; }
 .ai-kp-name, .ai-kp-clear {
   border: 0;
   background: none;
@@ -400,7 +410,7 @@
 .ai-kp-chip[data-kp-state="new"] .ai-kp-state { color: var(--accent); }
 .ai-kp-chip[data-kp-state="atlas"] .ai-kp-state { color: var(--text-primary); }
 /* v49.143 / D311：改挂时的全谱搜索结果 */
-.ai-kp-edit { position: relative; display: inline-flex; }
+.ai-kp-chip-edit { position: relative; display: inline-flex; flex: 1 1 8em; min-width: 6em; }
 .ai-kp-hits {
   position: absolute;
   z-index: 5;
@@ -439,6 +449,22 @@
   color: var(--text-primary);
   font-size: var(--fs-meta);
 }
+.ai-kp-chip :is(.ai-kp-input, .ai-kp-facet) {
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-meta);
+}
+.ai-kp-chip .ai-kp-input { width: 100%; min-width: 0; }
+.ai-kp-chip .ai-kp-facet { color: var(--text-secondary); cursor: pointer; }
+.ai-kp-chip .ai-kp-facet:hover { color: var(--text-primary); }
+/* 焦点由外框 :focus-within 指示（同一根框转 accent，D320 同款），内部控件不再叠焦点环 */
+.ai-kp-chip :is(.ai-kp-input, .ai-kp-facet):focus-visible { outline: none; }
+.ai-kp-chip .ai-kp-clear { margin-inline-start: auto; padding: 0 var(--sp-1); }
+.ai-kp-chip .ai-kp-clear:hover { color: var(--text-primary); }
 .ai-kp-suggest { border: 0; background: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
 /* v49.149 / D318：粒度提示与辨析卡（标签内换行占满一行；颜色只用 Token） */
 .ai-kp-chip { flex-wrap: wrap; }

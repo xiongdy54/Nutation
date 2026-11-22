@@ -4056,8 +4056,6 @@ html[data-wb-open="1"][data-wb-place="right"] .app-main { margin-right: var(--wb
 }
 .wb-a { position: relative; margin-top: var(--sp-2); }
 /* v48.104（D149 ⑤）：线程「制卡」钮常显（accent 字色轻量呈现）——去悬停才现的隐藏式交互 */
-.wb-a-acts { display: flex; }
-.wb-a-acts .ai-link { color: var(--accent); }
 .wb-composer {
   flex: none;
   display: flex;
@@ -4847,7 +4845,6 @@ html[data-wb-open="1"][data-wb-place="right"] .app-main { margin-right: var(--wb
   font-size: var(--fs-secondary);
 }
 .ai-kp-exp .ai-answer { font-size: var(--fs-secondary); }
-.ai-kp-exp-foot { display: flex; justify-content: flex-end; margin-top: var(--sp-2); }
 /* 批量制卡条：仅在有勾选时出现，吸底 */
 .ai-kps-bar {
   position: sticky;
@@ -10509,40 +10506,41 @@ html.wbw-occl-out .occlusion-editor-layer {
     transition: opacity var(--dur-exit) var(--ease-out-soft), visibility 0s var(--dur-panel);
   }
 }
-/* v48.104（D149 ⑤）：解释输出下方追问快捷钮精修——用户实测 btn-outline/secondary 直搬「粗糙笨重」。
-   坞内作用域覆盖：胶囊形（999px）26px 高、12px 字、hairline 描边无底色，hover 仅线色/字色加深
-   （D120：零抬升零阴影）；「就此制卡」（.btn-secondary）转 accent-soft 淡 accent 胶囊并靠右
-   （与四个追问钮语义分层：追问＝继续解读，制卡＝转场动作）。两行 .ai-actions 已并为一行（JSX）。 */
-.side-dock .ai-actions { margin-top: var(--sp-3); align-items: center; }
-.side-dock .ai-actions .btn-outline {
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
+/* v49.163 / D333：制卡台按钮统一规范（取代 D149 ⑤ 的坞内胶囊覆盖——其 .ai-actions .btn-secondary
+   选择器误伤 AI 制卡草稿行，「编辑 / 转翻转卡」变成靠右胶囊、「接受」仍为直角，同排两套形状）。
+   坞内所有 .btn-sm 同一几何：28px 高、--radius-control 圆角、--fs-secondary 字号、左对齐不外推；
+   只留三档语义——primary＝该区唯一主动作（接受 / 就此制卡 / 全部制卡）；secondary＝工具动作
+   （编辑 / 转翻转卡 / 复制）；outline＝轻量选项（追问 / 补上 / 整批拒绝 / 停止），hairline 描边、
+   次级字色，hover 只加深线色与字色（D120：零抬升零阴影）。发送钮随输入条另守 32px（.wb-composer-send）。 */
+.side-dock .ai-actions { margin-top: var(--sp-3); align-items: center; gap: var(--sp-2); }
+.side-dock .btn-sm:not(.wb-composer-send) {
+  height: 28px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-secondary);
+}
+.side-dock .btn-outline {
   border-color: var(--border-subtle);
   background: none;
-  font-size: var(--fs-meta);
   color: var(--text-secondary);
 }
-.side-dock .ai-actions .btn-outline:hover:not(:disabled) {
+.side-dock .btn-outline:hover:not(:disabled) {
   background: none;
   border-color: var(--border-strong);
   color: var(--text-primary);
 }
-.side-dock .ai-actions .btn-secondary {
-  height: 26px;
-  padding: 0 var(--sp-3);
-  margin-inline-start: auto;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: var(--fs-meta);
+.side-dock .btn .btn-ico { flex: none; }
+/* AI 输出底部动作条（解释主回答 / 追问线程 / 知识点解释同一规范）：左「复制」（secondary）、右制卡（primary）；
+   追问快捷钮行（.ai-followups，outline）紧随其下、左对齐。 */
+.ai-answer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
 }
-.side-dock .ai-actions .btn-secondary:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-hover, var(--accent)); }
-.side-dock .ai-actions .btn-secondary:disabled { background: var(--accent-soft); opacity: 0.5; }
-@media (prefers-reduced-motion: no-preference) {
-  .side-dock .ai-actions .btn-outline { transition: color var(--dur-hover) var(--ease-enter), border-color var(--dur-hover) var(--ease-enter); }
-  .side-dock .ai-actions .btn-secondary { transition: color var(--dur-hover) var(--ease-enter); }
-}
+.side-dock .ai-answer-foot + .ai-actions,
+.side-dock .ai-answer-foot ~ .ai-followups { margin-top: var(--sp-2); }
 @media (prefers-reduced-motion: reduce) {
   .wb-explain-clip,
   .wb-explain-clip > .collapse-inner,

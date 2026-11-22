@@ -5,7 +5,7 @@
 // v48.100（D144 #3）：explain 分支首行的「解读方式」切换器（D91 §5.2）退役——方式表达唯一归口＝
 // 解释板块悬浮按钮行（ExplainModeBar 四 ghost 钮，本文件导出）；切换即重跑（D91 §5.3）语义保留，
 // 由按钮行 / 事后建议钮经宿主 changeExplainMode 承载。
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { growTextarea } from "../lib/autoGrow";
 import { isImeComposing } from "../lib/ime";
 import ReadMarkdown from "./editor/ReadMarkdown";
@@ -16,7 +16,8 @@ import { parseFollowUps, type CardDraft, type CardGenMode, type FollowUpGroup, t
 import { isLikelySameText, parseSteMarkers, stripSteMarkers, type ExplainModePref } from "../lib/explainRouter";
 import Dropdown from "./Dropdown";
 import OcclusionShapes from "./OcclusionShapes";
-import { IconCheck, IconChevronDown, IconClose, IconPencil } from "./icons";
+import { IconCheck, IconChevronDown, IconClose, IconCopy, IconPencil } from "./icons";
+import { copyText } from "../lib/genui/clipboard";
 import type { AskThreadItem } from "../lib/useSelectionActions";
 import { useT } from "../lib/i18n";
 import { aiGateway } from "../lib/ai";
@@ -124,6 +125,60 @@ export function AIStatus({
   );
 }
 
+/** v49.163 / D333：AI 输出的「所见文本」——等同手动框选复制：克隆渲染结果，剔除组件工具条/按钮，
+    KaTeX 公式只留 TeX 源（去掉 HTML 渲染层，免得公式文字重复），离屏挂载后取 innerText（保留段落换行）。 */
+export function answerPlainText(el: HTMLElement | null, fallback: string): string {
+  if (!el) return fallback;
+  const clone = el.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll("button, [role='toolbar'], .nui-toolbar").forEach((n) => n.remove());
+  clone.querySelectorAll(".katex").forEach((k) => {
+    const tex = k.querySelector("annotation")?.textContent;
+    if (tex) k.replaceWith(document.createTextNode(k.closest(".katex-display") ? `$$${tex}$$` : `$${tex}$`));
+  });
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;left:-99999px;top:0;width:600px;white-space:normal;";
+  host.appendChild(clone);
+  document.body.appendChild(host);
+  const text = clone.innerText;
+  host.remove();
+  return text.replace(/\n{3,}/g, "\n\n").trim() || fallback;
+}
+
+/** v49.163 / D333：AI 输出块——回答正文 + 底部动作条（左：一键复制；右：宿主给的制卡动作）。
+    三处 AI 输出（解释页主回答 / 自由追问线程 / 知识点解释）共用，按钮排布与样式同一规范。 */
+export function AnswerBlock({ answer, ground, done, action }: { answer: string; ground: (string | null | undefined)[]; done: boolean; action?: ReactNode }) {
+  const T = useT();
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const copy = async () => {
+    const ok = await copyText(answerPlainText(ref.current, stripSteMarkers(answer).trim()));
+    if (!ok) return;
+    setCopied(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopied(false), 1400);
+  };
+  return (
+    <>
+      <div className="ai-answer" ref={ref}>
+        {/* v48.74（D118 §3①）：渲染前剥离 <!--ste:…--> 机器标记——react-markdown@10 会把未挂 rehype-raw 的
+            HTML 注释以转义文本渲染出来；answer 数据层原样保留（parseSteMarkers / 相似性判定不受影响） */}
+        <GenUIPanelSurface ground={ground}><ReadMarkdown text={normalizeComponentFences(stripSteMarkers(answer))} /></GenUIPanelSurface>
+      </div>
+      {done && (
+        <div className="ai-answer-foot" data-testid="ai-answer-foot">
+          <button type="button" className="btn btn-secondary btn-sm" data-testid="ai-answer-copy" title={T("复制 AI 输出的全部内容")} onClick={() => void copy()}>
+            {copied ? <IconCheck size={14} className="btn-ico" /> : <IconCopy size={14} className="btn-ico" />}
+            {copied ? T("已复制") : T("复制")}
+          </button>
+          {action}
+        </div>
+      )}
+    </>
+  );
+}
+
 /** AI 解释页：自由追问线程（每条回复悬停出现「制卡」＝以该回复为材料走 AI 制卡） */
 export function ExplainThread({ items, onMake }: { items: AskThreadItem[]; onMake: (answer: string) => void }) {
   const T = useT();
@@ -137,16 +192,16 @@ export function ExplainThread({ items, onMake }: { items: AskThreadItem[]; onMak
           {it.error && <div className="ai-error">{it.error}</div>}
           {it.answer && (
             <div className="wb-a">
-              <div className="ai-answer">
-                <GenUIPanelSurface ground={[it.src, it.q, it.answer]}><ReadMarkdown text={normalizeComponentFences(stripSteMarkers(it.answer))} /></GenUIPanelSurface>
-              </div>
-              {!it.running && (
-                <div className="wb-a-acts">
-                  <button type="button" className="ai-link" onClick={() => onMake(it.answer as string)}>
-                    {T("制卡")}
+              <AnswerBlock
+                answer={it.answer}
+                ground={[it.src, it.q, it.answer]}
+                done={!it.running}
+                action={
+                  <button type="button" className="btn btn-primary btn-sm" onClick={() => onMake(it.answer as string)}>
+                    {T("就此制卡")}
                   </button>
-                </div>
-              )}
+                }
+              />
             </div>
           )}
         </div>
@@ -396,21 +451,21 @@ function FollowUpList({
                 {busy && <div className="ai-kp-note mono">{T("补充制卡中…")}</div>}
                 {isOpen && exp?.answer && (
                   <div className="ai-kp-exp">
-                    <div className="ai-answer">
-                      <GenUIPanelSurface ground={[panel.text, item, exp.question, exp.answer]}><ReadMarkdown text={normalizeComponentFences(stripSteMarkers(exp.answer))} /></GenUIPanelSurface>
-                    </div>
-                    {!exp.running && (
-                      <div className="ai-kp-exp-foot">
+                    <AnswerBlock
+                      answer={exp.answer}
+                      ground={[panel.text, item, exp.question, exp.answer]}
+                      done={!exp.running}
+                      action={
                         <button
                           type="button"
-                          className="btn btn-outline btn-sm"
+                          className="btn btn-primary btn-sm"
                           disabled={busy || panel.running}
                           onClick={() => void onFollowUpCards(text, g.kpTitle, exp.answer)}
                         >
                           {T("制卡")}
                         </button>
-                      </div>
-                    )}
+                      }
+                    />
                   </div>
                 )}
               </div>
@@ -568,12 +623,17 @@ export default function AIPanel({
 
         {panel.kind === "explain" && panel.answer && (
           <>
-            <div className="ai-answer">
-              {/* v48.74（D118 §3①）：渲染前剥离 <!--ste:…--> 机器标记——react-markdown@10 会把
-                  未挂 rehype-raw 的 HTML 注释以转义文本渲染出来（D91 的「不可见」假设不成立）；
-                  panel.answer 数据层原样保留（parseSteMarkers / 相似性判定不受影响） */}
-              <GenUIPanelSurface ground={[panel.text, panel.answer]}><ReadMarkdown text={normalizeComponentFences(stripSteMarkers(panel.answer))} /></GenUIPanelSurface>
-            </div>
+            {/* v49.163 / D333：底部动作条＝左「复制」右「就此制卡」（主动作 primary）；追问快捷钮另起一行（outline 轻量选项） */}
+            <AnswerBlock
+              answer={panel.answer}
+              ground={[panel.text, panel.answer]}
+              done={!panel.running}
+              action={
+                <button className="btn btn-primary btn-sm" disabled={panel.running} onClick={onMakeCards}>
+                  {T("就此制卡")}
+                </button>
+              }
+            />
             {weakModel && isSteAnswer && !panel.running && (
               <div className="ai-suggest" data-testid="ste-weak-model">
                 <span>{T("当前模型较小，简明解释可能达不到规范要求；建议在设置中换用更强的模型。")}</span>
@@ -588,17 +648,13 @@ export default function AIPanel({
                 </button>
               </div>
             )}
-            {/* v48.104（D149 ⑤）：追问快捷钮与「就此制卡」合并为一行胶囊链（样式在 theme.css
-                .ai-actions 作用域精修）；「就此制卡」margin-inline-start:auto 靠右、accent-soft 淡色 */}
-            <div className="ai-actions">
+            {/* v49.163 / D333：追问快捷钮（outline 轻量选项；「就此制卡」已移入上方动作条） */}
+            <div className="ai-actions ai-followups">
               {([["通俗解释", "通俗解释"], ["严格定义", "严格定义"], ["举个例子", "举个例子"], ["为什么", "为什么会这样"]] as const).map(([label, q]) => (
                 <button key={label} className="btn btn-outline btn-sm" onClick={() => (onAsk ? onAsk(q) : onExplain(q))}>
                   {T(label)}
                 </button>
               ))}
-              <button className="btn btn-secondary btn-sm" disabled={panel.running} onClick={onMakeCards}>
-                {T("就此制卡")}
-              </button>
             </div>
           </>
         )}
