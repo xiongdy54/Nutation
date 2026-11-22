@@ -432,7 +432,17 @@ function createMindmapEngineV2(deps) {
     const textReady = !!(S && S.complete);
     if (!map) return { meta: null, nodes: [], edges: [], view: null, textReady };
     const g = loadGraph(map.id);
-    return { meta: metaOf(g.map), nodes: g.rows.map(toV2Node), edges: g.edges.map(toV2Edge), view: g.map.view || null, textReady };
+    // 诊断 P1-c：streaming 只在内存、任务开始时发一次 delta；之后才打开的视图从库里读不到 →
+    // 读图时把本图排队 / 运行中任务的目标节点叠加为 streaming（任务收尾 delta 会把状态改回）
+    const live = new Set();
+    for (const e of scheduler.entries()) {
+      if (e && e.meta && String(e.meta.mapId) === String(map.id) && e.meta.nodeId != null && (e.meta.kind === "expand" || e.meta.kind === "outline")) live.add(String(e.meta.nodeId));
+    }
+    const nodes = g.rows.map((r) => {
+      const n = toV2Node(r);
+      return live.has(String(n.id)) ? Object.assign({}, n, { state: "streaming" }) : n;
+    });
+    return { meta: metaOf(g.map), nodes, edges: g.edges.map(toV2Edge), view: g.map.view || null, textReady };
   }
 
   // ---------- 增量广播批次 ----------
@@ -559,6 +569,10 @@ function createMindmapEngineV2(deps) {
       }
     }
     const stats = parser.end();
+    // D329：流正常结束却没有任何正文（推理模型只吐思考、网关截流）＝失败，不能当「成功但零产出」
+    if (!error && !cached && !raw.trim()) {
+      error = codeErr("empty_reply", reasoningChars > 0 ? "模型只返回了思考过程，没有给出结果" : "模型没有返回任何内容");
+    }
     const cancelled = !!(error && (error.code === "cancelled" || (signal && signal.aborted)));
     // 出错（含取消）按中断装配：已校验行照样落库；目标无子节点时保持 more
     const res = assembler.finish({ finishReason, aborted: !!error });
@@ -576,10 +590,12 @@ function createMindmapEngineV2(deps) {
     let committed = false, commitError = null, activated = false;
     const removed = [];
     if (upserts.length || states.length || res.edges.length) {
-      const activate = !!(J.gen && !J.gen.activated && hasLiveAi);
+      // D329：已有激活版本时（重新生成）不在首批就顶替旧图，留到收尾按整轮结果决定
+      const activate = !!(J.gen && !J.gen.activated && !J.gen.deferActivate && hasLiveAi);
       try {
         store.commitMaterialMapJob({ mapId: J.mapId, jobId: J.jobId, upserts, states, edges: res.edges, activate, replaceSubtrees: replace || undefined });
         committed = true;
+        if (J.gen && hasLiveAi) J.gen.hasAi = true;
         if (activate) { J.gen.activated = true; activated = true; }
         if (replace) {
           const keep = new Set(upserts.map((r) => r.nodeId));
@@ -649,6 +665,9 @@ function createMindmapEngineV2(deps) {
     return {
       ok, aborted: cancelled, cached, called: cached ? 0 : 1, committed, error: error ? String(error.code || "error") : commitError ? "commit" : null,
       finishReason, targetState: finalState,
+      // 撤销原因诊断（D328）：整轮零产出时据此告诉用户为什么
+      errorMsg: error ? String(error.message || error.code || "error") : commitError ? String(commitError.message || "commit") : null,
+      lines: stats.lines, dropped: stats.dropped, byReason: stats.byReason, reasoningChars, aiCommitted: committed && hasLiveAi,
     };
   }
 
@@ -700,6 +719,8 @@ function createMindmapEngineV2(deps) {
       activated: !!o.activated, filter: o.filter || null, skeletonFinal: !!o.skeletonFinal, startedAt: now(),
       released: new Set(), total: 0, pending: 0, done: 0, ok: 0, failed: 0, cancelledJobs: 0, calls: 0,
       cancelled: false, finished: false,
+      diag: { errors: new Map(), commitFail: 0, emptyReplies: 0, truncated: 0, lines: 0, dropped: 0, byReason: {}, reasoning: 0 },
+      deferActivate: !!o.deferActivate, hasAi: false,
     };
     gens.set(G.runId, G);
     return G;
@@ -738,6 +759,18 @@ function createMindmapEngineV2(deps) {
     else if (v && v.aborted) G.cancelledJobs++;
     else G.failed++;
     if (v && v.called) G.calls += v.called;
+    const D = G.diag;
+    const errMsg = e ? (e.code === "cancelled" ? null : String(e.message || e.code || "error")) : v && !v.ok && !v.aborted ? v.errorMsg : null;
+    if (errMsg) D.errors.set(errMsg, (D.errors.get(errMsg) || 0) + 1);
+    if (v) {
+      if (v.error === "commit") D.commitFail++;
+      if (v.error === "empty_reply") D.emptyReplies++;
+      if (v.finishReason === "length") D.truncated++;
+      D.lines += v.lines || 0;
+      D.dropped += v.dropped || 0;
+      D.reasoning += v.reasoningChars || 0;
+      for (const [k, n] of Object.entries(v.byReason || {})) D.byReason[k] = (D.byReason[k] || 0) + n;
+    }
     if (G.finished) return;
     genProgress(G);
     genMaybeFinish(G);
@@ -755,8 +788,14 @@ function createMindmapEngineV2(deps) {
     else if (G.failed > 0 && G.ok === 0) stage = "failed";
     else if (G.failed > 0 || G.cancelledJobs > 0) stage = "partial";
     else stage = "completed";
-    let deleted = false;
-    if (!G.activated) {
+    let deleted = false, kept = false;
+    if (!G.activated && G.deferActivate && G.hasAi) {
+      // D329：重新生成——整轮全部成功才顶替旧图；有失败段则保留为未激活版本（「版本」里可查看 / 切换），旧图不动
+      if (stage === "completed") {
+        try { store.commitMaterialMapJob({ mapId: G.mapId, jobId: null, upserts: [], activate: true }); G.activated = true; } catch { kept = true; }
+      } else kept = true;
+    }
+    if (!G.activated && !kept) {
       if (stage === "completed" && G.total === 0) {
         // 全部作用域封顶（零调用）：骨架即成品，照常激活
         try { store.commitMaterialMapJob({ mapId: G.mapId, jobId: null, upserts: [], activate: true }); G.activated = true; } catch { /* 下面按失败处理 */ }
@@ -767,6 +806,22 @@ function createMindmapEngineV2(deps) {
         if (!code && stage !== "cancelled") code = "no_commit";
       }
     }
+    // D328：撤销时给出原因（ai_error / commit / unparsable / truncated / reasoning_truncated / no_output）+ 细节
+    let reason = null, detail = null;
+    if ((deleted || kept) && stage !== "cancelled") {
+      const D = G.diag;
+      const topOf = (entries) => entries.sort((a, b) => b[1] - a[1])[0] || null;
+      if (G.failed > 0 && (G.ok === 0 || kept)) {
+        if (D.commitFail > 0) reason = "commit";
+        else if (D.emptyReplies >= G.failed) reason = D.reasoning > 0 ? "reasoning_truncated" : "no_output";
+        else { reason = "ai_error"; const t = topOf([...D.errors]); detail = t ? t[0] : null; }
+      } else if (D.lines > 0 && D.dropped >= D.lines) {
+        reason = "unparsable";
+        const t = topOf(Object.entries(D.byReason).filter(([, n]) => n > 0));
+        detail = t ? t[0] : null;
+      } else if (D.truncated > 0) reason = D.reasoning > 0 ? "reasoning_truncated" : "truncated";
+      else reason = "no_output";
+    }
     const M = metricsByMap.get(G.mapId);
     if (M && stage !== "cancelled" && M.frameworkMs == null) M.frameworkMs = now() - G.startedAt;
     const snap = M ? metricsSnap(M) : null;
@@ -775,14 +830,15 @@ function createMindmapEngineV2(deps) {
       store.updateMaterialMapRun(G.runId, {
         status: stage, stage, callsPlanned: G.total, callsDone: G.calls, errorCode: code,
         actualPromptTokens: snap ? snap.promptTokens : null, actualCompletionTokens: snap ? snap.completionTokens : null,
-        output: { mapId: deleted ? null : G.mapId, deleted, metrics: snap },
+        output: { mapId: deleted ? null : G.mapId, deleted, kept, failedJobs: G.failed, metrics: snap, reason, detail, diag: { lines: G.diag.lines, dropped: G.diag.dropped, byReason: G.diag.byReason, truncated: G.diag.truncated, reasoningChars: G.diag.reasoning, errors: [...G.diag.errors] } },
       });
     } catch { /* 记录失败不影响广播 */ }
     emitChanged({
       runId: G.runId, documentId: G.documentId, title: G.title, stage, done: G.done, total: G.total, calls: G.calls,
       mapId: deleted ? null : G.mapId, published: G.activated && !deleted, label: genLabel(G), code: code || undefined,
+      reason: reason || undefined, detail: detail || undefined, kept: kept || undefined, failedJobs: G.failed, totalJobs: G.total,
     });
-    emitDelta({ documentId: G.documentId, mapId: G.mapId, jobId: null, kind: "run", runDone: { stage, deleted }, metrics: snap || undefined });
+    emitDelta({ documentId: G.documentId, mapId: G.mapId, jobId: null, kind: "run", runDone: { stage, deleted, kept, failedJobs: G.failed, totalJobs: G.total, reason, detail }, metrics: snap || undefined });
   }
 
   async function graphGenerate(p) {
@@ -797,6 +853,8 @@ function createMindmapEngineV2(deps) {
     scheduler.setMaxConcurrency(ai.settings.concurrency);
     const pv = { outline: promptOf("outline").version, expand: promptOf("expand").version, explain: promptOf("explain").version };
     const skeleton = V.skeletonRows(S.skeleton, S.blocks, S.complete ? Infinity : S.unitsReady, S.scopes);
+    let prevActive = null;
+    try { prevActive = store.getActiveMaterialMap(docId, "book"); } catch { prevActive = null; }
     const { mapId } = store.createMaterialMapV2({
       documentId: docId, title: S.title,
       meta: { title: S.title, blocksVersion: B.UNIT_BLOCKS_VERSION, outlineVersion: O.OUTLINE_VERSION, promptVersions: pv, model: ai.model },
@@ -808,7 +866,7 @@ function createMindmapEngineV2(deps) {
     store.updateMaterialMapRun(run.id, { status: "running", stage: "running", provider: ai.provider, model: ai.model, promptVersion: pv.outline });
     consent.add(mapId);
     metricsByMap.set(mapId, newMetrics(ai.model));
-    const G = newGen({ runId: run.id, mapId, S, noCache: !!o.force, activated: false, skeletonFinal: S.complete });
+    const G = newGen({ runId: run.id, mapId, S, noCache: !!o.force, activated: false, skeletonFinal: S.complete, deferActivate: !!prevActive });
     emitDelta({ documentId: docId, mapId, jobId: null, kind: "skeleton", nodes: skeleton.map(toV2Node) });
     genProgress(G);
     genRelease(G, S.scopes);
@@ -842,9 +900,11 @@ function createMindmapEngineV2(deps) {
     store.updateMaterialMapRun(runId, { status: "running", stage: "running" });
     if (!metricsByMap.has(map.id)) metricsByMap.set(map.id, newMetrics((await aiInfo()).model));
     const G = newGen({
-      runId, mapId: map.id, S, activated: !!map.isActive || rows.some((r) => r.source === "ai"),
+      // D329：续跑一个未激活的「保留版本」时同样延后激活——补齐全部分片才顶替当前激活版本
+      runId, mapId: map.id, S, activated: !!map.isActive, deferActivate: !map.isActive,
       filter: (sc) => !done.has(sc.scopeId), skeletonFinal: false,
     });
+    G.hasAi = rows.some((r) => r.source === "ai");
     if (S.complete) { G.skeletonFinal = true; refreshSkeleton(map.id, S); }
     genProgress(G);
     genRelease(G, S.scopes);
@@ -1380,12 +1440,20 @@ function createMindmapEngineV2(deps) {
     const S = sessions.get(docId);
     const notReady = { ready: false };
     if (!S || !S.blocks.length) return notReady;
-    const ui = Core.linearUnitIndexOf ? Core.linearUnitIndexOf(S.linear, String(o.unitAnchor || "")) : S.units.indexOf(String(o.unitAnchor || ""));
+    let ui = Core.linearUnitIndexOf ? Core.linearUnitIndexOf(S.linear, String(o.unitAnchor || "")) : S.units.indexOf(String(o.unitAnchor || ""));
     if (ui < 0 || ui >= S.unitsReady) return notReady;
     touch(S);
-    const base = S.linear.unitBase[ui];
-    const end = ui + 1 < S.linear.unitBase.length ? S.linear.unitBase[ui + 1] - 1 : S.linear.text.length;
-    const off = looseIndexOf(S.linear.text.slice(base, end), o.text);
+    const spanOf = (i) => [S.linear.unitBase[i], i + 1 < S.linear.unitBase.length ? S.linear.unitBase[i + 1] - 1 : S.linear.text.length];
+    let [base, end] = spanOf(ui);
+    let off = looseIndexOf(S.linear.text.slice(base, end), o.text);
+    // 诊断 P3-f：一个文件按目录 #fragment 细分成多个单元时，探针只知道文件 → 在同文件的后续单元里继续找
+    const fileOf = (a) => String(a == null ? "" : a).split("#")[0];
+    const file = fileOf(S.units[ui]);
+    for (let j = ui + 1; off < 0 && j < S.unitsReady && fileOf(S.units[j]) === file; j++) {
+      const [b2, e2] = spanOf(j);
+      const k = looseIndexOf(S.linear.text.slice(b2, e2), o.text);
+      if (k >= 0) { ui = j; base = b2; end = e2; off = k; }
+    }
     const pos = base + Math.max(0, off);
     // 所在块：本单元内首个 end > pos 的块；单元无块（空单元）→ 之前最近的块
     let blk = null;

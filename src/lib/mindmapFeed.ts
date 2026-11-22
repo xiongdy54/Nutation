@@ -4,6 +4,8 @@
 // 主进程会话有 LRU（3 份文档）：被挤出后 graphLocate 返回 ready:false，调用方 reset() 后重新 ensure 即可。
 import type { ReaderTocItem, SectionUnitInfo } from "./reader/kernel";
 import { mindmapV2Api } from "./mindmapV2";
+import { fragmentPlan } from "./reader/fragmentSplit";
+import { stripRunningLines } from "./pdfRunning";
 
 export interface TocItem {
   anchor: string;
@@ -18,6 +20,15 @@ export interface FeedKernel {
   getTOC(): ReaderTocItem[];
   getSectionAnchors?(): SectionUnitInfo[];
   getSectionText?(startAnchor: string, endAnchor?: string): Promise<string>;
+  getSectionTextParts?(anchor: string, fragments: string[]): Promise<string[]>;
+}
+
+function flatAnchors(items: TocItem[], out: string[] = []): string[] {
+  for (const t of items) {
+    out.push(t.anchor);
+    if (t.children) flatAnchors(t.children, out);
+  }
+  return out;
 }
 
 export interface FeedState {
@@ -28,6 +39,8 @@ export interface FeedState {
   /** 不支持取文（无章节单元）的材料 */
   unsupported: boolean;
   error?: string;
+  /** 已送入原文的总字数（诊断 P3-e：送完仍为 0 ＝ 无文字层，如扫描版 PDF） */
+  chars?: number;
 }
 
 type Listener = (s: FeedState) => void;
@@ -104,24 +117,60 @@ export function ensureFed(kernel: FeedKernel, documentId: string, title: string)
       return s;
     }
     e.toc = flattenToc(kernel.getTOC());
-    const unitAnchors = anchors.map((a) => a.anchor);
-    emit(e, { done: 0, total: anchors.length, complete: false, unsupported: false });
-    for (let i = 0; i < anchors.length; i++) {
+    // 诊断 P3-f：同一文件有多个目录项（#fragment）→ 该文件细分成 [A, A#f1, A#f2…] 多个单元，每章拿到自己的原文
+    const plan = kernel.getSectionTextParts ? fragmentPlan(flatAnchors(e.toc)) : new Map<string, string[]>();
+    const units: { anchor: string; file: string; part: number; frags: string[] | null }[] = [];
+    for (const a of anchors) {
+      const base = a.anchor.split("#")[0];
+      const frags = plan.get(base) ?? null;
+      units.push({ anchor: a.anchor, file: a.anchor, part: 0, frags });
+      if (frags) frags.forEach((f, k) => units.push({ anchor: `${base}#${f}`, file: a.anchor, part: k + 1, frags }));
+    }
+    const unitAnchors = units.map((u) => u.anchor);
+    const total = units.length;
+    emit(e, { done: 0, total, complete: false, unsupported: false });
+    let partsOf: { file: string; parts: string[] } | null = null;
+    let chars = 0;
+    // PDF 逐页单元：缓存原始页文本（按单元下标），供剔除页眉/页脚时比对相邻页。
+    const rawPdfPages = new Map<number, string>();
+    const rawPdfPage = async (k: number): Promise<string> => {
+      const hit = rawPdfPages.get(k);
+      if (hit !== undefined) return hit;
+      let t = "";
+      try {
+        t = (await kernel.getSectionText?.(units[k].anchor)) ?? "";
+      } catch {
+        t = "";
+      }
+      rawPdfPages.set(k, t);
+      return t;
+    };
+    for (let i = 0; i < total; i++) {
+      const u = units[i];
       let text = "";
       try {
-        text = await kernel.getSectionText(anchors[i].anchor);
+        if (u.anchor.startsWith("pdfpage:")) {
+          const arr: (string | undefined)[] = new Array(total);
+          for (let k = Math.max(0, i - 2); k <= Math.min(total - 1, i + 2); k++) arr[k] = await rawPdfPage(k);
+          text = stripRunningLines(arr, i);
+          rawPdfPages.delete(i - 2); // 之后只会再看 i-1 起的页
+        } else if (u.frags && kernel.getSectionTextParts) {
+          if (!partsOf || partsOf.file !== u.file) partsOf = { file: u.file, parts: await kernel.getSectionTextParts(u.file, u.frags) };
+          text = partsOf.parts[u.part] ?? "";
+        } else text = await kernel.getSectionText(u.anchor);
       } catch {
         text = "";
       }
       try {
-        await mindmapV2Api.feed({ documentId, title, tocItems: e.toc, unitAnchors, index: i, text, last: i === anchors.length - 1 });
+        await mindmapV2Api.feed({ documentId, title, tocItems: e.toc, unitAnchors, index: i, text, last: i === total - 1 });
       } catch (err) {
-        const s = { done: i, total: anchors.length, complete: false, unsupported: false, error: err instanceof Error ? err.message : String(err) };
+        const s = { done: i, total, complete: false, unsupported: false, error: err instanceof Error ? err.message : String(err) };
         emit(e, s);
         e.promise = null; // 允许重试
         return s;
       }
-      emit(e, { done: i + 1, total: anchors.length, complete: i === anchors.length - 1, unsupported: false });
+      chars += text.trim().length;
+      emit(e, { done: i + 1, total, complete: i === total - 1, unsupported: false, chars });
     }
     return e.state;
   })();

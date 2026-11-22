@@ -50,6 +50,8 @@ export interface AIConfig {
   /** C-20：系统密钥库强度——secure / weak（Linux basic_text，等同明文）/ none */
   encryptionStrength?: "secure" | "weak" | "none";
   reasoningEffort?: string;
+  /** D331：思考模式 auto（保持模型默认）/ off / on */
+  thinking?: "auto" | "off" | "on";
   presets?: AiPresetMeta[];
 }
 

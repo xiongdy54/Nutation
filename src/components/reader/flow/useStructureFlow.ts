@@ -38,6 +38,8 @@ export interface StructureFlowData {
   graph: GraphState | null;
   feed: FeedState;
   busy: string | null;
+  /** 诊断 P1-a/b：生成中的提示文字目标（节点标题；""＝尚未定位到节点）；null＝没有在生成 */
+  generating: string | null;
   hasKey: boolean;
   /** 注意力判定：当前组 + 阅读节点（§12.4） */
   groupId: string | null;
@@ -82,6 +84,8 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
   const graphRef = useRef<GraphState | null>(null);
   graphRef.current = graph;
   const [busy, setBusy] = useState<string | null>(null);
+  /** 「为本节生成 / 深挖」的目标节点（生成中提示用） */
+  const [busyNodeId, setBusyNodeId] = useState<string | null>(null);
   const busyRef = useRef(busy);
   busyRef.current = busy;
   const [hasKey, setHasKey] = useState(true);
@@ -284,6 +288,7 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
     setFeed({ done: 0, total: 0, complete: false, unsupported: false });
     setGraph(null);
     setBusy(null);
+    setBusyNodeId(null);
     setStatus("");
     setSel(null);
     setHoverId(null);
@@ -405,7 +410,8 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
       if (d.jobDone && d.jobId) {
         if (d.jobId === busyRef.current) {
           setBusy(null);
-          if (!d.jobDone.ok && !(d.jobDone as { aborted?: boolean }).aborted) showStatusSoon(T("没能生成：{msg}", { msg: d.jobDone.error || "" }), 6000);
+          setBusyNodeId(null);
+          if (!d.jobDone.ok && !(d.jobDone as { aborted?: boolean }).aborted) showStatusSoon(T("没能生成：{msg}", { msg: d.jobDone.error || "" }), 0);
           scheduleSample(0);
         }
         if (d.jobId === explainJobRef.current) {
@@ -515,9 +521,12 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
   }, [active, kernel]);
   useEffect(() => () => kernel?.setStructureTargets?.(EMPTY_TARGETS), [kernel]);
 
+  /** ms<=0：常驻到下一次操作（失败信息不能一闪而过，诊断 P1-e） */
   function showStatusSoon(text: string, ms = 4000) {
     setStatus(text);
     if (statusTimer.current != null) window.clearTimeout(statusTimer.current);
+    statusTimer.current = null;
+    if (ms <= 0) return;
     statusTimer.current = window.setTimeout(() => {
       statusTimer.current = null;
       setStatus("");
@@ -586,8 +595,10 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
     const doc = documentId;
     genRunRef.current = doc;
     const stale = () => docRef.current !== doc;
+    if (statusTimer.current != null) window.clearTimeout(statusTimer.current);
     setStatus("");
     setBusy("pending");
+    setBusyNodeId(null);
     try {
       // 主进程最多保留 MAX_SESSIONS 份原文会话；本文档的会话被挤出后，前端送原文状态仍是「已送完」，
       // 于是 ensureMap 报「原文尚未送完」、locate 返回未就绪。遇到这两种情况：重送一次原文，再从头试一次。
@@ -634,15 +645,20 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
       if (stale()) return;
       if (r.skipped) {
         setBusy(null);
+        setBusyNodeId(null);
         // 本节原文太短（作用域被判 floor）时主进程按「已展开」跳过——如实说「已是最细」
         const why = r.skipped === "cached" && scope.floor ? "floor" : r.skipped;
         showStatus(T(SKIP[why] || why));
-      } else setBusy(r.jobId || null);
+      } else {
+        setBusy(r.jobId || null);
+        setBusyNodeId(r.jobId ? scope.id : null);
+      }
       scheduleSample(0);
     } catch (err) {
       if (stale()) return;
       setBusy(null);
-      showStatus(T("没能生成：{msg}", { msg: err instanceof Error ? err.message : String(err) }), 6000);
+      setBusyNodeId(null);
+      showStatus(T("没能生成：{msg}", { msg: err instanceof Error ? err.message : String(err) }), 0);
     } finally {
       if (genRunRef.current === doc) genRunRef.current = null;
     }
@@ -655,10 +671,11 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
       if (r.skipped) showStatus(T(SKIP[r.skipped] || r.skipped));
       else {
         setBusy(r.jobId || null);
-        showStatus(T("正在把这一点再分出一层…"), 2600);
+        setBusyNodeId(r.jobId ? id : null);
+        setStatus("");
       }
     } catch (err) {
-      showStatus(T("没能生成：{msg}", { msg: err instanceof Error ? err.message : String(err) }), 6000);
+      showStatus(T("没能生成：{msg}", { msg: err instanceof Error ? err.message : String(err) }), 0);
     }
   };
   const explain = async (id: string) => {
@@ -688,11 +705,23 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
 
   const explainText = explainFor ? graph?.explain[explainFor] || graph?.nodes[explainFor]?.explain || explainLocal[explainFor] || "" : "";
   const explainBusy = !!(explainFor && explainBusyId === explainFor);
+  // 生成中提示：自己发起的任务优先；否则任一节点处于 streaming（别处发起 / 多分片 outline 仍在跑）
+  let generating: string | null = null;
+  if (busy) generating = busy !== "pending" && busyNodeId && graph?.nodes[busyNodeId] ? String(graph.nodes[busyNodeId].title ?? "") : "";
+  else if (graph) {
+    for (const id in graph.nodes) {
+      if (graph.nodes[id]?.state === "streaming") {
+        generating = String(graph.nodes[id].title ?? "");
+        break;
+      }
+    }
+  }
 
   return {
     graph,
     feed,
     busy,
+    generating,
     hasKey,
     groupId,
     readingId,

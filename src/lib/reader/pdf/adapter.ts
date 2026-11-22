@@ -23,13 +23,18 @@ import type {
   ReaderKernel,
   ReaderLocation,
   ReaderModeConfig,
+  ReaderParagraphBox,
+  ReaderReadingProbe,
   ReaderRect,
+  ReaderStructureGeometry,
+  ReaderStructureTarget,
   ReaderSelection,
   ReaderTocItem,
   RelocateInfo,
   SourceAnchorGeometry
 } from "../kernel";
 import { createMultiHighlight } from "../multiHighlight";
+import { buildTextIndex, findFlatSpan, spanToRange } from "../textRange";
 import { t } from "../../i18n";
 import { drawBadges } from "../badges";
 import { annotSoft, annotSolid } from "../annotColor";
@@ -310,6 +315,89 @@ export function createPdfKernel(host: HTMLElement): ReaderKernel {
   eventBus.on("scalechanging", syncMarks);
   eventBus.on("scalechanged", syncMarks);
 
+  // ---------- 结构流（docs/design/STRUCTURE-GRAPH-DIAGNOSIS-2026-11.md P3-a）：页内文字探针 + 节点 → 文本层几何 ----------
+  // PDF 没有段落元素：阅读位置取视口取样线所在页、取样线下方最近的文本层行；节点几何＝首尾探针在该页文本层里的 Range 外接框。
+  const scrollHandlers = new Set<() => void>();
+  const onScrollTick = () => scrollHandlers.forEach((h) => { try { h(); } catch { /* 宿主错误不影响阅读 */ } });
+  container.addEventListener("scroll", onScrollTick, { passive: true });
+  let structTargets: ReaderStructureTarget[] = [];
+  let geoSeq = 0;
+  const pageOfAnchor = (a: string) => {
+    const m = /^pdfpage:(\d+)/.exec(String(a ?? ""));
+    return m ? Number(m[1]) : null;
+  };
+  const pageEl = (p0: number) => viewerEl.querySelector(`.page[data-page-number="${p0 + 1}"]`) as HTMLElement | null;
+  /** 取样线 y（client）→ { 页（0 基）, 该线下方最近一行起的 ≤80 字 } */
+  const probeAt = (y: number): { page: number; text: string } | null => {
+    for (const el of Array.from(viewerEl.querySelectorAll(".page")) as HTMLElement[]) {
+      const r = el.getBoundingClientRect();
+      if (y < r.top || y > r.bottom) continue;
+      const page = Number(el.dataset.pageNumber) - 1;
+      if (!Number.isFinite(page)) return null;
+      const spans = Array.from(el.querySelectorAll(".textLayer span")) as HTMLElement[];
+      let text = "";
+      let started = false;
+      for (const sp of spans) {
+        if (!started) {
+          const sr = sp.getBoundingClientRect();
+          if (sr.bottom < y || !/\S/.test(sp.textContent ?? "")) continue;
+          started = true;
+        }
+        text += `${sp.textContent ?? ""} `;
+        if (text.length >= 80) break;
+      }
+      return { page, text: text.replace(/\s+/g, " ").trim().slice(0, 80) };
+    }
+    return null;
+  };
+  const getReadingProbes = (fracs: number[]): ReaderReadingProbe[] => {
+    const cr = container.getBoundingClientRect();
+    return fracs.map((f) => {
+      const hit = probeAt(cr.top + Math.min(0.999, Math.max(0, f)) * cr.height);
+      return hit && hit.text ? { frac: f, unitAnchor: `pdfpage:${hit.page}`, text: hit.text } : { frac: f, unitAnchor: "", text: "" };
+    });
+  };
+  const getStructureGeometry = (): ReaderStructureGeometry | null => {
+    const cr = container.getBoundingClientRect();
+    const vp = { left: cr.left, top: cr.top, right: cr.right, bottom: cr.bottom };
+    const boxes: ReaderParagraphBox[] = [];
+    let tl = Infinity, tr = -Infinity;
+    const idxCache = new Map<number, ReturnType<typeof buildTextIndex> | null>();
+    for (const t of structTargets) {
+      const p0 = pageOfAnchor(t.unitAnchor);
+      if (p0 == null) continue;
+      const el = pageEl(p0);
+      const layer = el?.querySelector(".textLayer") as HTMLElement | null;
+      if (!el || !layer) continue;
+      const pr = el.getBoundingClientRect();
+      if (pr.bottom < vp.top || pr.top > vp.bottom) continue;
+      if (!idxCache.has(p0)) idxCache.set(p0, layer.textContent ? buildTextIndex(layer) : null);
+      const idx = idxCache.get(p0);
+      if (!idx) continue;
+      const span = findFlatSpan(idx, t.head, t.tail);
+      const range = span ? spanToRange(document, idx, span) : null;
+      if (!range) continue;
+      const r = range.getBoundingClientRect();
+      if (!(r.width > 0) || r.bottom < vp.top || r.top > vp.bottom) continue;
+      tl = Math.min(tl, r.left);
+      tr = Math.max(tr, r.right);
+      boxes.push({
+        key: t.key, nodeId: t.nodeId, block: 0, column: 0,
+        top: Math.max(r.top, vp.top), bottom: Math.min(r.bottom, vp.bottom), left: r.left, right: r.right,
+        clipTop: r.top < vp.top, clipBottom: r.bottom > vp.bottom,
+      });
+    }
+    // 版心：可见页的内容框（无目标时也要给出，供结构列避让）
+    for (const el of Array.from(viewerEl.querySelectorAll(".page")) as HTMLElement[]) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom < vp.top || r.top > vp.bottom) continue;
+      tl = Math.min(tl, r.left);
+      tr = Math.max(tr, r.right);
+    }
+    const text = Number.isFinite(tl) ? { left: tl, right: tr } : null;
+    return { seq: ++geoSeq, viewport: vp, columns: text ? [text] : [], boxes, text };
+  };
+
   const fractionOf = (page1Based: number) => (totalPages > 0 ? Math.min(1, Math.max(0, page1Based / totalPages)) : 0);
 
   const emitRelocate = (page1Based: number) => {
@@ -574,7 +662,24 @@ export function createPdfKernel(host: HTMLElement): ReaderKernel {
     // 阅读透镜：PDF 单元＝页；片段取不到时按页首定位
     getReadingProbe() {
       if (!doc || totalPages <= 0) return null;
-      return { unitAnchor: `pdfpage:${currentPage - 1}`, text: "" };
+      const cr = container.getBoundingClientRect();
+      const hit = probeAt(cr.top + cr.height * 0.38);
+      return hit ? { unitAnchor: `pdfpage:${hit.page}`, text: hit.text } : { unitAnchor: `pdfpage:${currentPage - 1}`, text: "" };
+    },
+
+    getReadingProbes,
+
+    setStructureTargets(targets) {
+      structTargets = Array.isArray(targets) ? targets.filter((t) => t && t.unitAnchor && t.head) : [];
+    },
+
+    getStructureGeometry: () => getStructureGeometry(),
+
+    onContentScroll(cb) {
+      scrollHandlers.add(cb);
+      return () => {
+        scrollHandlers.delete(cb);
+      };
     },
 
     getSectionAnchors() {
@@ -769,6 +874,8 @@ export function createPdfKernel(host: HTMLElement): ReaderKernel {
       container.removeEventListener("mouseleave", onMarkLeave);
       container.removeEventListener("click", onMarkClick, true);
       container.removeEventListener("scroll", syncMarks);
+      container.removeEventListener("scroll", onScrollTick);
+      scrollHandlers.clear();
       window.removeEventListener("resize", syncMarks);
       if (syncRaf) window.cancelAnimationFrame(syncRaf);
       syncRaf = 0;

@@ -62,6 +62,28 @@ const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms))
 
 type RunInfo = AtlasRunInfo;
 
+/** 整轮生成被撤销的原因 → 给用户的一句话（D328；引擎 finalizeGen 的 reason / detail） */
+function rollbackReason(T: ReturnType<typeof useT>, reason: string | null, detail: string | null): string {
+  switch (reason) {
+    case "ai_error":
+      return T("原因：每一段的 AI 调用都失败了（{msg}）。请检查 AI 设置里的服务地址、密钥和模型名。", { msg: detail || T("未知错误") });
+    case "commit":
+      return T("原因：结果写入本地数据库失败，请重试；仍失败请导出应用日志反馈。");
+    case "unparsable":
+      return detail === "out_of_scope"
+        ? T("原因：模型给出的段落编号不在原文范围内，结果全部被丢弃。建议换用更强的模型。")
+        : T("原因：模型的回答不符合导图要求的格式，结果全部被丢弃。建议换用更强的模型，或恢复默认的导图提示词。");
+    case "reasoning_truncated":
+      return T("原因：模型把输出额度都用在了思考上，没来得及写出结构。建议换用非推理模型，或在 AI 设置里调低推理强度。");
+    case "truncated":
+      return T("原因：模型回答被截断，没有写出完整的结构行。请重试或换用其他模型。");
+    case "no_output":
+      return T("原因：模型没有返回任何内容。请检查 AI 设置里的模型是否可用。");
+    default:
+      return "";
+  }
+}
+
 /** 会话级展开集记忆（不落库；同一次会话内退出再进沿用） */
 const memo = new Map<string, { expanded: Set<string>; focus: string }>();
 
@@ -282,8 +304,16 @@ export default function MindmapTab(props: MindmapTabProps) {
       }
     }
     if (d.kind === "run" && d.runDone) {
-      if (d.runDone.deleted) {
-        setNotice(T("这次生成没有产出可用结构，新版本已撤销；原有导图不受影响。"));
+      if (d.runDone.kept) {
+        // D329：重新生成有失败段 → 新版本只保留、不顶替原导图
+        const why = rollbackReason(T, d.runDone.reason ?? null, d.runDone.detail ?? null);
+        const head = T("这次生成有 {n}/{total} 段没有成功，新版本没有替换原导图，已保留在「版本」里，可再次生成续上。", { n: d.runDone.failedJobs ?? 0, total: d.runDone.totalJobs ?? 0 });
+        setNotice(why ? `${head} ${why}` : head);
+        void loadMap({ documentId });
+      } else if (d.runDone.deleted) {
+        // D328：说清为什么撤销
+        const why = rollbackReason(T, d.runDone.reason ?? null, d.runDone.detail ?? null);
+        setNotice(why ? `${T("这次生成没有产出可用结构，新版本已撤销；原有导图不受影响。")} ${why}` : T("这次生成没有产出可用结构，新版本已撤销；原有导图不受影响。"));
         void loadMap({ documentId });
       }
       void refreshVersions();
@@ -321,7 +351,7 @@ export default function MindmapTab(props: MindmapTabProps) {
         if (info.mapId && kind === "generate" && !FINAL_STAGES.has(info.stage) && info.mapId !== mapIdRef.current && !known) void loadMap(info.mapId);
         if (FINAL_STAGES.has(info.stage)) {
           void refreshVersions();
-          if (info.stage === "failed" && kind === "generate") setNotice(T("生成未完成（{code}）。已生成的部分保留，可再次生成续上（已完成部分走缓存）。", { code: p.code || "failed" }));
+          if (info.stage === "failed" && kind === "generate" && !(raw as { kept?: boolean; code?: string }).kept && (raw as { code?: string }).code !== "no_commit") setNotice(T("生成未完成（{code}）。已生成的部分保留，可再次生成续上（已完成部分走缓存）。", { code: p.code || "failed" }));
           else if (info.stage === "partial") setNotice(T("部分段落未完成，可再次生成或对单个节点深挖补上。"));
           else if (info.stage === "completed" && kind === "generate") setNotice("");
           if (info.mapId && info.mapId === mapIdRef.current) {
