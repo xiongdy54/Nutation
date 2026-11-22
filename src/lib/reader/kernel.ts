@@ -243,6 +243,9 @@ export interface ReaderKernel {
    *  无 endAnchor 取 start 单元自身；有 endAnchor 取 [start, end)（自 start 单元起、至 end 单元开始前，跨单元以 \n 拼接）。
    *  文本形态（canonical）：块间 \n 分隔、块内空白折叠——AI 引文与本地逐字校验必须同用本函数输出，禁止另行归一。 */
   getSectionText?(startAnchor: string, endAnchor?: string): Promise<string>;
+  /** 诊断 P3-f：同一文件里有多个目录项时，按文件内 #fragment 切段取文（canonical 同上）。
+   *  返回 fragments.length + 1 段：[文件开头, 首个片段) [片段1, 片段2) … [末片段, 文件尾)；找不到的片段返回 ""、其文字留在前一段。 */
+  getSectionTextParts?(anchor: string, fragments: string[]): Promise<string[]>;
   /** 当前选区语义数据（制卡管线唯一入口）；无选区返回 null */
   getSelection(): ReaderSelection | null;
   /** D121 §2.3（可选能力）：选区前 2 段 / 后 1 段文字（before ≤600、after ≤400，段内空白归一）；

@@ -95,8 +95,15 @@ function buildExtractionModel(tree, unitAnchors) {
     const b = baseOf(a);
     if (!unitIndexByBase.has(b)) unitIndexByBase.set(b, i);
   });
+  // 诊断 P3-f：同文件多章时单元会按目录 #fragment 细分（A、A#f1、A#f2…）→ 先按完整锚精确命中，再按文件 base 归一
+  const unitIndexExact = new Map();
+  units.forEach((a, i) => {
+    if (!unitIndexExact.has(a)) unitIndexExact.set(a, i);
+  });
   const unitIndexOf = (anchor) => {
     if (anchor === "book") return 0;
+    const exact = unitIndexExact.get(String(anchor ?? ""));
+    if (exact != null) return exact;
     const idx = unitIndexByBase.get(baseOf(anchor));
     return idx == null ? -1 : idx;
   };
@@ -366,6 +373,8 @@ function linearUnitIndexOf(linear, anchor) {
       return raw;
     }
   };
+  const exact = linear.units.indexOf(String(anchor ?? ""));
+  if (exact >= 0) return exact;
   const target = base(anchor);
   for (let i = 0; i < linear.units.length; i++) if (base(linear.units[i]) === target) return i;
   return -1;

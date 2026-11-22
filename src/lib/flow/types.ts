@@ -201,7 +201,9 @@ export interface FlowScene {
   hoverId: string | null;
   focusId: string | null;
   canBack: boolean;
-  panel: { kind: "ok" | "empty" | "feeding" | "nokey" | "busy"; feedDone: number; feedTotal: number };
+  panel: { kind: "ok" | "empty" | "feeding" | "nokey" | "busy" | "notext"; feedDone: number; feedTotal: number };
+  /** 生成中提示（诊断 P1-a/b）：节点标题；""＝未定位到节点；null＝没有在生成 */
+  generating?: string | null;
   /** 开场 / 翻页进场：首帧先画折叠态，下一帧交由 CSS 过渡展开（§8.1 / §8.3） */
   armed: boolean;
   /** §13.3：滚动模式平滑彩带（矩形画在正文 iframe 里，混合层只画颈部） */

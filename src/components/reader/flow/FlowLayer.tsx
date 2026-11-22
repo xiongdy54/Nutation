@@ -167,6 +167,14 @@ export default function FlowLayer({ scene, onEvent, registerShape }: FlowLayerPr
           <div className="flow-status flow-status-float" style={{ transform: `translate(${plan.labelX}px, ${scene.viewport.bottom - 24}px)` }}>{inline.status}</div>
         ) : null}
 
+        {/* 生成中（诊断 P1-a）：骨架已出、AI 还在跑时常驻，不再只在空图时提示 */}
+        {scene.panel.kind === "ok" && scene.generating != null ? (
+          <div className="flow-status flow-status-float flow-genhint" role="status" style={{ transform: `translate(${plan.labelX}px, ${scene.viewport.bottom - (inline.status && !inline.forId ? 48 : 28)}px)`, width: Math.max(120, plan.labelW) }}>
+            <span className="flow-dots" aria-hidden="true"><i /><i /><i /></span>
+            <span>{scene.generating ? T("正在生成「{t}」的结构…", { t: scene.generating }) : T("正在生成…")}</span>
+          </div>
+        ) : null}
+
         {/* 空态 */}
         {scene.panel.kind !== "ok" && scene.mode !== "whisper" ? (
           <div className="flow-empty" style={{ transform: `translate(${plan.labelX}px, ${Math.round((scene.viewport.top + scene.viewport.bottom) / 2 - 14)}px)`, width: Math.max(120, plan.labelW) }}>
@@ -180,6 +188,8 @@ export default function FlowLayer({ scene, onEvent, registerShape }: FlowLayerPr
                 <div>{T("本节还没有结构")}</div>
                 <button type="button" className="flow-empty-action" onClick={() => onEvent({ kind: "action", name: "generate" })}>{T("为本节生成 →")}</button>
               </>
+            ) : scene.panel.kind === "notext" ? (
+              <div>{T("这份材料没有可提取的文字（可能是扫描版 PDF），暂时无法生成结构")}</div>
             ) : scene.panel.kind === "nokey" ? (
               <div>{T("需要先在设置里配置 AI")}</div>
             ) : (

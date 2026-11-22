@@ -953,9 +953,32 @@ function AISection() {
           </div>
         </div>
 
-        {/glm-5\.[2-9]/i.test(cfg.model) && (
+        {/* D331：思考模式对所有模型生效（按服务 / 模型自动选参数写法）；思考吃光额度时引擎自动放大额度重试一次 */}
+        <div className="form-field">
+          <label>{T("思考模式")}</label>
+          <div className="seg-tabs">
+            {[
+              { id: "auto", label: T("自动") },
+              { id: "off", label: T("关闭") },
+              { id: "on", label: T("开启") }
+            ].map((o) => (
+              <button key={o.id} className={(cfg.thinking || "auto") === o.id ? "active" : ""} onClick={() => save({ thinking: o.id })}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <p className="form-hint">
+            {(cfg.thinking || "auto") === "off"
+              ? T("尽量关闭模型的思考过程：更快、更省，适合生成导图和制卡。个别模型无法关闭时会自动忽略。")
+              : (cfg.thinking || "auto") === "on"
+                ? T("让模型先思考再回答：更慢，但复杂内容更准确。会自动为思考预留额外的输出额度。")
+                : T("保持模型自己的默认行为。不论哪种模式，若思考用光了输出额度而没有给出结果，都会自动加大额度重试一次。")}
+          </p>
+        </div>
+
+        {((cfg.thinking || "auto") === "on" || ((cfg.thinking || "auto") === "auto" && /glm-5\.[2-9]/i.test(cfg.model))) && (
           <div className="form-field">
-            <label>{T("思考强度（低更快；仅 GLM-5.2+ 生效）")}</label>
+            <label>{T("思考强度")}</label>
             <div className="seg-tabs">
               {[
                 { id: "low", label: T("低") },

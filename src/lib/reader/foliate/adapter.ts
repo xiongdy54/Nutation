@@ -35,6 +35,8 @@ import type {
   RelocateInfo
 } from "../kernel";
 import { buildTextIndex, findFlatSpan, spanToRange } from "../textRange";
+import { allLeafBlocks, leafBlocksInRange, nearestTextBlock } from "../leafBlocks";
+import { splitByFragments } from "../fragmentSplit";
 import { fixSvgAspect, injectAppearanceStyle, type ReaderAppearanceEx } from "./appearance";
 import { getSelectionFromContents, getSelectionGeometryFromContents, pointerToHost } from "./selection";
 import { createMultiHighlight, MULTI_HIGHLIGHT_NAME } from "../multiHighlight";
@@ -192,10 +194,12 @@ export function createFoliateKernel(host: HTMLElement): ReaderKernel {
   };
   // canonical 文本抽取（与 PDF 侧同一形态约定）：块级边界 → \n，块内空白折叠；AI 引文与逐字校验共用此输出。
   const documentToText = (doc: Document): string => {
+    const root = (doc.body || doc.documentElement) as Element | null;
+    return root ? elementToText(root.cloneNode(true) as Element, doc) : "";
+  };
+  /** canonical 抽取的本体：clone 是可随意改动的副本（整文档或 Range.cloneContents 包出来的片段） */
+  const elementToText = (clone: Element, doc: Document): string => {
     try {
-      const root = (doc.body || doc.documentElement) as Element | null;
-      if (!root) return "";
-      const clone = root.cloneNode(true) as Element;
       clone.querySelectorAll("script,style,noscript,template,svg,head").forEach((e) => e.remove());
       const owner = clone.ownerDocument ?? doc;
       clone
@@ -469,7 +473,6 @@ export function createFoliateKernel(host: HTMLElement): ReaderKernel {
   };
 
   // ---------- 结构流（STRUCTURE-FLOW-PLAN §4.2）：段落定位与几何采样（只找 Range、不画任何东西） ----------
-  const BLOCK_SEL = "p,li,h1,h2,h3,h4,h5,h6,blockquote,dd,dt,td,th,figcaption,pre";
   let structTargets: ReaderStructureTarget[] = [];
   const structRanges = new Map<Document, { key: string; nodeId: string; range: Range }[]>();
   let blockCache = new WeakMap<Range, Element[]>();
@@ -499,12 +502,7 @@ export function createFoliateKernel(host: HTMLElement): ReaderKernel {
   function leafBlocks(range: Range): Element[] {
     const hit = blockCache.get(range);
     if (hit) return hit;
-    const c = range.commonAncestorContainer;
-    const el = (c.nodeType === 1 ? c : c.parentElement) as Element | null;
-    const own = el?.closest?.(BLOCK_SEL);
-    const list = own
-      ? [own]
-      : Array.from(el?.querySelectorAll?.(BLOCK_SEL) ?? []).filter((b) => range.intersectsNode(b) && !b.querySelector(BLOCK_SEL));
+    const list = leafBlocksInRange(range);
     blockCache.set(range, list);
     return list;
   }
@@ -518,7 +516,7 @@ export function createFoliateKernel(host: HTMLElement): ReaderKernel {
       if (!fr) continue;
       const se = doc.scrollingElement, sx = se?.scrollLeft ?? 0, sy = se?.scrollTop ?? 0;
       let n = 0;
-      for (const b of Array.from(doc.querySelectorAll(BLOCK_SEL))) {
+      for (const b of allLeafBlocks(doc)) {
         if (n >= 40) break;
         const r = b.getBoundingClientRect();
         const L = r.left + fr.left, R = r.right + fr.left, cy = (r.top + r.bottom) / 2 + fr.top;
@@ -593,7 +591,7 @@ export function createFoliateKernel(host: HTMLElement): ReaderKernel {
         if (!fr) continue;
         if (x < fr.left || x > fr.right || y < fr.top || y > fr.bottom) continue;
         const el = doc.elementFromPoint(x - fr.left, y - fr.top);
-        const block = (el?.closest?.(BLOCK_SEL) ?? null) as Element | null;
+        const block = nearestTextBlock(el ?? null);
         if (!block) continue;
         const sections = (view.book?.sections ?? []) as { id?: string; href?: string }[];
         const unitAnchor = String(sections[index]?.id ?? sections[index]?.href ?? "");
@@ -1012,7 +1010,7 @@ export function createFoliateKernel(host: HTMLElement): ReaderKernel {
       try {
         const node = lastProbe.range?.startContainer ?? null;
         const el = node ? ((node.nodeType === 3 ? node.parentElement : node) as Element | null) : null;
-        const block = el?.closest?.("p,li,h1,h2,h3,h4,h5,h6,blockquote,dd,dt,td,th,figcaption,pre") ?? el;
+        const block = nearestTextBlock(el) ?? el;
         text = String(block?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
       } catch {
         text = "";
@@ -1077,6 +1075,21 @@ export function createFoliateKernel(host: HTMLElement): ReaderKernel {
         }
       }
       return parts.join("\n");
+    },
+
+    async getSectionTextParts(anchor: string, fragments: string[]) {
+      const sections = (view.book?.sections ?? []) as { createDocument?: () => Promise<Document> }[];
+      const i = resolveSectionIndex(anchor);
+      const empty = () => new Array<string>(fragments.length + 1).fill("");
+      const make = i >= 0 ? sections[i]?.createDocument : undefined;
+      if (typeof make !== "function") return empty();
+      try {
+        const doc = await make.call(sections[i]);
+        doc.querySelectorAll("script,style,noscript,template,svg,head").forEach((e) => e.remove());
+        return splitByFragments(doc, fragments).map((w) => elementToText(w, doc));
+      } catch {
+        return empty();
+      }
     },
 
     getSelection(): ReaderSelection | null {

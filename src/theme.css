@@ -11194,3 +11194,16 @@ select:focus-visible { outline: none; border-color: var(--accent); }
   outline: var(--focus-outline-width) solid var(--focus-outline-color);
   outline-offset: var(--focus-outline-offset);
 }
+
+/* 结构流 · 生成中提示（docs/design/STRUCTURE-GRAPH-DIAGNOSIS-2026-11.md P1-a）。类名勿用 .flow-gen——那是每代结构流的铺满容器（D330） */
+.flow-genhint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: color-mix(in srgb, var(--accent) 80%, var(--reader-fg, var(--ink)));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flow-genhint .flow-dots { padding: 0; flex: none; }
+.flow-genhint > span:last-child { overflow: hidden; text-overflow: ellipsis; }

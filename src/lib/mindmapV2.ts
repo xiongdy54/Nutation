@@ -16,7 +16,7 @@ export interface GraphLoadResult extends Omit<GraphLoad, "meta"> {
 /** mindmap:delta 的完整载荷（types.Delta 的超集：引擎扩展字段 removed / runDone / jobDone 细节） */
 export interface MindmapDelta extends Delta {
   removed?: string[];
-  runDone?: { stage: string; deleted?: boolean };
+  runDone?: { stage: string; deleted?: boolean; kept?: boolean; failedJobs?: number; totalJobs?: number; reason?: string | null; detail?: string | null };
   jobDone?: { ok: boolean; error?: string; finishReason?: string; cached?: boolean; aborted?: boolean; skipped?: string; activated?: boolean };
 }
 

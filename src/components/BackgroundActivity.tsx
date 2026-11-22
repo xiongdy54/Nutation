@@ -22,6 +22,7 @@
 // 单一功能动效且尊重 prefers-reduced-motion。
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { mindmapApi } from "../lib/mindmap";
 import { describeTask, dismissTask, listTasks, subscribe, type ActivityTask } from "../lib/activity";
 import { rememberDismissed } from "../lib/activityDismiss";
@@ -122,7 +123,9 @@ export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
     if (phase !== "running") dispose(runId);
   };
 
-  return (
+  // 挂到 body：.app-shell 自成层叠上下文（z-index:0），留在壳内时 --z-toast 只在壳内生效，
+  // 会被同样挂在 body 上的结构流层（.flow-layer z 24）盖住、悬停反复失焦（D329）
+  return createPortal(
     <div
       ref={rootRef}
       className={`bg-activity${expanded ? " is-expanded" : ""}`}
@@ -224,5 +227,7 @@ export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
         )}
       </div>
     </div>
+  ,
+    document.body,
   );
 }

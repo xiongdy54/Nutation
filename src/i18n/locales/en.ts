@@ -122,6 +122,14 @@ export const en: Record<string, string | { one: string; other: string }> = {
   "模型名（可手输）": "Model (editable)",
   "列表无匹配 — 将直接使用手输的模型名": "No match in list — the typed model name will be used as-is.",
   "思考强度（低更快；仅 GLM-5.2+ 生效）": "Thinking effort (faster when low; GLM-5.2+ only)",
+  "思考模式": "Thinking mode",
+  "尽量关闭模型的思考过程：更快、更省，适合生成导图和制卡。个别模型无法关闭时会自动忽略。":
+    "Turn off the model's reasoning as much as possible: faster and cheaper, ideal for mind maps and card-making. Models that can't disable it will simply ignore this.",
+  "让模型先思考再回答：更慢，但复杂内容更准确。会自动为思考预留额外的输出额度。":
+    "Let the model reason before answering: slower, but more accurate on complex content. Extra output budget is automatically reserved for reasoning.",
+  "保持模型自己的默认行为。不论哪种模式，若思考用光了输出额度而没有给出结果，都会自动加大额度重试一次。":
+    "Keep the model's own default behavior. In any mode, if reasoning uses up the output budget without producing a result, the budget is automatically increased and retried once.",
+  "思考强度": "Thinking effort",
   "低": "Low",
   "中": "Mid",
   "强": "High",
@@ -2189,6 +2197,14 @@ export const en: Record<string, string | { one: string; other: string }> = {
   "已保存。": "Saved.",
   // —— 材料导图补充（i18n-check 缺失键 + 动态键）——
   "这次生成没有产出可用结构，新版本已撤销；原有导图不受影响。": "This run produced no usable structure, so the new version was rolled back. The existing map is unaffected.",
+  "这次生成有 {n}/{total} 段没有成功，新版本没有替换原导图，已保留在「版本」里，可再次生成续上。": "{n} of {total} sections did not finish in this run, so the new version did not replace the current map. It was kept under Versions — generate again to continue where it left off.",
+  "原因：每一段的 AI 调用都失败了（{msg}）。请检查 AI 设置里的服务地址、密钥和模型名。": "Cause: the AI call failed for every section ({msg}). Check the service URL, key, and model name in AI settings.",
+  "原因：结果写入本地数据库失败，请重试；仍失败请导出应用日志反馈。": "Cause: writing the result to the local database failed. Try again; if it still fails, export the app logs and report it.",
+  "原因：模型给出的段落编号不在原文范围内，结果全部被丢弃。建议换用更强的模型。": "Cause: the model returned paragraph numbers outside the source text, so all results were discarded. Try a stronger model.",
+  "原因：模型的回答不符合导图要求的格式，结果全部被丢弃。建议换用更强的模型，或恢复默认的导图提示词。": "Cause: the model's answer did not match the required map format, so all results were discarded. Try a stronger model, or restore the default map prompt.",
+  "原因：模型把输出额度都用在了思考上，没来得及写出结构。建议换用非推理模型，或在 AI 设置里调低推理强度。": "Cause: the model used its entire output budget on reasoning and never wrote the structure. Use a non-reasoning model, or lower the reasoning effort in AI settings.",
+  "原因：模型回答被截断，没有写出完整的结构行。请重试或换用其他模型。": "Cause: the model's answer was truncated before the structure lines were complete. Try again or use another model.",
+  "原因：模型没有返回任何内容。请检查 AI 设置里的模型是否可用。": "Cause: the model returned nothing. Check that the model in AI settings is available.",
   "有一个任务未完成：{msg}": "A task did not finish: {msg}",
   "生成未完成（{code}）。已生成的部分保留，可再次生成续上（已完成部分走缓存）。": "Generation did not finish ({code}). Generated parts are kept; generate again to resume (completed parts come from cache).",
   "部分段落未完成，可再次生成或对单个节点深挖补上。": "Some sections are unfinished. Regenerate, or deepen individual nodes to fill them in.",
@@ -2394,6 +2410,8 @@ export const en: Record<string, string | { one: string; other: string }> = {
   "还没有讲解": "No explanation yet",
   "原文读取中 {i}/{n}": "Reading text {i}/{n}",
   "本节还没有结构": "No structure for this section yet",
+  "正在生成「{t}」的结构…": "Generating the structure for “{t}”…",
+  "这份材料没有可提取的文字（可能是扫描版 PDF），暂时无法生成结构": "This material has no extractable text (it may be a scanned PDF), so no structure can be generated yet",
   "为本节生成 →": "Generate for this section →",
   "需要先在设置里配置 AI": "Configure AI in settings first",
   "上方另 {n} 项": "{n} more above",

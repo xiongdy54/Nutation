@@ -780,9 +780,11 @@ export default function StructureFlowHost(props: StructureFlowHostProps) {
     const explainOpen = !!(data.explainFor && data.explainFor === sel);
     const inlineH = sel ? FLOW.ACTIONS_H + (explainOpen ? explainBoxH(data.explainText, plan.labelW, data.explainBusy) : 0) : 0;
     const panel = !g || !all.length
-      ? !data.hasKey && !g
+      ? data.feed.complete && data.feed.chars === 0
+        ? { kind: "notext" as const, feedDone: data.feed.done, feedTotal: data.feed.total }
+        : !data.hasKey && !g
         ? { kind: "nokey" as const, feedDone: data.feed.done, feedTotal: data.feed.total }
-        : data.busy === "pending"
+        : data.busy || data.generating != null
           ? { kind: "busy" as const, feedDone: data.feed.done, feedTotal: data.feed.total }
           : !g && !(data.feed.unsupported || data.feed.complete || data.feed.error)
             ? { kind: "feeding" as const, feedDone: data.feed.done, feedTotal: data.feed.total }
@@ -901,10 +903,11 @@ export default function StructureFlowHost(props: StructureFlowHostProps) {
       focusId,
       canBack: !!data.backLoc,
       panel,
+      generating: data.generating,
     };
   }, [
     plan, viewportEl, geo, data.graph, colors, title, T, cmpPage, data.readingBlock, data.status, data.hoverId, data.sel, data.expandedId,
-    data.explainFor, data.explainText, data.explainBusy, data.groupId, data.readingId, data.peek, data.backLoc, data.feed, data.busy, data.hasKey,
+    data.explainFor, data.explainText, data.explainBusy, data.groupId, data.readingId, data.peek, data.backLoc, data.feed, data.busy, data.generating, data.hasKey,
     data.switchInfo, readViewport,
   ]);
 
@@ -992,7 +995,8 @@ export default function StructureFlowHost(props: StructureFlowHostProps) {
             break;
           }
           if (ev.nodeId === data.readingId) {
-            data.setSel(null);
+            // 诊断 P1-d：正在读的条目同样可选中（再点一次收起），否则动作行永远出不来
+            data.setSel(data.sel === ev.nodeId ? null : ev.nodeId);
             break;
           }
           data.setSel(ev.nodeId);
@@ -1077,7 +1081,10 @@ export default function StructureFlowHost(props: StructureFlowHostProps) {
 
   if (!scene || stage === "closed") return null;
   const doc = viewportEl?.ownerDocument ?? document;
-  return createPortal(<FlowLayer scene={scene} onEvent={handle} registerShape={registerShape} />, doc.body);
+  // D332：挂进 .app-shell（自成层叠上下文 z-index:0）——挂 body 时 z 24 会压过壳内的菜单 / 弹窗（设置页等）；
+  // 壳内则按 .flow-layer 注释的本意：低于 --z-dropdown(100) / modal(400)。壳无 transform / filter，fixed 仍以视口为准。
+  const host = doc.querySelector<HTMLElement>(".app-shell") ?? doc.body;
+  return createPortal(<FlowLayer scene={scene} onEvent={handle} registerShape={registerShape} />, host);
 }
 
 function samePlan(a: FlowPlan, b: FlowPlan): boolean {

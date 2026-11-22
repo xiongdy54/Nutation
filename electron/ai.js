@@ -172,6 +172,57 @@ function supportsReasoningEffort(model) {
   return /(^|\/)z-ai\/glm-5\.[2-9]/.test(m) || /(^|\/)glm-5\.[2-9]/.test(m) || /(^|\/)zai-org\/glm-5\.[2-9]/.test(m);
 }
 
+// ---------- 思考模型（D331）----------
+// thinking：auto＝保持模型默认（不额外发参数，GLM 沿用 reasoning_effort）；off＝尽量关闭思考；on＝开启并按强度给预算。
+// 各家参数名不同，按服务地址 / 模型名选写法；严格服务端 400 拒收未知参数时剥掉重试一次，并在本进程内记住。
+const THINKING_MODES = ["auto", "off", "on"];
+const EFFORTS = ["low", "high", "max"]; // 界面「低 / 中 / 强」；沿用 GLM 既有取值
+const EFFORT_OPENAI = { low: "low", high: "medium", max: "high" };
+const EFFORT_BUDGET = { low: 2048, high: 8192, max: 24576 }; // 开启思考时额外给的输出额度
+const THINK_BUDGET_CAP = 32000;
+const stripThinking = new Set(); // `${host}|${model}`：已证实不认思考参数
+function thinkingFamily(model, baseUrl) {
+  const m = String(model || "").toLowerCase();
+  let host = "";
+  try { host = new URL(String(baseUrl || "")).host.toLowerCase(); } catch { host = ""; }
+  if (/openrouter\.ai$/.test(host)) return "openrouter";
+  if (/^(localhost|127\.0\.0\.1):11434$/.test(host)) return "ollama";
+  if (/glm/.test(m)) return "glm";
+  if (/qwen|qwq/.test(m)) return "qwen";
+  if (/deepseek/.test(m)) return "deepseek";
+  if (/(^|\/)(gpt-5|o[1-9])/.test(m) || /api\.openai\.com$/.test(host)) return "openai";
+  if (/gemini/.test(m)) return "gemini";
+  return "generic";
+}
+/** 按模式 / 强度给出要并入请求体的思考参数（auto 返回 {}） */
+function thinkingParams(mode, effort, model, baseUrl) {
+  const fam = thinkingFamily(model, baseUrl);
+  const e = EFFORTS.includes(effort) ? effort : "low";
+  if (mode === "off") {
+    switch (fam) {
+      case "openrouter": return { reasoning: { enabled: false } };
+      case "ollama": return { think: false };
+      case "openai": return { reasoning_effort: "minimal" };
+      case "gemini": return { reasoning_effort: "none" };
+      case "glm": return { thinking: { type: "disabled" } };
+      case "qwen": return { enable_thinking: false };
+      default: return { enable_thinking: false, thinking: { type: "disabled" } };
+    }
+  }
+  if (mode === "on") {
+    switch (fam) {
+      case "openrouter": return { reasoning: { enabled: true, effort: EFFORT_OPENAI[e] } };
+      case "ollama": return { think: true };
+      case "openai":
+      case "gemini": return { reasoning_effort: EFFORT_OPENAI[e] };
+      case "glm": return supportsReasoningEffort(model) ? { thinking: { type: "enabled" }, reasoning_effort: e } : { thinking: { type: "enabled" } };
+      case "qwen": return { enable_thinking: true, thinking_budget: EFFORT_BUDGET[e] };
+      default: return { enable_thinking: true, thinking: { type: "enabled" }, reasoning_effort: EFFORT_OPENAI[e] };
+    }
+  }
+  return {};
+}
+
 function aiConfigPath() {
   return path.join(app.getPath("userData"), "ai-config.json");
 }
@@ -275,6 +326,7 @@ async function getAIConfig() {
     hint: preset.hint || "",
     presetName: preset.name,
     reasoningEffort: cfg.reasoningEffort || "low",
+    thinking: THINKING_MODES.includes(cfg.thinking) ? cfg.thinking : "auto",
     presets: PRESET_META
   };
 }
@@ -317,6 +369,9 @@ async function setAIConfig(partial) {
   if (typeof partial.reasoningEffort === "string") {
     // 只接受 GLM-5.3 系合法值；非法值一律回落 low
     cfg.reasoningEffort = ["max", "high", "low"].includes(partial.reasoningEffort) ? partial.reasoningEffort : "low";
+  }
+  if (typeof partial.thinking === "string") {
+    cfg.thinking = THINKING_MODES.includes(partial.thinking) ? partial.thinking : "auto";
   }
   if (partial.apiKey !== undefined) {
     if (!partial.apiKey) {
@@ -542,8 +597,27 @@ function chatStream({ messages, temperature, abortSignal, retry, model, maxToken
   const maxAttempts = Math.max(1, Math.min(5, Number(retry && retry.maxAttempts) || 1));
   const onRetry = retry && typeof retry.onRetry === "function" ? retry.onRetry : null;
   let attempt = 1;
+  let budget = maxTokens;
+  let budgetRetried = false;
+  let stripRetried = false;
   const run = () =>
-    chatStreamOnce({ messages, temperature, abortSignal, model, maxTokens }, send).catch(async (err) => {
+    chatStreamOnce({ messages, temperature, abortSignal, model, maxTokens: budget }, send).then((meta) => {
+      // D331：思考把输出额度用光、一个正文字都没写 → 放大额度重试一次（正文未产出，重试不会重复计入结果）
+      const starved = meta && meta.contentChars === 0 && meta.thinkingChars > 0;
+      if (!starved || budgetRetried || !(typeof budget === "number" && budget > 0) || (abortSignal && abortSignal.aborted)) return meta;
+      budgetRetried = true;
+      budget = Math.min(THINK_BUDGET_CAP, Math.max(budget * 4, budget + 8000));
+      if (onRetry) {
+        try { onRetry({ attempt, nextAttempt: attempt, delayMs: 0, code: "thinking_budget" }); } catch { /* 忽略 */ }
+      }
+      return run();
+    }, async (err) => {
+      // D331：带了思考参数被 400 拒收 → 记住该服务 / 模型不认，剥掉参数立即重试一次
+      if (err && err.thinkingParamsSent && err.status === 400 && !stripRetried && !err.streamStarted) {
+        stripRetried = true;
+        stripThinking.add(err.thinkingKey);
+        return run();
+      }
       const code = err && err.code;
       // C-19a 第 4 步：只认 err.retriable === true。408/429/5xx 由 classifyHttpError 置位、
       // ECONNREFUSED 分支置位、其余网络错误按 NET_CODES 归类置位；4xx / cancelled / truncated
@@ -593,11 +667,22 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
     stream_options: { include_usage: true }
   };
   // 思考强度：仅 GLM-5.2+ 接受 reasoning_effort；GLM-5.3 系思考无法关闭，low = 最轻推理档
-  if (supportsReasoningEffort(useModel)) {
-    bodyObj.reasoning_effort = cfg.reasoningEffort || "low";
+  const thinkMode = THINKING_MODES.includes(cfg.thinking) ? cfg.thinking : "auto";
+  const thinkingKey = `${url.host}|${useModel}`;
+  let thinkingParamsSent = false;
+  if (thinkMode === "auto") {
+    if (supportsReasoningEffort(useModel)) bodyObj.reasoning_effort = cfg.reasoningEffort || "low";
+  } else if (!stripThinking.has(thinkingKey)) {
+    const extra = thinkingParams(thinkMode, cfg.reasoningEffort, useModel, cfg.baseUrl);
+    if (Object.keys(extra).length) {
+      Object.assign(bodyObj, extra);
+      thinkingParamsSent = true;
+    }
   }
   if (typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0) {
-    bodyObj.max_tokens = Math.floor(maxTokens);
+    // D331：开启思考时额外给思考预算，避免思考吃光正文额度
+    const extraBudget = thinkMode === "on" ? EFFORT_BUDGET[EFFORTS.includes(cfg.reasoningEffort) ? cfg.reasoningEffort : "low"] : 0;
+    bodyObj.max_tokens = Math.min(THINK_BUDGET_CAP, Math.floor(maxTokens) + extraBudget);
   }
   const body = JSON.stringify(bodyObj);
   const headers = { "Content-Type": "application/json" };
@@ -626,6 +711,7 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
       }
       const e = classifyHttpError(resp.status, errText, { "retry-after": resp.header("retry-after") });
       e.streamStarted = false; // 未开始产出正文，可安全重试
+      if (thinkingParamsSent) { e.thinkingParamsSent = true; e.thinkingKey = thinkingKey; }
       throw e;
     }
 
@@ -636,6 +722,7 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
     // 思考模型（GLM 等）先输出 reasoning_content 再输出正文；thinking 计数节流转发（v10.4）
     let thinkAcc = 0;
     let lastThinkSent = 0;
+    let contentAcc = 0; // D331：正文字数（「只有思考没有正文」判定）
     // C-19a 第 2/8 步：done 只发一次（[DONE] 与收尾双路径共用）；逐行解析抽成 handleLine，
     // 便于流结束时补处理没有换行符的末行
     let doneSent = false;
@@ -671,7 +758,7 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
         if (ttftMs == null && (d.content || (typeof (d.reasoning_content ?? d.reasoning) === "string" && (d.reasoning_content ?? d.reasoning)))) {
           ttftMs = Date.now() - startedAt;
         }
-        if (d.content) send({ delta: d.content });
+        if (d.content) { contentAcc += d.content.length; send({ delta: d.content }); }
         const think = d.reasoning_content ?? d.reasoning;
         if (typeof think === "string" && think) {
           thinkAcc += think.length;
@@ -719,9 +806,10 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
             usageInvalid = usageInvalid || s.invalid;
           }
           if (json.choices[0].finish_reason) finishReason = json.choices[0].finish_reason;
+          contentAcc += content.length;
           send({ delta: content });
           sendDoneOnce({ usage, finishReason, ttftMs, firstByteMs, usageInvalid });
-          return { usage, finishReason, ttftMs, firstByteMs, usageInvalid };
+          return { usage, finishReason, ttftMs, firstByteMs, usageInvalid, contentChars: contentAcc, thinkingChars: thinkAcc };
         }
       }
       const e = new Error(
@@ -744,7 +832,7 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
           buf = buf.slice(idx + 1);
           if (handleLine(line)) {
             sendDoneOnce({ usage, finishReason, ttftMs, firstByteMs, usageInvalid });
-            return { usage, finishReason, ttftMs, firstByteMs, usageInvalid }; // [DONE] 之后的残余数据不再消费
+            return { usage, finishReason, ttftMs, firstByteMs, usageInvalid, contentChars: contentAcc, thinkingChars: thinkAcc }; // [DONE] 之后的残余数据不再消费
           }
         }
       }
@@ -757,7 +845,7 @@ async function chatStreamOnce({ messages, temperature, abortSignal, model, maxTo
     if (buf.trim()) handleLine(buf.trim()); // 末行没有换行符
     if (sawDone || finishReason) {
       sendDoneOnce({ usage, finishReason, ttftMs, firstByteMs, usageInvalid });
-      return { usage, finishReason, ttftMs, firstByteMs, usageInvalid };
+      return { usage, finishReason, ttftMs, firstByteMs, usageInvalid, contentChars: contentAcc, thinkingChars: thinkAcc };
     }
     // C-19a 第 2 步：既没有 [DONE] 也没有 finish_reason 的提前收尾 = 截断，不是成功
     const e = new Error("AI 响应在完成前中断：没有收到结束标记，结果可能不完整");
@@ -867,4 +955,4 @@ async function testConnection() {
   return { ok: acc.length > 0, message: acc.trim().slice(0, 50) || "无响应" };
 }
 
-module.exports = { getAIConfig, setAIConfig, chatStream, testConnection, listModels, detectLocalRuntime, PRESETS };
+module.exports = { getAIConfig, setAIConfig, chatStream, testConnection, listModels, detectLocalRuntime, PRESETS, thinkingParams, thinkingFamily };
