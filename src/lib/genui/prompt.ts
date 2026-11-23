@@ -70,6 +70,8 @@ export interface AppendixOptions {
   catalog?: boolean;
   /** 简明解读：组件写进 JSON components（D301），冲突组件禁用 */
   ste?: boolean;
+  /** D334：额外排除的组件（简明解读 v7 的术语只走 glossary 字段，不再给术语表组件说明） */
+  exclude?: PresentationKind[];
 }
 
 /** 一类组件的说明：何时用 + 完整代码块示范（第四轮：不再给一行骨架——弱模型会模仿骨架的版式把组件写成标题和列表） */
@@ -77,13 +79,13 @@ function entry(k: PresentationKind, n: number): string {
   return `${n}. ${WHEN[k]}：\n\`\`\`${FENCE[k]}\n${EXAMPLES[k]}\n\`\`\``;
 }
 
-/** D301：简明解读（ASD-STE100 式）下与硬约束冲突的组件——类比（比喻）、例子与反例（原文没有的信息）。
+/** D301：简明解读（ASD-STE100 式）下与硬约束冲突的组件——类比（比喻）、例子与反例（原文没有的信息）；D334 加句子拆解（照抄原句）。
  *  其余组件保留；判断层、追加段、渲染（steJson）三处共用此表，确保冲突组件在简明解读里不出现。 */
-export const STE_BLOCKED_KINDS: ReadonlySet<PresentationKind> = new Set<PresentationKind>(["analogy", "examples", "html"]);
+export const STE_BLOCKED_KINDS: ReadonlySet<PresentationKind> = new Set<PresentationKind>(["analogy", "examples", "html", "breakdown"]);
 
 export function presentationAppendix(kinds: PresentationKind[], opts: AppendixOptions | boolean = false): string {
   const o: AppendixOptions = typeof opts === "boolean" ? { catalog: opts } : opts;
-  const allowed = (k: PresentationKind) => k in EXAMPLES && !(o.ste && STE_BLOCKED_KINDS.has(k));
+  const allowed = (k: PresentationKind) => k in EXAMPLES && !(o.ste && STE_BLOCKED_KINDS.has(k)) && !(o.exclude ?? []).includes(k);
   const uniq = [...new Set(kinds)].filter(allowed);
   if (uniq.length === 0 && !o.catalog) return "";
   const list = o.catalog ? [...uniq, ...CATALOG_ORDER.filter((k) => !uniq.includes(k) && allowed(k))] : uniq;

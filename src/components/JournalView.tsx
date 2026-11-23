@@ -17,6 +17,7 @@ import {
   type JournalEntry
 } from "../lib/journal";
 import { useT } from "../lib/i18n";
+import BufferedInput from "./BufferedInput";
 
 const PAGE_SIZE = 200;
 
@@ -193,11 +194,12 @@ export default function JournalView({ onJumpToDoc }: {
   return (
     <section className="journal">
       <div className="journal-toolbar">
-        <input
+        {/* v49.167 / D337：BufferedInput 自持文字——击键不再重渲染整个日记列表；Enter/Esc 前先冲刷 */}
+        <BufferedInput
           className="journal-search"
           value={queryInput}
           placeholder={T("搜索日记内容…")}
-          onChange={(e) => setQueryInput(e.target.value)}
+          onValueChange={setQueryInput}
           onKeyDown={(e) => {
             if (isImeComposing(e)) return; // 组字中的 Enter/Esc 属于输入法（确认/取消候选词）
             if (e.key === "Enter") setQuery(queryInput.trim());

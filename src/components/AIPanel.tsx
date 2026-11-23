@@ -131,6 +131,8 @@ export function answerPlainText(el: HTMLElement | null, fallback: string): strin
   if (!el) return fallback;
   const clone = el.cloneNode(true) as HTMLElement;
   clone.querySelectorAll("button, [role='toolbar'], .nui-toolbar").forEach((n) => n.remove());
+  // v49.164 / D334：折叠着的区块（简明解读的英文 STE 层）不算「所见」——展开后才进复制
+  clone.querySelectorAll("details:not([open])").forEach((n) => n.remove());
   clone.querySelectorAll(".katex").forEach((k) => {
     const tex = k.querySelector("annotation")?.textContent;
     if (tex) k.replaceWith(document.createTextNode(k.closest(".katex-display") ? `$$${tex}$$` : `$${tex}$`));

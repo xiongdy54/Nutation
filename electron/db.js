@@ -68,6 +68,8 @@ const {
   READER_EXPLAIN_STE_PROMPT_V4,
   // v49.135（D302）：v5 原文冻结常量（全新库 v5 行留痕用）；READER_EXPLAIN_STE_PROMPT＝v6 现行文本
   READER_EXPLAIN_STE_PROMPT_V5,
+  // v49.164（D334）：v6 原文冻结常量（全新库 v6 行留痕用）；READER_EXPLAIN_STE_PROMPT＝v7 现行文本
+  READER_EXPLAIN_STE_PROMPT_V6,
   // v48.74（D118）：通用解释模板 v2（追问四式）的 v1 原文冻结常量（READER_EXPLAIN_PROMPT 已在上方导入＝v2 现行文本）
   READER_EXPLAIN_PROMPT_V1,
   // v49.135（D302）：通用解释 v2 原文冻结常量（READER_EXPLAIN_PROMPT＝v3 现行文本）
@@ -3388,6 +3390,17 @@ function ensurePromptTemplates() {
     if (Number(steMaxV6) < 6) {
       db.run(
         "INSERT INTO prompt_templates (id, scope, name, content, version, is_default, situation_required, created_at) VALUES (?, 'reader-explain-ste', '简明解读 v6', ?, 6, 1, ?, ?)",
+        [crypto.randomUUID(), READER_EXPLAIN_STE_PROMPT_V6, situationRequiredFor("reader-explain-ste"), now]
+      );
+    }
+  } catch { /* 播种失败不阻塞启动 */ }
+  // v49.164（D334）：reader-explain-ste v7——逐句 STE 改写 + 英文 STE 层 + 施动者可从出处补出（v6 行改用冻结常量 READER_EXPLAIN_STE_PROMPT_V6）。
+  // 存量库按 MAX(version)<7 升版播种，v1-v6 留痕。
+  try {
+    const steMaxV7 = queryAll("SELECT MAX(version) AS v FROM prompt_templates WHERE scope = 'reader-explain-ste'")[0]?.v || 0;
+    if (Number(steMaxV7) < 7) {
+      db.run(
+        "INSERT INTO prompt_templates (id, scope, name, content, version, is_default, situation_required, created_at) VALUES (?, 'reader-explain-ste', '简明解读 v7', ?, 7, 1, ?, ?)",
         [crypto.randomUUID(), READER_EXPLAIN_STE_PROMPT, situationRequiredFor("reader-explain-ste"), now]
       );
     }

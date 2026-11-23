@@ -52,3 +52,14 @@ export function explainContextBlocks(selection: string, context: string | Explai
   if (typeof context === "string") return context.trim() ? [`【上下文】${context.trim()}`] : [];
   return [formatSourceLine(context), formatExplainSurrounding(selection, context.surrounding)].filter(Boolean);
 }
+
+/** v49.164（D334）：施动者核对的出处原文——书名 / 作者 / 章节 / 前后文的原值，不含【来源】【前后文】等提示词标签
+ *  （标签本身有几十个汉字，会让英文材料也被当成「中文出处」，跨文字跳过因此失效） */
+export function explainGroundText(context: string | ExplainContext | null | undefined): string {
+  if (!context) return "";
+  if (typeof context === "string") return context.trim();
+  return [context.title, context.author, context.section, ...(context.sectionPath ?? []), context.surrounding?.before, context.surrounding?.after]
+    .map((s) => String(s ?? "").trim())
+    .filter(Boolean)
+    .join("\n");
+}

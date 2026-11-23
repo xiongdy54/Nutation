@@ -13,14 +13,14 @@ import { getLocale } from "./i18n";
 // v48.51（D91）：简明解读的 CLP pack 注入（回退链 + 格式化）
 import { formatProfile, resolveProfile, steOutputLang, steOutputLangName } from "./steProfiles";
 import { parseSteJson, renderSteMarkdown, renderStePartial, splitSentences, steLimitText, steLint, steNeedsRepair, steOutLangOf, steRepairPrompt, steScore, type SteLintContext } from "./steJson";
-import { steExampleBlock } from "./steExamples";
+import { steExampleBlock, steExampleBlockV7 } from "./steExamples";
 // v48.60（D101）：标签规范常量（L17 与 tags.ts 同源，禁第二份阈值）
 import { TAG_MAX_DEPTH, TAG_MAX_LEN, TAG_MAX_PER_CARD, type TagVocabEntry } from "./tags";
 import { decide, ans, type DecisionSpec } from "./decisions";
 import { presentationAppendix } from "./genui/prompt";
 import type { PresentationPlan } from "./genui/prompt";
 // v49.135（D302）：解释 / 制卡共用的语境包（来源行 + 前后文）
-import { explainContextBlocks, formatSourceLine, type ExplainContext } from "./explainContext";
+import { explainContextBlocks, explainGroundText, formatSourceLine, type ExplainContext } from "./explainContext";
 export type { ExplainContext } from "./explainContext";
 
 declare global {
@@ -1188,14 +1188,17 @@ export const cardGenerator: {
       const output = resolveProfile(outLang);
       const lang = steOutLangOf(outLang);
       // v49.134（D301）：v5 模板＝结构化 JSON（含 "explanations"）；用户自改过的旧式模板仍走 Markdown 直出（不校验）
-      const structured = tpl.content.includes('"explanations"');
+      // v49.164（D334）：v7 模板＝逐句 STE 改写（含 "rewrites"）——校验按 v7 契约（英文层 / 术语锁定）
+      const contract: "v6" | "v7" = tpl.content.includes('"rewrites"') ? "v7" : "v6";
+      const structured = contract === "v7" || tpl.content.includes('"explanations"');
       const sys = tpl.content
         // v49.76（D247）：{{OUTPUT_LANG_NAME}} 在模板中出现多次，必须全量替换（replace 只换首处）
         .split("{{OUTPUT_LANG_NAME}}").join(steOutputLangName(outLang))
         .replace("{{ANALYSIS_PROFILE}}", formatProfile(analysis))
         .replace("{{OUTPUT_PROFILE}}", formatProfile(output))
         .split("{{SENTENCE_LIMIT}}").join(steLimitText(lang))
-        .split("{{EXAMPLE}}").join(steExampleBlock(lang));
+        // D334：v7 范例按材料语言选「同语言 / 跨语言」一份
+        .split("{{EXAMPLE}}").join(contract === "v7" ? steExampleBlockV7(lang, matLang, sourceText) : steExampleBlock(lang));
       // D301：程序切句——模型按编号逐句解释，校验按编号核对组数
       const split = splitSentences(sourceText);
       const sentences = split.length ? split : [String(sourceText ?? "").trim()];
@@ -1213,14 +1216,16 @@ export const cardGenerator: {
         .join("\n\n") +
         // D299 第三轮：简明解读同样可用组件（未传呈现计划时为空串——提示词基线逐字不变）；
         // D301：追问直答不带组件；结构化模式下组件写进 JSON components
-        (question ? "" : presentationAppendix(opts.presentation?.kinds ?? [], { catalog: opts.presentation?.catalog ?? false, ste: true }));
+        (question ? "" : presentationAppendix(opts.presentation?.kinds ?? [], { catalog: opts.presentation?.catalog ?? false, ste: true, exclude: contract === "v7" ? ["glossary"] : [] }));
       // v48.103（D148）：受控语言改写是精度任务，0.7→0.3；v49.134（D301）：再降到 0.1（同输入多次生成的差异是「不稳定」的直接来源）。
       const base: ChatMessage[] = [
         { role: "system", content: sys },
         { role: "user", content: user }
       ];
       if (!structured) return aiGateway.chat(base, onDelta, STE_TEMPERATURE, onThinking, onCancelRegister, "ste");
-      return runSteStructured(base, { outLang, sentences, source: sourceText, followUp: !!question }, onDelta, onThinking, onCancelRegister);
+      // D334：施动者核对的出处＝原句 + 来源字段原值 + 前后文（不含提示词标签）
+      const groundCtx = explainGroundText(context);
+      return runSteStructured(base, { outLang, sentences, source: sourceText, followUp: !!question, context: groundCtx, contract }, onDelta, onThinking, onCancelRegister);
     }
     const tpl = await window.promptsAPI?.get("reader-explain");
     const sys = tpl?.content || "你是阅读助手。";

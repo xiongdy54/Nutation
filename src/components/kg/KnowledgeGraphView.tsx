@@ -26,6 +26,7 @@ import { EdgePanel, LinkCard, LinkSearch, type KgToast } from "./EdgePanel";
 // 解散预览按需加载（首屏包体预算 d237）
 const ReattachPreview = lazy(() => import("./ReattachPreview"));
 import type { ReattachResult } from "../../lib/atlas";
+import BufferedInput from "../BufferedInput";
 
 type OpenMap = (documentId: string, mapId: string, nodeId: string) => void;
 
@@ -1105,14 +1106,16 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
               {T("褪色 {n}", { n: snap.summary.fading })}
             </div>
             <div className="kg-tools">
-              <input
+              {/* v49.167 / D337：BufferedInput 自持文字——击键不再重渲染整张图谱；Enter 前先冲刷 */}
+              <BufferedInput
                 ref={searchRef}
                 className={`kg-find${searchOpen ? " is-open" : ""}`}
                 value={query}
+                delay={120}
                 placeholder={T("查找知识点")}
                 aria-label={T("查找知识点")}
                 tabIndex={searchOpen ? 0 : -1}
-                onChange={(e) => setQuery(e.target.value)}
+                onValueChange={setQuery}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !isImeComposing(e)) doSearch();
                   if (e.key === "Escape") {
