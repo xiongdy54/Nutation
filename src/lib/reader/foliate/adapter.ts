@@ -951,6 +951,26 @@ export function createFoliateKernel(host: HTMLElement): ReaderKernel {
       return ok;
     },
 
+    async goToText(t) {
+      const i = resolveSectionIndex(String(t?.unitAnchor ?? ""));
+      if (i < 0) return false;
+      const live = () => {
+        const d = docs.get(i);
+        return d && (d.defaultView?.frameElement as Element | null | undefined)?.isConnected ? d : null;
+      };
+      if (!live()) await view.goTo(i);
+      const doc = live();
+      if (!doc) return false;
+      const root = (doc.body || doc.documentElement) as Node | null;
+      if (!root) return false;
+      const idx = buildTextIndex(root);
+      const span = findFlatSpan(idx, t.head, t.tail ?? "");
+      const range = span ? spanToRange(doc, idx, span) : null;
+      if (!range) return false;
+      range.collapse(true);
+      return Boolean(await view.goTo(view.getCFI(i, range)));
+    },
+
     async next() {
       const before = kernel.getCurrentLocation()?.cfi;
       await view.next();

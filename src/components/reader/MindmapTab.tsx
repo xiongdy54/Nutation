@@ -23,10 +23,11 @@ import { applyDelta, createGraph, emptyGraph, setManualPattern, setView } from "
 import { createLayoutCache, layoutGraph } from "../../lib/mindmap/v2/layout";
 import { REL_STYLE, routeRelations } from "../../lib/mindmap/v2/route";
 import { buildCanvasSvg, type SvgLabels } from "../../lib/mindmap/v2/svg";
+import { expandAllForExport, inlineSvgVars, pngScale, toMarkdown, toOpml, toOutline, toXmindEntries } from "../../lib/mindmap/v2/exportDoc";
 import { HOW_NAMES, PATTERN_NAMES, type PatternHow } from "../../lib/mindmap/v2/pattern";
 import AtlasStage, { type AtlasEntry } from "./atlas/AtlasStage";
 import AtlasCard from "./atlas/AtlasCard";
-import AtlasToolbar, { type AtlasRunInfo } from "./atlas/AtlasToolbar";
+import AtlasToolbar, { type AtlasExportFormat, type AtlasRunInfo } from "./atlas/AtlasToolbar";
 import { useThrottled } from "./atlas/useThrottled";
 import { ATLAS_T, atlasChain, defaultExpanded, expandFor, normalizeSnapshot, type FlowSnapshot } from "../../lib/flow/atlasLayout";
 import { eventBus } from "../../lib/eventbus";
@@ -670,6 +671,14 @@ export default function MindmapTab(props: MindmapTabProps) {
   // ---------- 跳正文 / 制卡 ----------
   const jumpToText = async (node: V2Node) => {
     const back = kernel.getCurrentLocation();
+    // D338：先按段落探针精确定位；失败再走单元 + 文本搜索
+    if (kernel.goToText && mapIdRef.current) {
+      const a = (await mindmapV2Api.nodeAnchors(mapIdRef.current, [node.id]).catch(() => null))?.anchors?.[node.id]?.[0];
+      if (a?.head && (await kernel.goToText({ unitAnchor: a.unitAnchor, head: a.head, tail: a.tail }).catch(() => false))) {
+        onJumpToText(back);
+        return;
+      }
+    }
     const text = await mindmapV2Api.nodeText(mapIdRef.current!, node.id).catch(() => null);
     if (text?.unitAnchor) await kernel.goTo({ href: text.unitAnchor });
     const probe = (text?.text || "").replace(/\s+/g, " ").trim().slice(0, 20);
@@ -694,7 +703,7 @@ export default function MindmapTab(props: MindmapTabProps) {
     onMakeCardsFromNode({ nodeId: pkg.mindmapNodeId, label: n.title, section: pkg.text, focus: T("结构卡：{title}", { title: n.title }), unitAnchors: pkg.unitAnchors });
   };
 
-  // ---------- 导出 SVG（仍是旧版卡片样式的整图） ----------
+  // ---------- 导出（旧版卡片样式的直线整图；D338 起全部展开） ----------
   const frameLabel = useMemo(() => (p: PatternKey, how: PatternHow) => `${T(PATTERN_NAMES[p])} · ${T(HOW_NAMES[how])}`, [T]);
   const labels = useMemo<Partial<SvgLabels>>(
     () => ({
@@ -712,20 +721,75 @@ export default function MindmapTab(props: MindmapTabProps) {
     [T],
   );
   const relName = useCallback((c: RelCode) => T(REL_STYLE[c]?.name ?? c), [T]);
-  const exportSvg = () => {
-    const g0 = graphRef.current;
-    if (!Object.keys(g0.nodes).length) return;
-    const rootTitle = meta?.title || title;
-    const d = layoutGraph(g0, { cache: createLayoutCache(), locks: {}, lodExpanded: new Set(), frameLabel, rootTitle, noLod: true });
-    const routed = routeRelations(g0, d, { relAll: true, geometry: "all", relName });
-    const raw = buildCanvasSvg(d, routed, {}, { static: true, graph: g0, rootTitle, labels, idPrefix: "mm2x-" });
-    const svg = DOMPurify.sanitize(raw, { USE_PROFILES: { svg: true, svgFilters: true } });
-    const blob = new Blob([svg], { type: "image/svg+xml" });
+  // D338：导出＝整图全部展开的快照；图片（SVG 自包含 / PNG 2×）+ 可编辑大纲（XMind / OPML / Markdown）
+  const download = (blob: Blob, ext: string) => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${title || T("材料知识导图")}.svg`;
+    a.download = `${title || T("材料知识导图")}.${ext}`;
     a.click();
-    URL.revokeObjectURL(a.href);
+    window.setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  };
+  const exportImageSvg = (): string => {
+    const ge = expandAllForExport(graphRef.current);
+    const rootTitle = meta?.title || title;
+    const d = layoutGraph(ge, { cache: createLayoutCache(), locks: {}, lodExpanded: new Set(), frameLabel, rootTitle, noLod: true });
+    const routed = routeRelations(ge, d, { relAll: true, geometry: "all", relName });
+    const raw = buildCanvasSvg(d, routed, {}, { static: true, graph: ge, rootTitle, labels, idPrefix: "mm2x-" });
+    return inlineSvgVars(DOMPurify.sanitize(raw, { USE_PROFILES: { svg: true, svgFilters: true } }));
+  };
+  const rasterize = (svg: string): Promise<{ blob: Blob | null; scale: number }> =>
+    new Promise((resolve) => {
+      const m = /^<svg\s[^>]*?\swidth="([\d.]+)"[^>]*?\sheight="([\d.]+)"/.exec(svg);
+      const w = m ? Number(m[1]) : 0, h = m ? Number(m[2]) : 0;
+      const k = pngScale(w, h);
+      if (!k) return resolve({ blob: null, scale: 0 });
+      const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const cv = document.createElement("canvas");
+          cv.width = Math.max(1, Math.round(w * k));
+          cv.height = Math.max(1, Math.round(h * k));
+          const ctx = cv.getContext("2d");
+          if (!ctx) throw new Error("no 2d context");
+          ctx.drawImage(img, 0, 0, cv.width, cv.height);
+          cv.toBlob((b) => resolve({ blob: b, scale: k }), "image/png");
+        } catch {
+          resolve({ blob: null, scale: k });
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve({ blob: null, scale: k });
+      };
+      img.src = url;
+    });
+  const exportAs = async (fmt: AtlasExportFormat) => {
+    const g0 = graphRef.current;
+    if (!Object.keys(g0.nodes).length) return;
+    try {
+      if (fmt === "svg") return download(new Blob([exportImageSvg()], { type: "image/svg+xml" }), "svg");
+      if (fmt === "png") {
+        const r = await rasterize(exportImageSvg());
+        if (!r.blob) return setNotice(T("导出图片失败，请改用 SVG 或 XMind。"));
+        download(r.blob, "png");
+        if (r.scale < 1) setNotice(T("导图很大，PNG 已按比例缩小；要看清细节请导出 SVG 或 XMind。"));
+        return;
+      }
+      const outline = toOutline(g0, meta?.title || title);
+      if (fmt === "md") return download(new Blob([toMarkdown(outline)], { type: "text/markdown;charset=utf-8" }), "md");
+      if (fmt === "opml") return download(new Blob([toOpml(outline)], { type: "text/x-opml;charset=utf-8" }), "opml");
+      if (fmt === "xmind") {
+        const { default: JSZip } = await import("jszip");
+        const zip = new JSZip();
+        for (const [name, body] of Object.entries(toXmindEntries(outline))) zip.file(name, body);
+        download(await zip.generateAsync({ type: "blob", mimeType: "application/vnd.xmind.workbook" }), "xmind");
+      }
+    } catch (err) {
+      setNotice(T("导出失败：{msg}", { msg: err instanceof Error ? err.message : String(err) }));
+    }
   };
 
   // ---------- 状态文案 ----------
@@ -820,7 +884,7 @@ export default function MindmapTab(props: MindmapTabProps) {
                 await refreshVersions();
                 if (id === mapIdRef.current) await loadMap({ documentId });
               }}
-              onExportSvg={exportSvg}
+              onExport={(f) => void exportAs(f)}
               canExport={Object.keys(graph.nodes).length > 0}
             />,
             toolbarHost,

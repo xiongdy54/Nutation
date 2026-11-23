@@ -14,7 +14,7 @@ export const AL = {
   PAD_X: 10, PAD_R: 10, PAD_Y: 4, // D254 修订：节点改为圆角「标签胶囊」，左右内边距对称 10
   META_H: 15, TIME_H: 15, MIN_W: 64,
   // 大纲 · 扇形树
-  FAN_GAP: 72, FAN_PORT: 4, FAN_VGAP: 10, FAN_VGAP_BLOCK: 26,
+  FAN_GAP: 72, FAN_PORT: 4, ELBOW_R: 6, FAN_VGAP: 10, FAN_VGAP_BLOCK: 26,
   // 并列 · 网格
   GRID_TILE_W: 184, GRID_GX: 16, GRID_GY: 20, GRID_MAXCOLS: 4, HEAD_GAP: 16,
   // 论证
@@ -229,6 +229,25 @@ function shiftAll(out: ABlock, dx: number, dy: number) {
   out.anchor = { ...out.anchor, x: out.anchor.x + dx, y: out.anchor.y + dy };
 }
 /** 世界坐标下块的锚点（子块被 put(dx,dy) 后） */
+/** D338：直角连线（水平 → 竖直主干 x=tx → 水平），拐角为小圆角；输出与 AGeom.path 同格式（每段一个三次贝塞尔，直线段退化为共线控制点） */
+export function elbowPath(sx: number, sy: number, tx: number, ex: number, ey: number, radius = AL.ELBOW_R): number[] {
+  const p: number[] = [sx, sy];
+  const line = (x0: number, y0: number, x1: number, y1: number) => p.push(x0 + (x1 - x0) / 3, y0 + (y1 - y0) / 3, x0 + ((x1 - x0) * 2) / 3, y0 + ((y1 - y0) * 2) / 3, x1, y1);
+  const dy = ey - sy;
+  if (Math.abs(dy) < 0.5) {
+    line(sx, sy, ex, ey);
+    return p;
+  }
+  const s = dy > 0 ? 1 : -1;
+  const r = Math.max(0, Math.min(radius, Math.abs(dy) / 2, tx - sx, ex - tx));
+  const K = 0.5523 * r; // 四分之一圆的三次贝塞尔近似
+  line(sx, sy, tx - r, sy);
+  p.push(tx - r + K, sy, tx, sy + s * (r - K), tx, sy + s * r);
+  line(tx, sy + s * r, tx, ey - s * r);
+  p.push(tx, ey - s * (r - K), tx + r - K, ey, tx + r, ey);
+  line(tx + r, ey, ex, ey);
+  return p;
+}
 const anchorAt = (b: ABlock, dx: number, dy: number): Box => ({ x: b.anchor.x + dx, y: b.anchor.y + dy, w: b.anchor.w, h: b.anchor.h });
 const relEdge = (id: string, from: string, to: string, code: RelCode, p: number[], color: string, colorB: string, opacity = 1): AEdge => {
   const st = REL_STYLE[code];
@@ -330,18 +349,19 @@ function layoutFan(gi: GroupIn): ABlock {
   const H = { ...gi.head, x: 0, y: hy };
   out.glyphs.push(H);
   list.forEach((b, i) => put(out, b, ax, tops[i] + ky));
-  // D254 修订：不再用 Sankey 流带（跨度大时被拉成喇叭 / 单子节点时像插了一块矩形）——
-  // 改为从父节点右缘同一点发出的细曲线（经典整洁树的水平 S 形），在子节点左缘收束；颜色由父色渐变到子色
+  // D254 修订：不再用 Sankey 流带（跨度大时被拉成喇叭 / 单子节点时像插了一块矩形）。
+  // D338：再由「同一点发出的 S 形曲线」改为直角总线——父节点右缘水平出线 → 共用一根竖直主干 → 水平进子节点左缘；
+  // 子节点多时各条线在主干上重合成一根，不再在父节点出口处叠成一束（与导出图同一直线风格）。颜色由父色渐变到子色
   const sx = H.x + H.w + AL.FAN_PORT, sy = hy + H.h / 2;
+  const tx = Math.round(sx + Math.max(8, Math.min(AL.FAN_GAP * 0.4, (ax - AL.FAN_PORT - sx) / 2)));
   list.forEach((b, i) => {
     const A = anchorAt(b, ax, tops[i] + ky);
     const toNode = i < gi.blocks.length ? gi.kids[i] : null;
     const color = i < gi.blocks.length ? b.glyphs[0].color : gi.o.colors.hairline;
     const ex = A.x - AL.FAN_PORT, ey = A.y + A.h / 2;
-    const k = Math.max(24, Math.min(AL.FAN_GAP - 8, (ex - sx) * 0.5));
     out.edges.push({
       id: `fan:${gi.id}>${toNode ?? "more"}`, kind: "fan", from: gi.id, to: toNode, code: null,
-      geom: { t: "path", p: [sx, sy, sx + k, sy, ex - k, ey, ex, ey] },
+      geom: { t: "path", p: elbowPath(sx, sy, tx, ex, ey) },
       color: H.color, colorB: color, w: 1.25, dash: toNode ? "" : "2 3", end: null, start: null, opacity: 0.55,
     });
   });

@@ -28,6 +28,7 @@ export interface FlowKernel {
   getReadingProbes?(fracs: number[]): ReaderReadingProbe[];
   getCurrentLocation(): ReaderLocation | null;
   goTo(target: ReaderLocation | { href: string } | { search: string }): Promise<boolean>;
+  goToText?(t: { unitAnchor: string; head: string; tail?: string }): Promise<boolean>;
   setStructureTargets?(targets: ReaderStructureTarget[]): void;
   /** §13.3：正文逐帧滚动通知（滚动模式下驱动取样节流与彩带同步） */
   onContentScroll?(cb: () => void): () => void;
@@ -540,16 +541,26 @@ export function useStructureFlow(kernel: FlowKernel | null, documentId: string |
     if (!kernel || !g?.mapId) return;
     const here = kernel.getCurrentLocation();
     try {
-      const t = await mindmapV2Api.nodeText(g.mapId, id);
-      if (!t.unitAnchor) {
+      // D338：先按段落探针精确定位（单元＝整篇的格式里，只跳单元会落到文档顶部 / 原地不动）
+      let ok = false;
+      if (kernel.goToText) {
+        const a = (await mindmapV2Api.nodeAnchors(g.mapId, [id]).catch(() => null))?.anchors?.[id]?.[0];
+        if (a?.head) {
+          if (here) setBackLoc((prev) => prev ?? here);
+          ok = await kernel.goToText({ unitAnchor: a.unitAnchor, head: a.head, tail: a.tail }).catch(() => false);
+        }
+      }
+      const t = ok ? null : await mindmapV2Api.nodeText(g.mapId, id);
+      if (!ok && !t?.unitAnchor) {
         showStatus(T("原文还在读取，稍后再试。"));
         return;
       }
-      if (here) setBackLoc((prev) => prev ?? here);
-      const ok = await kernel.goTo({ href: t.unitAnchor });
-      if (!ok) {
+      if (t?.unitAnchor) {
+        if (here) setBackLoc((prev) => prev ?? here);
+        // 段落定位失败：单元 + 文本搜索兜底（搜索命中优先，不再被「单元跳转成功」短路）
         const probe = (t.text || "").replace(/\s+/g, " ").trim().slice(0, 20);
-        if (probe.length >= 6) await kernel.goTo({ search: probe }).catch(() => false);
+        const found = probe.length >= 6 ? await kernel.goTo({ search: probe }).catch(() => false) : false;
+        if (!found) await kernel.goTo({ href: t.unitAnchor });
       }
       setSel(null);
       setExplainFor(null);

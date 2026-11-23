@@ -87,6 +87,15 @@ const GlyphRow = memo(
       transitionDelay: `${d.delay}ms`,
       "--c": gl.color,
     } as unknown as CSSProperties;
+    // D339：全谱挂靠标记放进底部信息行右端（空心锚环 + 淡色数字），与「+N 子节点」区分；单元格 / 「另 N 项」没有信息行，退为右上角内缩
+    const inMeta = gl.kind !== "cell" && gl.kind !== "more";
+    const linkLabel = T("关联 {n} 个全谱节点", { n: links });
+    const linkMark = (
+      <span className="ag-link" data-atlas-link={links} data-inline={inMeta ? "1" : undefined} title={linkLabel} aria-label={linkLabel}>
+        <i aria-hidden="true" />
+        {links}
+      </span>
+    );
     return (
       <div
         className="ag"
@@ -109,8 +118,8 @@ const GlyphRow = memo(
             <span key={i} className="ag-line">{reading ? <mark className="flow-pill">{l}</mark> : l}</span>
           ))}
         </span>
-        {gl.meta || gl.kids > 0 ? (
-          gl.kind !== "cell" && gl.kind !== "more" ? (
+        {gl.meta || gl.kids > 0 || (links > 0 && inMeta) ? (
+          inMeta ? (
             <span className="ag-meta">
               <span className="ag-type">{gl.meta}</span>
               {gl.kids > 0 && gl.kind !== "colhead" ? (
@@ -123,6 +132,7 @@ const GlyphRow = memo(
                   {gl.expanded ? "−" : `+${gl.kids}`}
                 </button>
               ) : null}
+              {links > 0 ? linkMark : null}
             </span>
           ) : null
         ) : null}
@@ -131,11 +141,7 @@ const GlyphRow = memo(
             {gl.expanded ? "−" : `+${gl.kids}`}
           </button>
         ) : null}
-        {links > 0 ? (
-          <span className="ag-link" data-atlas-link={links} title={T("关联 {n} 个全谱节点", { n: links })} aria-label={T("关联 {n} 个全谱节点", { n: links })}>
-            <i aria-hidden="true" />{links}
-          </span>
-        ) : null}
+        {links > 0 && !inMeta ? linkMark : null}
       </div>
     );
   },
