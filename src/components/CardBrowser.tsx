@@ -43,6 +43,7 @@ import { buildSchemeFilter, cardMatchesScheme, extractMatchesScheme } from "../l
 import { applyTagDelta, tagKey, type TagVocabEntry } from "../lib/tags";
 import TagInput from "./TagInput";
 import { t, useT, getLocale } from "../lib/i18n";
+import BufferedInput from "./BufferedInput";
 
 /** v48.22（D58 §6.8-5）：筛选牌组（复习范围）——保存的过滤条件，零 schema 变更。
  *  v48.61（D105）：结构扩展 tags[] / kpIds[]（向后兼容，缺省 = 不限）；过滤语义见 §6.8-5 */
@@ -198,13 +199,9 @@ export default function CardBrowser({
   const [rowCache, setRowCache] = useState<Map<string, BrowserCard>>(new Map());
   const fpRef = useRef("");
   const [preset, setPreset] = useState<Preset>("all");
+  // D110：输入防抖——30 万行下全量过滤每键 1s+ 会卡输入；过滤用 300ms 防抖值。
+  // v49.167 / D337：即时回显交给 BufferedInput 自持（此前 queryInput 挂在根 state，每键整页重渲染 → 输入法卡顿）
   const [query, setQuery] = useState("");
-  // D110：输入防抖——30 万行下全量过滤每键 1s+ 会卡输入；输入框即时回显，过滤用 300ms 防抖值
-  const [queryInput, setQueryInput] = useState("");
-  useEffect(() => {
-    const t = setTimeout(() => setQuery(queryInput), 300);
-    return () => clearTimeout(t);
-  }, [queryInput]);
   const [typeFilter, setTypeFilter] = useState("all");
   const [stateFilter, setStateFilter] = useState("all");
   // v46（M14-UM2，§6.7.3）：「记忆接地」筛选（情境来自记忆的卡，含存疑）
@@ -839,9 +836,8 @@ export default function CardBrowser({
         })
         .catch(() => setDeckKps(ids.map((id) => ({ id, label: id }))));
     }
-    // D157：方案即完整条件——套用时清空搜索框（即时值 + 防抖值都清，否则 300ms 后回填旧词）
+    // D157：方案即完整条件——套用时清空搜索框（BufferedInput 收到外部改写会丢弃未汇报的旧词）
     setQuery("");
-    setQueryInput("");
     setActiveSchemeId(s.id);
     setActiveSchemeSig("");
     setSigCaptureToken((t) => t + 1);
@@ -1167,11 +1163,12 @@ export default function CardBrowser({
       {/* v48.40（D80）：工具行——better-layout「一盒一功能」：搜索 grow / 筛选 / 类别 / 来源书 各成一盒（border-strong 描边，16px 组距） */}
       <div className="cb-toolbar">
         <div className="cb-cluster cb-cluster-grow">
-          <input
+          <BufferedInput
             className="cb-search"
             placeholder={T('搜索题面、答案、前缀、来源、领域、标签…（支持 -排除、kind:、book:、status:、priority<=30）')}
-            value={queryInput}
-            onChange={(e) => setQueryInput(e.target.value)}
+            value={query}
+            onValueChange={setQuery}
+            delay={300}
           />
         </div>
         <div className="cb-cluster">
@@ -1348,13 +1345,13 @@ export default function CardBrowser({
             <div className="cb-scheme-field">
               <span className="cb-scheme-label">{T("方案名称")}</span>
               <div className="cb-scheme-value">
-                <input
+                <BufferedInput
                   className="cb-search cb-scheme-name-input"
                   data-deck-name
                   autoFocus
                   placeholder={T("例如：考研英语（留空则自动命名）")}
                   value={deckName}
-                  onChange={(e) => setDeckName(e.target.value)}
+                  onValueChange={setDeckName}
                   onKeyDown={(e) => { if (isImeComposing(e)) return; if (e.key === "Enter") void saveDeck(); }}
                 />
               </div>
@@ -1469,12 +1466,12 @@ export default function CardBrowser({
                     </span>
                     {deckKpPop && (
                       <span className="cb-deck-pop cb-deck-pop-col" data-deck-kp-pop>
-                        <input
+                        <BufferedInput
                           className="cb-search"
                           data-deck-kp-search
                           placeholder={T("搜索知识点（名称/别名）…")}
                           value={kpQuery}
-                          onChange={(e) => setKpQuery(e.target.value)}
+                          onValueChange={setKpQuery}
                         />
                         <span className="cb-deck-pop-list">
                           {kpOptions.map((p) => (
@@ -1840,8 +1837,8 @@ export default function CardBrowser({
         </div>
         {selExtracts.size > 0 && (
           <div className="cb-cluster">
-            <input className="cb-search cb-find" data-find-input placeholder={T("查找")} value={findText} onChange={(e) => setFindText(e.target.value)} />
-            <input className="cb-search cb-find" data-replace-input placeholder={T("替换为")} value={replaceText} onChange={(e) => setReplaceText(e.target.value)} />
+            <BufferedInput className="cb-search cb-find" data-find-input placeholder={T("查找")} value={findText} onValueChange={setFindText} />
+            <BufferedInput className="cb-search cb-find" data-replace-input placeholder={T("替换为")} value={replaceText} onValueChange={setReplaceText} />
             <button className="btn btn-outline btn-sm" disabled={batchBusy} data-find-replace onClick={() => void runFindReplace()}>{T("正文查找替换")}</button>
           </div>
         )}

@@ -86,6 +86,7 @@ import {
   type ExtractSpan,
   type MultiSelectKey
 } from "../lib/readingWorkflow";
+import BufferedInput from "./BufferedInput";
 
 // D122：§K.4 的 ReaderSelActionsFloat（选区动作组悬浮形态）已退役——被 SelectionMenu（选区浮条）取代。
 
@@ -2502,14 +2503,14 @@ export default function Reader({
                             />
                             {themeNaming ? (
                               <span className="reader-theme-naming">
-                                <input
+                                <BufferedInput
                                   className="reader-theme-name-input"
                                   data-reader-theme-name-input
                                   autoFocus
                                   maxLength={24}
                                   placeholder={T("我的主题 {n}", { n: savedThemes.length + 1 })}
                                   value={themeNameDraft}
-                                  onChange={(e) => setThemeNameDraft(e.target.value)}
+                                  onValueChange={setThemeNameDraft}
                                   onKeyDown={(e) => {
                                     if (isImeComposing(e)) return; // 组字中的 Enter/Esc 属于输入法（确认/取消候选词）
                                     if (e.key === "Enter") confirmThemeName();

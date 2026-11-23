@@ -65,6 +65,7 @@ import { computeSettingsNotices, latestSaneBackupAt, type SettingsNotice, type S
 // 显式 behavior:"smooth" 会压过 theme.css 的 scroll-behavior:auto !important，只判 matchMedia 不够。
 import { motionPreference } from "../lib/mindmap/v2/animate";
 import { useGenuiAutoCards } from "../lib/genuiSettings";
+import BufferedInput from "./BufferedInput";
 
 // C-37：新增 "system"（跟随系统）——theme 存的是解析后的落窗档（accent 默认值按它取），
 // themeMode 是 theme.mode 原始档（按钮高亮按它；"system" 时浅/深两钮都不高亮）。
@@ -1784,10 +1785,12 @@ function ReaderSection() {
       </div>
       <div className="form-field">
         <label>{T("正文字体")}</label>
-        <input
+        {/* v49.167 / D337：BufferedInput——此前每个击键（含拼音字母）都写库并广播设置变更 */}
+        <BufferedInput
           value={a.fontFamily ?? ""}
           placeholder={T("留空使用默认无衬线字体栈")}
-          onChange={(e) => save({ ...cfg, appearance: { ...a, fontFamily: e.target.value } })}
+          delay={400}
+          onValueChange={(v) => save({ ...cfg, appearance: { ...a, fontFamily: v } })}
         />
       </div>
       <div className="settings-row" data-reader-setting="ignorePublisherFont">
@@ -2110,11 +2113,12 @@ function ReaderSection() {
           </div>
           <div className="form-field">
             <label>{T("摘录卡字体")}</label>
-            <input
+            <BufferedInput
               data-testid="setting-extract-font-family"
               value={ext.extractFaceFontFamily}
               placeholder={T("留空使用应用默认字体")}
-              onChange={(e) => saveExtract({ ...ext, extractFaceFontFamily: e.target.value })}
+              delay={400}
+              onValueChange={(v) => saveExtract({ ...ext, extractFaceFontFamily: v })}
             />
           </div>
         </>
@@ -3716,11 +3720,12 @@ function ThemePluginsBlock() {
                         />
                       )}
                       {s.type === "text" && (
-                        <input
+                        <BufferedInput
                           type="text"
                           maxLength={100}
                           value={String(v ?? "")}
-                          onChange={(e) => void setValues(p.id, s.id, e.target.value)}
+                          delay={400}
+                          onValueChange={(nv) => void setValues(p.id, s.id, nv)}
                         />
                       )}
                     </div>

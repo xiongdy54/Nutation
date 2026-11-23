@@ -154,7 +154,11 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
   const [density, setDensity] = useState<ShelfDensity>(shelfCache.prefs?.density ?? "md");
   const [openFolderId, setOpenFolderId] = useState<string | null>(null);
   // field="author"：同一输入框复用于编辑作者（D121 §1.1；空=未知）
-  const [renaming, setRenaming] = useState<{ id: string; value: string; field?: "author" } | null>(null);
+  // initialValue：输入框非受控，这里只是挂载时的初始文本与改名目标（D336），不代表正在编辑的值
+  const [renaming, setRenaming] = useState<{ id: string; initialValue: string; field?: "author" } | null>(null);
+  // v49.167 / D337：本次改名已结束（提交或 Esc 取消）的那个 renaming 对象。Esc/Enter 卸载输入框时浏览器
+  // 可能再补发一次 blur，onBlur 闭包里仍是旧 renaming → 已取消的文字被存、或同一次改名提交两次。按对象身份只认一次。
+  const renameSettledRef = useRef<object | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ id: string; kind: MenuKind } | null>(null);
   // 添加材料选单的触发钮（D177）：选单项点击先把焦点归还触发钮再开模态——
@@ -344,11 +348,24 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
     }
   }
 
-  async function commitRename() {
+  // v49.166 / D336：键盘提交/取消后把焦点还给这一条（目录表长列表里不丢键盘位置）。
+  // 只在 Enter / Esc 时用：点击别处失焦时焦点应留在用户点的控件上，不能抢回来。
+  const restoreEntryFocus = (id: string) => {
+    requestAnimationFrame(() => {
+      listRef.current
+        ?.querySelector<HTMLElement>(`[data-entry="${id}"] .t-open, [data-entry="${id}"] .cap`)
+        ?.focus();
+    });
+  };
+
+  // v49.166 / D336：提交值由输入框当场给出（输入框非受控）——组字期间不再逐键回写书架 state
+  async function commitRename(raw: string, opts?: { focusBack?: boolean }) {
     const cur = renaming;
+    if (!cur || renameSettledRef.current === cur) return;
+    renameSettledRef.current = cur;
     setRenaming(null);
-    if (!cur) return;
-    const next = cur.value.trim();
+    if (opts?.focusBack) restoreEntryFocus(cur.id);
+    const next = raw.trim();
     if (cur.field === "author") {
       const it = items.find((x) => x.id === cur.id);
       if (!it || next === (it.author ?? "")) return;
@@ -396,13 +413,13 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
     const res = groupInto(shelf, sourceId, targetId, openFolderId);
     if (res.refused) { setError(res.refused); return; }
     commit(res.state);
-    if (res.renameId) setRenaming({ id: res.renameId, value: findFolder(res.state, res.renameId)?.name || "" });
+    if (res.renameId) setRenaming({ id: res.renameId, initialValue: findFolder(res.state, res.renameId)?.name || "" });
   };
   const createFolder = (bookId: string) => {
     const { state, folderId } = createFolderWith(shelf, bookId);
     commit(state);
     setMenu(null);
-    setRenaming({ id: folderId, value: findFolder(state, folderId)?.name || "" });
+    setRenaming({ id: folderId, initialValue: findFolder(state, folderId)?.name || "" });
   };
   const leaveFolder = (bookId: string) => {
     setMenu(null);
@@ -491,9 +508,9 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
 
   /* ---------------- 卡片键盘：Enter 打开 / Alt+方向键逐格移动 ---------------- */
 
-  // 拆开两件事：Enter/Space 只在**非原生**的可激活元素（.book-card / .cap 是 div[role=button]）上需要手写；
-  // 目录表的书名现在是真 <button>，浏览器自己会把 Enter/Space 变成 click 并冒泡到 <td> 的 onClick——
-  // 若两条路径都调 onOpenBook，回车一次会开两次书。所以目录表只挂「重排」这半截。
+  // 拆开两件事：Enter/Space 只有**非原生**可激活元素（.book-card / .cap 是 div[role=button]）要手写；
+  // 目录表的封面缩略与书名都是真 <button>，浏览器把 Enter/Space 变成原生 click——封面按钮冒泡到格子的
+  // onClick 打开，书名按钮在自身处理器里阻止冒泡并进入改名（D336）。所以目录表这里只挂「重排」这半截。
   const onReorderKeyDown = (entry: ShelfEntry) => (e: React.KeyboardEvent) => {
     if (!e.altKey) return;
     const dir = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : null;
@@ -502,10 +519,12 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
     e.stopPropagation();
     if (!manual) { setError(T("拖拽与逐格移动仅在「手动顺序」下可用")); return; }
     step(entry.id, dir);
-    // 重排后焦点要跟着这一条走（否则列表重渲染把焦点丢回 body，连按不动）。
-    // 原先这里硬查 `.book-card`——目录表里没有它，于是**目录表视图的 Alt+方向键一直连按不了**（v48.18 修）。
+    // 重排后焦点跟着这一条走（否则列表重渲染把焦点丢回 body，连按不动），并留在**同一枚按钮**上
+    //（.t-cov 是新增的行首停靠点，别把人挪到书名按钮）。原先这里硬查 `.book-card`——目录表里没有它，
+    // 于是**目录表视图的 Alt+方向键一直连按不了**（v48.18 修）。
+    const stay = (e.currentTarget as HTMLElement).classList.contains("t-cov") ? ".t-cov" : ".t-open";
     requestAnimationFrame(() => {
-      listRef.current?.querySelector<HTMLElement>(`[data-entry="${entry.id}"] .book-card, [data-entry="${entry.id}"] .t-open`)?.focus();
+      listRef.current?.querySelector<HTMLElement>(`[data-entry="${entry.id}"] .book-card, [data-entry="${entry.id}"] ${stay}`)?.focus();
     });
   };
   const onCardKeyDown = (entry: ShelfEntry) => (e: React.KeyboardEvent) => {
@@ -532,6 +551,34 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
     </p>
   );
 
+  /* v49.165 / D335：就地改名输入框——封面墙图注与目录表标题列共用同一份行为
+     （Enter/失焦保存、Esc 取消、组字中不提交）。目录表的铅笔此前只写 renaming 状态，
+     却没有任何节点渲染输入框 → 点了没反应（封面墙正常）。
+     v49.166 / D336：改为**非受控**（defaultValue + 提交时读取当前值）。此前每敲一个键都
+     setRenaming → 整个书架（全部书卡 / 表格行）重渲染，输入法每次组字都要等这一帧：
+     隔离库 300 本实测目录表 ≈29ms/键、封面墙 ≈18ms/键，即用户感到的「输入法特别卡顿」。
+     现在击键只改输入框自己的文本，书架零重渲染。 */
+  const renameInput = (entry: ShelfEntry, cur: { id: string; initialValue: string; field?: "author" }) => (
+    <input
+      /* v49.167 / D337：非受控输入框的 defaultValue 只在挂载时生效——改名目标（条目/字段）一变就必须重挂，
+         否则 React 复用同一节点会留着上一次的文字（如同一本书从改书名直接切到改作者）。 */
+      key={`${cur.id}:${cur.field ?? "title"}`}
+      className="cap-input"
+      autoFocus
+      defaultValue={cur.initialValue}
+      title={cur.field === "author" ? T("作者（留空=未知），回车保存，Esc 取消") : T("回车保存，Esc 取消")}
+      aria-label={cur.field === "author" ? T("修改作者") : entry.kind === "folder" ? T("修改文件夹名") : T("修改书名")}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={(e) => void commitRename(e.currentTarget.value)}
+      onKeyDown={(e) => {
+        if (isImeComposing(e)) return; // 组字中的 Enter/Esc 属于输入法（确认/取消候选词）
+        if (e.key === "Enter") { e.preventDefault(); void commitRename(e.currentTarget.value, { focusBack: true }); }
+        else if (e.key === "Escape") { e.preventDefault(); renameSettledRef.current = cur; setRenaming(null); restoreEntryFocus(entry.id); }
+        e.stopPropagation();
+      }}
+    />
+  );
+
   /* v48.117 / D162：图注两行——①名称行（名称 + 右端 ⋯ 更多按钮）②meta 行。
      名称单行截断（书籍 JS 截 12 字 + …、文件夹 CSS ellipsis），title 属性恒存全名；
      点击名称就地改名（cap-input，Enter/失焦保存、Esc 取消）；操作全部收拢进 ⋯ 菜单（D162） */
@@ -544,28 +591,11 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
     return (
       <>
         <div className="cap-row">
-          {renaming?.id === entry.id ? (
-            <input
-              className="cap-input"
-              autoFocus
-              value={renaming.value}
-              title={renaming.field === "author" ? T("作者（留空=未知），回车保存，Esc 取消") : T("回车保存，Esc 取消")}
-              aria-label={renaming.field === "author" ? T("修改作者") : entry.kind === "folder" ? T("修改文件夹名") : T("修改书名")}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => setRenaming({ id: entry.id, value: e.target.value, field: renaming.field })}
-              onBlur={() => void commitRename()}
-              onKeyDown={(e) => {
-                if (isImeComposing(e)) return; // 组字中的 Enter/Esc 属于输入法（确认/取消候选词）
-                if (e.key === "Enter") { e.preventDefault(); void commitRename(); }
-                else if (e.key === "Escape") { e.preventDefault(); setRenaming(null); }
-                e.stopPropagation();
-              }}
-            />
-          ) : (
+          {renaming?.id === entry.id ? renameInput(entry, renaming) : (
             <p
               className="cap-title"
               title={title}
-              onClick={(e) => { e.stopPropagation(); setRenaming({ id: entry.id, value: title }); }}
+              onClick={(e) => { e.stopPropagation(); setRenaming({ id: entry.id, initialValue: title }); }}
             >
               {display}
             </p>
@@ -676,7 +706,7 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
     <CardMenu label={T("文件夹操作")}>
       {/* v48.117 / D162：重命名主路径是点名称（键盘等价保留菜单项）；无删除——解散不删书记录 */}
       <button type="button" role="menuitem" className="dd-item"
-        onClick={() => { setMenu(null); setRenaming({ id: f.id, value: f.name }); }}>
+        onClick={() => { setMenu(null); setRenaming({ id: f.id, initialValue: f.name }); }}>
         {T("重命名")}
       </button>
       <button type="button" role="menuitem" className="dd-item" onClick={() => { setMenu(null); commit(moveAllOut(shelf, f.id)); }}>
@@ -696,12 +726,12 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
     return (
       <CardMenu label={T("更多操作")}>
         <button type="button" role="menuitem" className="dd-item" aria-label={T("重命名")}
-          onClick={() => { setMenu(null); setRenaming({ id: entry.id, value: item.title }); }}>
+          onClick={() => { setMenu(null); setRenaming({ id: entry.id, initialValue: item.title }); }}>
           {T("重命名")}
         </button>
         <button type="button" role="menuitem" className="dd-item" aria-label={T("作者")}
           title={item.author ? T("作者：{name}（点击修改）", { name: item.author }) : T("设置作者（留空=未知）")}
-          onClick={() => { setMenu(null); setRenaming({ id: entry.id, value: item.author ?? "", field: "author" }); }}>
+          onClick={() => { setMenu(null); setRenaming({ id: entry.id, initialValue: item.author ?? "", field: "author" }); }}>
           {item.author ? T("设置作者：{name}", { name: item.author }) : T("设置作者")}
         </button>
         <button type="button" role="menuitem" className="dd-item" aria-label={T("书籍语言")}
@@ -842,7 +872,8 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
     // v48.115 / D161 第三轮：文件夹不显示任何进度信息（用户指令）——无均值
     const progress = isFolder ? 0 : itemProgress(entry.item);
     const members = isFolder ? entry.folder.items.map((id) => items.find((i) => i.id === id)).filter(Boolean) as LibraryItem[] : [];
-    // 打开只有一条路径：格子的 onClick（封面格与书名格共用）；键盘经 .t-open 的原生 click 冒泡上来
+    // 打开＝封面格与主格其余区域的 onClick（D336 后书名按钮只改名，并在自身处理器里阻止冒泡）；
+    // 键盘走 .t-cov / .t-open 两个真按钮的原生激活。
     const open = () => (isFolder ? openInto(entry.id) : openFromShelf(entry.id));
     const openLabel = isFolder ? T("打开文件夹「{title}」，含 {n} 本", { title, n: agg!.n }) : T("打开《{title}》", { title });
     return (
@@ -853,43 +884,54 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
         style={{ "--i": String(Math.min(index, 7)) } as React.CSSProperties}
         {...itemProps(entry)}
       >
-        {/* v48.18：撤掉「打开」列与拖拽把手列。打开的入口改到**封面与书名本身**（与卡片视图同一套语言：
-            卡片视图本来就点封面/图注开书，目录表此前却点书名不开书——标题格只有 onKeyDown、没有 onClick）。
+        {/* v48.18：撤掉「打开」列与拖拽把手列。v49.166 / D336：打开入口＝封面缩略（.t-cov），
+            书名点击改为就地改名——与卡片视图「点封面开书、点书名改名」同一语言。
             拖拽本来就把 draggable 挂在整行上，两个把手都只是没有任何处理器的视觉提示 → 删掉后
             「按住条目空白处拖动」自然成立，可拖性改由 cursor: grab + 落点高亮承担。 */}
-        <td className="col-cov" onClick={open} title={openLabel}>
-          {isFolder ? (
-            /* 目录表缩略＝文件夹卡同一语言的缩小版（.thumb 重设几何变量；无 hover 动效） */
-            <span className="thumb">
-              <span className="f-back" aria-hidden="true" />
-              {members.length > 0 && (
-                <span className="f-papers" aria-hidden="true">
-                  {members.slice(0, PAPERS_MAX).map((m, pi) => (
-                    <i
-                      key={m.id}
-                      style={{
-                        "--ci": String(pi),
-                        ...(m.cover ? { backgroundImage: `url(bookasset://${m.id}/${m.cover})` } : {}),
-                      } as React.CSSProperties}
-                    />
-                  ))}
-                </span>
-              )}
-              <span className="f-front" aria-hidden="true" />
-            </span>
-          ) : (
-            <span className="thumb">{entry.item.cover
-              ? <img className="cover-img" src={`bookasset://${entry.item.id}/${entry.item.cover}`} alt="" aria-hidden="true"
-                onLoad={(e) => e.currentTarget.classList.add("is-loaded")} />
-              : <span className="thumb-mono" aria-hidden="true">{titleMonogram(entry.item.title)}</span>}</span>
-          )}
+        <td className="col-cov" onClick={open}>
+          {/* v49.166 / D336：书名改为「点了改名」后，打开入口移到封面缩略本身——与封面墙同语言
+              （点封面开书、点书名改名）。真 <button> 让 Enter/Space 原生激活并冒泡到 td 的 onClick，
+              所以这里不挂 onClick（挂了就是开两次）；键盘打开路径因此仍然成立。
+              Alt+方向键重排也挂在这里：它是行内第一个 Tab 停靠点（D336 后），重排不该要多按一次 Tab。 */}
+          <button type="button" className="t-cov" aria-label={openLabel} title={openLabel} onKeyDown={onReorderKeyDown(entry)}>
+            {isFolder ? (
+              /* 目录表缩略＝文件夹卡同一语言的缩小版（.thumb 重设几何变量；无 hover 动效） */
+              <span className="thumb">
+                <span className="f-back" aria-hidden="true" />
+                {members.length > 0 && (
+                  <span className="f-papers" aria-hidden="true">
+                    {members.slice(0, PAPERS_MAX).map((m, pi) => (
+                      <i
+                        key={m.id}
+                        style={{
+                          "--ci": String(pi),
+                          ...(m.cover ? { backgroundImage: `url(bookasset://${m.id}/${m.cover})` } : {}),
+                        } as React.CSSProperties}
+                      />
+                    ))}
+                  </span>
+                )}
+                <span className="f-front" aria-hidden="true" />
+              </span>
+            ) : (
+              <span className="thumb">{entry.item.cover
+                ? <img className="cover-img" src={`bookasset://${entry.item.id}/${entry.item.cover}`} alt="" aria-hidden="true"
+                  onLoad={(e) => e.currentTarget.classList.add("is-loaded")} />
+                : <span className="thumb-mono" aria-hidden="true">{titleMonogram(entry.item.title)}</span>}</span>
+            )}
+          </button>
         </td>
         <td className="col-main" onClick={open}>
-          {/* 真 <button>：读屏会报「打开《书名》」并带出可激活语义；Enter/Space 的原生 click 冒泡到上面的 td，
-              所以这里**不再挂 onClick**（挂了就是开两次）。 */}
-          <button type="button" className="t-open" aria-label={openLabel} title={title} onKeyDown={onReorderKeyDown(entry)}>
-            <span className="t-title">{title}</span>
-          </button>
+          {/* v49.166 / D336：书名点击＝就地改名（与封面墙 cap-title 同一语言），不再开书；打开移到封面缩略。
+              真 <button> 保住键盘可达：Enter/Space 原生激活 → 同样进入改名。
+              改名态换成与封面墙同一枚输入框（D335：此前目录表只设状态、无节点渲染 → 点铅笔没反应）。 */}
+          {renaming?.id === entry.id ? renameInput(entry, renaming) : (
+            <button type="button" className="t-open" aria-label={`${T("重命名")}: ${title}`} title={title}
+              onClick={(e) => { e.stopPropagation(); setRenaming({ id: entry.id, initialValue: title }); }}
+              onKeyDown={onReorderKeyDown(entry)}>
+              <span className="t-title">{title}</span>
+            </button>
+          )}
           {isFolder ? (
             <>
               <div className="t-sub">{T("{n} 本 · 悬停看成员", { n: agg!.n })}</div>
@@ -908,7 +950,7 @@ export default function Bookshelf({ onOpenBook, onImportFiles, onPasteMaterial, 
           {pendingDelete === entry.id && !isFolder ? confirmBox(entry.id, entry.item.title) : (
             <>
               <button className="act" title={isFolder ? T("重命名文件夹") : T("重命名")} aria-label={T("重命名")}
-                onClick={() => setRenaming({ id: entry.id, value: title })}><IconPencil /></button>
+                onClick={() => setRenaming({ id: entry.id, initialValue: title })}><IconPencil /></button>
               {isFolder ? (
                 <span className="dd">
                   <button className="act" title={T("文件夹操作")} aria-label={T("文件夹操作")} aria-haspopup="true"

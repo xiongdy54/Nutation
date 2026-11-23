@@ -17,15 +17,30 @@ export interface SteAmbiguity {
   quote: string;
   note: string;
 }
+export interface SteGlossaryItem {
+  term: string;
+  def: string;
+  /** 原文 / 原语言术语（D334） */
+  alias?: string;
+}
+export interface SteNote {
+  after: number;
+  text: string;
+}
+/** D334：v7 字段 rewrites / glossary / notes / en；v6 的 explanations / terms 归一到同名新字段（fields 记录模型实际用的键名，修复指令按它措辞） */
 export interface SteDoc {
   matLang: string;
   ambiguities: SteAmbiguity[];
-  explanations: string[][];
+  rewrites: string[][];
+  notes: SteNote[];
   readings: string[];
-  terms: Array<{ term: string; def: string }>;
+  glossary: SteGlossaryItem[];
+  /** 英文 STE 层（与 rewrites 逐句对齐） */
+  en: string[][];
   components: SteComponent[];
   /** 追问直答：只有 answer（短句数组） */
   answer?: string[];
+  fields: { rewrites: "rewrites" | "explanations"; glossary: "glossary" | "terms" };
 }
 
 export interface SteViolation {
@@ -36,7 +51,9 @@ export interface SteViolation {
 }
 
 export const STE_AMBIGUITY_KEYS = ["polysemy", "pronoun-ref", "long-nesting", "hidden-agent", "negation-stack", "undefined-term", "register-mix", "quantity-vague", "idiom-figurative", "missing-condition"];
-export const STE_CAPS = { ambiguities: 2, readings: 2, terms: 3, components: 2, answer: 5 };
+export const STE_CAPS = { ambiguities: 2, readings: 2, terms: 3, glossary: 5, components: 2, answer: 5 };
+/** D334：英文 STE 层句长上限（描述性写作 25 词） */
+export const STE_EN_LINE = 25;
 
 // ---------- 语言与句长 ----------
 
@@ -170,18 +187,27 @@ const strArr = (v: unknown): string[] => (Array.isArray(v) ? v.map(str).filter(B
 export function normalizeSteDoc(raw: unknown): SteDoc | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
-  const groups = Array.isArray(o.explanations) ? o.explanations : [];
+  const rk = Array.isArray(o.rewrites) || !Array.isArray(o.explanations) ? "rewrites" : "explanations";
+  const gk = Array.isArray(o.glossary) || !Array.isArray(o.terms) ? "glossary" : "terms";
+  const groupsOf = (v: unknown) =>
+    (Array.isArray(v) ? v : []).map((g) => (g && typeof g === "object" && !Array.isArray(g) ? strArr((g as Record<string, unknown>).lines) : strArr(g)));
   const doc: SteDoc = {
     matLang: str(o.matLang) || "unknown",
     ambiguities: (Array.isArray(o.ambiguities) ? o.ambiguities : [])
       .filter((a): a is Record<string, unknown> => !!a && typeof a === "object")
       .map((a) => ({ key: str(a.key), label: str(a.label), quote: str(a.quote), note: str(a.note) })),
-    explanations: groups.map((g) => (g && typeof g === "object" && !Array.isArray(g) ? strArr((g as Record<string, unknown>).lines) : strArr(g))),
+    rewrites: groupsOf(o[rk]),
+    notes: (Array.isArray(o.notes) ? o.notes : [])
+      .filter((x): x is Record<string, unknown> => !!x && typeof x === "object")
+      .map((x) => ({ after: Number(x.after), text: str(x.text) }))
+      .filter((x) => x.text),
     readings: strArr(o.readings),
-    terms: (Array.isArray(o.terms) ? o.terms : [])
+    glossary: (Array.isArray(o[gk]) ? (o[gk] as unknown[]) : [])
       .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
-      .map((t) => ({ term: str(t.term), def: str(t.def) }))
+      .map((t) => (str(t.alias) ? { term: str(t.term), def: str(t.def), alias: str(t.alias) } : { term: str(t.term), def: str(t.def) }))
       .filter((t) => t.term),
+    en: groupsOf(o.en),
+    fields: { rewrites: rk, glossary: gk },
     components: (Array.isArray(o.components) ? o.components : [])
       .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
       .map((c) => ({
@@ -211,11 +237,12 @@ export function parseSteJson(raw: string): { doc: SteDoc | null; strict: boolean
 
 // ---------- 渲染 ----------
 
-const HEADINGS: Record<SteOutLang, [string, string, string, string]> = {
-  "zh-Hans": ["歧义点", "解释", "多重解读", "术语"],
-  "zh-Hant": ["歧義點", "解釋", "多重解讀", "術語"],
-  en: ["Ambiguity points", "Explanation", "Multiple readings", "Terms"],
-  ja: ["曖昧な点", "説明", "複数の読み方", "用語"]
+// D334：节标题——v7（rewrites 字段）用「简明改写」；v6 旧输出（explanations）仍用「解释」与术语节
+const HEADINGS: Record<SteOutLang, { amb: string; body: string; bodyV7: string; readings: string; terms: string; note: string; en: string }> = {
+  "zh-Hans": { amb: "歧义点", body: "解释", bodyV7: "简明改写", readings: "多重解读", terms: "术语", note: "说明", en: "英文 STE 版本" },
+  "zh-Hant": { amb: "歧義點", body: "解釋", bodyV7: "簡明改寫", readings: "多重解讀", terms: "術語", note: "說明", en: "英文 STE 版本" },
+  en: { amb: "Ambiguity points", body: "Explanation", bodyV7: "STE rewrite", readings: "Multiple readings", terms: "Terms", note: "Note", en: "English STE version" },
+  ja: { amb: "曖昧な点", body: "説明", bodyV7: "簡明な書き換え", readings: "複数の読み方", terms: "用語", note: "補足", en: "英語 STE 版" }
 };
 
 function endPunct(line: string, lang: SteOutLang): string {
@@ -224,52 +251,72 @@ function endPunct(line: string, lang: SteOutLang): string {
   return t + (lang === "en" ? "." : "。");
 }
 
-function componentFence(c: SteComponent): string | null {
+function componentFence(c: SteComponent, v7 = false): string | null {
   if (c.mermaid && c.mermaid.trim()) return "```mermaid\n" + c.mermaid.trim() + "\n```";
   if (!c.block) return null;
   const type = String(c.block.type ?? "") as PresentationKind;
-  if (STE_BLOCKED_KINDS.has(type)) return null;
+  if (STE_BLOCKED_KINDS.has(type) || (v7 && type === "glossary")) return null;
   return "```nui\n" + JSON.stringify(c.block) + "\n```";
 }
 
-/** SteDoc → Markdown（机器标记 + 本地化节标题 + 逐段解释，组件插在所说明的那句之后）。不出现「第 N 句」编号 */
+/** D334：术语只以术语表组件展示（glossary 字段 → nui glossary 围栏） */
+function glossaryFence(items: SteGlossaryItem[]): string {
+  // alias 与 term 相同（同语言材料时模型常照抄）不显示
+  const terms = items.map((t) => (t.alias && t.alias !== t.term ? { term: t.term, def: t.def, alias: t.alias } : { term: t.term, def: t.def }));
+  return "```nui\n" + JSON.stringify({ type: "glossary", terms }) + "\n```";
+}
+
+/** SteDoc → Markdown（机器标记 + 本地化节标题 + 逐段改写，说明与组件插在所说明的那句之后）。不出现「第 N 句」编号。
+ *  D334：v7 无术语节——术语渲染为术语表组件；英文 STE 层放进默认折叠的 <details>（复制只取展开后可见的内容）。 */
 export function renderSteMarkdown(doc: SteDoc, outLang: string, opts: { partial?: boolean } = {}): string {
   const lang = steOutLangOf(outLang);
   const H = HEADINGS[lang];
+  const v7 = doc.fields.rewrites === "rewrites";
   const q = (s: string) => (lang === "en" ? `“${s}”` : `「${s}」`);
   const colon = lang === "en" ? ": " : "：";
-  if (doc.answer) return doc.answer.map((l) => endPunct(l, lang)).join(lang === "en" ? " " : "");
+  const joiner = lang === "en" ? " " : "";
+  if (doc.answer) return doc.answer.map((l) => endPunct(l, lang)).join(joiner);
   const amb = doc.ambiguities.slice(0, STE_CAPS.ambiguities).filter((a) => a.note || a.quote);
   const readings = doc.readings.slice(0, STE_CAPS.readings);
   const out: string[] = [`<!--ste:matLang=${doc.matLang || "unknown"}-->`, `<!--ste:points=${amb.length}-->`];
   if (readings.length) out.push(`<!--ste:readings=${readings.length}-->`);
   out.push("");
   if (amb.length) {
-    out.push(`## ${H[0]}`);
+    out.push(`## ${H.amb}`);
     for (const a of amb) out.push(`- ${a.label ? `**${a.label}** ` : ""}${a.quote ? q(a.quote) : ""}${colon}${a.note}`);
     out.push("");
   }
-  out.push(`## ${H[1]}`);
-  const groups = doc.explanations;
+  out.push(`## ${v7 ? H.bodyV7 : H.body}`);
+  const groups = doc.rewrites;
   const comps = opts.partial ? [] : doc.components.slice(0, STE_CAPS.components);
   const n = groups.length;
   groups.forEach((g, i) => {
-    const para = g.map((l) => endPunct(l, lang)).filter(Boolean).join(lang === "en" ? " " : "");
+    const para = g.map((l) => endPunct(l, lang)).filter(Boolean).join(joiner);
     if (para) out.push(para, "");
+    const note = doc.notes.find((x) => x.after === i + 1);
+    if (note) out.push(`*${H.note}${colon}${endPunct(note.text, lang)}*`, "");
     for (const c of comps) {
       const at = Number.isInteger(c.after) && c.after >= 1 && c.after <= n ? c.after : n;
       if (at === i + 1) {
-        const f = componentFence(c);
+        const f = componentFence(c, v7);
         if (f) out.push(f, "");
       }
     }
   });
+  const gCap = v7 ? STE_CAPS.glossary : STE_CAPS.terms;
+  const terms = doc.glossary.slice(0, doc.fields.glossary === "terms" ? STE_CAPS.terms : gCap);
+  if (v7 && terms.length && !opts.partial) out.push(glossaryFence(terms), "");
   if (readings.length) {
-    out.push(`## ${H[2]}`, ...readings.map((r) => `- ${endPunct(r, lang)}`), "");
+    out.push(`## ${H.readings}`, ...readings.map((r) => `- ${endPunct(r, lang)}`), "");
   }
-  const terms = doc.terms.slice(0, STE_CAPS.terms);
-  if (terms.length) {
-    out.push(`## ${H[3]}`, ...terms.map((t) => `- **${t.term}**${colon}${endPunct(t.def, lang)}`), "");
+  if (!v7 && terms.length) {
+    out.push(`## ${H.terms}`, ...terms.map((t) => `- **${t.term}**${colon}${endPunct(t.def, lang)}`), "");
+  }
+  const en = lang === "en" ? [] : doc.en.filter((g) => g.length);
+  if (en.length && !opts.partial) {
+    out.push("<details>", `<summary>${H.en}</summary>`, "");
+    for (const g of en) out.push(g.map((l) => endPunct(l, "en")).join(" "), "");
+    out.push("</details>", "");
   }
   return out.join("\n").trim();
 }
@@ -331,10 +378,86 @@ function lineChecks(path: string, line: string, lang: SteOutLang, max: number, o
 
 export interface SteLintContext {
   outLang: string;
-  /** 程序切出的原句（与 explanations 一一对应）；追问直答时可为空 */
+  /** 程序切出的原句（与 rewrites 一一对应）；追问直答时可为空 */
   sentences: string[];
   source: string;
   followUp?: boolean;
+  /** D334：来源行 + 前后文全文（施动者核对：出自原句 / 前后文 / 来源行即可补） */
+  context?: string;
+  /** D334：模板契约。v7＝逐句 STE 改写（必须有英文层、术语锁定、术语只走 glossary 字段）；缺省 v6 */
+  contract?: "v6" | "v7";
+}
+
+// D334：施动者核对——「X 把 / X 认为 / X calls…」中的 X 必须见于原句、前后文或来源行（用户裁定：出处里有就可以补）
+const AGENT_OK_ZH = /^(我们|我們|人们|人們|读者|讀者|作者|原文|来源|來源|材料|有人|他|她|它|他们|他們|她们|她們|它们|它們|这|這|那|该|該|此|其|大家|你|我)$/;
+// 只取归属动词（审查 #2/#8：「将 / 称」误伤「不久的将来」「名称」，已去掉；补「写道 / 提出」）
+const AGENT_ZH = /([\p{Script=Han}·]{2,6})(?=把|认为|認為|指出|主张|主張|断言|斷言|声称|聲稱|写道|寫道|提出)/gu;
+const AGENT_EN = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:calls|called|says|said|thinks|thought|believes|believed|argues|argued|claims|claimed|states|stated|names|named)\b/g;
+const AGENT_OK_EN = /^(The|This|That|These|Those|It|He|She|They|We|You|I|One|Nobody|Somebody|Someone|An|A)$/;
+const EN_DET = /^(?:The|A|An|This|That|These|Those)\s+/;
+// 施动者须紧挨着「は / が」，与动词之间不跨逗号、不跨另一个主题（审查 #2）
+const AGENT_JA = /([\p{Script=Han}\p{Script=Katakana}ー・]{2,8})(?:は|が)[^。、はが]{0,20}?(?:と呼ん|と呼ぶ|と述べ|と主張し|と主張す|と名付けた|と名付ける)/gu;
+// 一句一义：只认因果 / 转折连接词；中文只数逗号与分号（审查 #6）
+const CONNECT: Partial<Record<SteOutLang, RegExp>> = {
+  "zh-Hans": /并且|而且|因为|所以|但是|然而|因此|从而|虽然/,
+  "zh-Hant": /並且|而且|因為|所以|但是|然而|因此|從而|雖然/,
+  ja: /ので|から|けれど|しかし|ため/
+};
+const CLAUSE_SEP: Partial<Record<SteOutLang, RegExp>> = { "zh-Hans": /[，,；;]/g, "zh-Hant": /[，,；;]/g, ja: /[、，,；;]/g };
+const EN_ING_STOP = /^(during|nothing|something|anything|everything|evening|morning|spring|king|thing|bring|string|ceiling|meaning)$/i;
+const norm = (s: string) => String(s ?? "").replace(/[\s\p{P}\p{S}]/gu, "").toLowerCase();
+
+/** 中日：x 的任一前缀或后缀（≥2 字）见于出处或属于泛指词即算有出处——「康德同时」「人们可以」「这个对象」都不误报 */
+function agentGrounded(x: string, ground: string, cjk: boolean): boolean {
+  if (!cjk) return ground.toLowerCase().includes(x.toLowerCase());
+  for (let k = 1; k <= x.length; k++) {
+    const pre = x.slice(0, k);
+    const suf = x.slice(x.length - k);
+    if (AGENT_OK_ZH.test(pre) || AGENT_OK_ZH.test(suf)) return true;
+    if (k >= 2 && (ground.includes(pre) || ground.includes(suf))) return true;
+  }
+  return false;
+}
+
+/** 出处与输出不同文字时（英文材料 → 中文输出「康德」，中文材料 → 英文层「Kant」）无法逐字核对：跳过，不误报。
+ *  ground 只含原文与来源字段原值（不含提示词标签，审查 #1）。 */
+function groundHasScript(ground: string, cjk: boolean): boolean {
+  const n = (ground.match(cjk ? /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu : /[A-Za-z]/g) || []).length;
+  return n >= 20;
+}
+
+function agentChecks(path: string, line: string, lang: SteOutLang, ground: string, out: SteViolation[]): void {
+  const hits: string[] = [];
+  if (!groundHasScript(ground, lang !== "en")) return;
+  if (lang === "en") {
+    for (const m of line.matchAll(AGENT_EN)) {
+      const x = m[1].replace(EN_DET, "");
+      if (!x || AGENT_OK_EN.test(x) || AGENT_OK_EN.test(m[1])) continue;
+      if (!agentGrounded(x, ground, false)) hits.push(x);
+    }
+  } else {
+    const re = lang === "ja" ? AGENT_JA : AGENT_ZH;
+    for (const m of line.matchAll(re)) if (!agentGrounded(m[1], ground, true)) hits.push(m[1]);
+  }
+  for (const x of hits)
+    out.push({ path, rule: "inject-agent", severity: "error", msg: `施动者「${x}」不见于原句、前后文或来源行：「${clip(line)}」——只补出处里写明的施动者；出处都没有时写「来源未说明」` });
+}
+
+function enLineChecks(path: string, line: string, out: SteViolation[]): void {
+  const n = measure(line, "en");
+  if (n > STE_EN_LINE) out.push({ path, rule: "en-length", severity: "error", msg: `英文句长 ${n} 词，超过 ${STE_EN_LINE} 词：「${clip(line)}」——拆成两句以上` });
+  const cjk = (line.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu) || []).length;
+  const latin = (line.match(/[A-Za-z]/g) || []).length;
+  if (cjk > 0 && cjk / Math.max(1, cjk + latin) > 0.3) out.push({ path, rule: "language", severity: "error", msg: `英文层不是英文：「${clip(line)}」——全部用英文书写` });
+  if (META_OPENER.test(line)) out.push({ path, rule: "meta", severity: "error", msg: `以元话语开头：「${clip(line)}」——直接说内容` });
+  const ingAfterBe = [...line.matchAll(/\b(?:is|are|was|were|be|been)\s+(\w{3,}ing)\b/gi)].some((m) => !EN_ING_STOP.test(m[1]));
+  const lead = line.match(/^\s*([A-Z]\w+ing)\b/);
+  if (ingAfterBe || (lead && !EN_ING_STOP.test(lead[1])))
+    out.push({ path, rule: "en-ing", severity: "warn", msg: `用了 -ing 形式作谓语或句首修饰：「${clip(line)}」——改用简单时态的动词` });
+  if (/\b(have|has|had)\s+(been|\w{3,}ed|known|shown|seen|given|made|done|taken|found|written)\b/i.test(line))
+    out.push({ path, rule: "en-tense", severity: "warn", msg: `用了完成时：「${clip(line)}」——只用一般现在 / 一般过去 / 一般将来时` });
+  if (/\b(is|are|was|were|be|been|being)\s+(\w{3,}ed|known|shown|seen|given|made|done|taken|thought|found|built|written|held|driven|caused)\b/i.test(line))
+    out.push({ path, rule: "en-passive", severity: "warn", msg: `被动语态：「${clip(line)}」——改成主动语态（写明谁做什么）` });
 }
 
 /** 规范校验：error＝必须修复；warn＝修复回合顺带处理（≥2 条也触发修复） */
@@ -350,42 +473,96 @@ export function steLint(doc: SteDoc | null, ctx: SteLintContext): SteViolation[]
     ans.forEach((l, i) => lineChecks(`answer[${i + 1}]`, l, lang, L.line, out));
     return out;
   }
+  const v7 = ctx.contract === "v7";
+  // D334：逐句检查；「被」字短语照原文（如术语「未被规定」）不算改写出的被动句
+  const lc = (path: string, line: string, max: number) => {
+    const mark = out.length;
+    lineChecks(path, line, lang, max, out);
+    const bei = line.match(/被[\p{Script=Han}]{1,2}/gu) || [];
+    if (bei.length && bei.every((b) => ctx.source.includes(b)))
+      for (let k = out.length - 1; k >= mark; k--) if (out[k].rule === "passive") out.splice(k, 1);
+  };
+  const RK = doc.fields.rewrites;
+  const GK = doc.fields.glossary;
+  const ground = [ctx.source, ctx.context ?? ""].join("\n");
   const n = ctx.sentences.length;
-  if (doc.explanations.length !== n)
-    out.push({ path: "explanations", rule: "count", severity: "error", msg: `explanations 有 ${doc.explanations.length} 组，原句有 ${n} 句——必须每个原句一组、顺序一致，不合并、不遗漏` });
+  if (doc.rewrites.length !== n)
+    out.push({ path: RK, rule: "count", severity: "error", msg: `${RK} 有 ${doc.rewrites.length} 组，原句有 ${n} 句——必须每个原句一组、顺序一致，不合并、不遗漏` });
   const seen = new Set<string>();
-  doc.explanations.forEach((g, i) => {
-    if (!g.length) out.push({ path: `explanations[${i + 1}]`, rule: "empty", severity: "error", msg: `原句 [${i + 1}] 没有解释——至少写一句` });
+  doc.rewrites.forEach((g, i) => {
+    if (!g.length) out.push({ path: `${RK}[${i + 1}]`, rule: "empty", severity: "error", msg: `原句 [${i + 1}] 没有${v7 ? "改写" : "解释"}——至少写一句` });
     g.forEach((l, j) => {
-      const path = `explanations[${i + 1}][${j + 1}]`;
-      lineChecks(path, l, lang, L.line, out);
-      const key = l.replace(/[\s\p{P}]/gu, "").toLowerCase();
+      const path = `${RK}[${i + 1}][${j + 1}]`;
+      lc(path, l, L.line);
+      agentChecks(path, l, lang, ground, out);
+      const c = CONNECT[lang];
+      if (c && (l.match(CLAUSE_SEP[lang] ?? /[，,；;]/g) || []).length >= 2 && c.test(l))
+        out.push({ path, rule: "one-idea", severity: "warn", msg: `一句里串了几个意思：「${clip(l)}」——拆成几句，每句只讲一个判断` });
+      const key = norm(l);
       if (key.length >= 6 && seen.has(key)) out.push({ path, rule: "repeat", severity: "warn", msg: `与前面的句子重复：「${clip(l)}」——删掉重复句` });
       seen.add(key);
     });
+    // 照抄：原句超过句长上限，而这一组只是把原句断开、没有改写
+    const src = ctx.sentences[i];
+    if (src && measure(src, lang) > L.line && norm(g.join("")) === norm(src))
+      out.push({ path: `${RK}[${i + 1}]`, rule: "copy", severity: "warn", msg: `原句 [${i + 1}] 只是被断开，没有改写——按规则重写成短句` });
   });
-  // 情态保留：原文有不确定性，解释里必须有对应的情态词
-  const allText = doc.explanations.flat().join(" ");
+  // 情态保留：原文有不确定性，输出里必须有对应的情态词
+  const allText = doc.rewrites.flat().join(" ");
   if (HEDGE_ANY.test(ctx.source) && allText && !HEDGE_OUT[lang].test(allText))
-    out.push({ path: "explanations", rule: "modality", severity: "error", msg: "原文含「可能 / 认为 / 尚不清楚」类不确定语气，解释里却全是确定语气——在对应短句里保留原文的情态" });
+    out.push({ path: RK, rule: "modality", severity: "error", msg: "原文含「可能 / 认为 / 尚不清楚」类不确定语气，输出却全是确定语气——在对应短句里保留原文的情态" });
   if (VAGUE_SRC.test(ctx.source)) {
     for (let k = out.length - 1; k >= 0; k--) if (out[k].rule === "vague") out.splice(k, 1); // 原文本身含糊：照实保留不算违规
   }
   if (lang === "ja" && allText.replace(/\s/g, "").length > 20) {
     const kana = (allText.match(KANA) || []).length;
     const han = (allText.match(HAN) || []).length;
-    if (kana / Math.max(1, kana + han) < 0.15) out.push({ path: "explanations", rule: "language", severity: "error", msg: "解释读起来像中文而不是日文——用自然的日文（含假名）书写" });
+    if (kana / Math.max(1, kana + han) < 0.15) out.push({ path: RK, rule: "language", severity: "error", msg: "读起来像中文而不是日文——用自然的日文（含假名）书写" });
+  }
+  // notes（D334）：每句至多 1 条，after 有效，句长同 note 上限
+  const noteAt = new Set<number>();
+  doc.notes.forEach((x, i) => {
+    const path = `notes[${i + 1}]`;
+    if (!Number.isInteger(x.after) || x.after < 1 || x.after > n) out.push({ path, rule: "after", severity: "error", msg: `after=${x.after} 不是有效的原句编号（1–${n}）` });
+    else if (noteAt.has(x.after)) out.push({ path, rule: "cap", severity: "error", msg: `原句 [${x.after}] 有多条说明——每个原句至多 1 条` });
+    noteAt.add(x.after);
+    lc(path, x.text, L.note);
+    agentChecks(path, x.text, lang, ground, out);
+  });
+  // 英文 STE 层（D334）：v7 必须有（输出语言本身是英语时为空）；v6 输出里有则照查
+  if ((v7 && lang !== "en") || (lang !== "en" && doc.en.length)) {
+    if (doc.en.length !== n) out.push({ path: "en", rule: "count", severity: "error", msg: `en 有 ${doc.en.length} 组，原句有 ${n} 句——英文层必须与原句逐句对齐` });
+    doc.en.forEach((g, i) => {
+      if (!g.length) out.push({ path: `en[${i + 1}]`, rule: "empty", severity: "error", msg: `原句 [${i + 1}] 没有英文改写` });
+      g.forEach((l, j) => {
+        enLineChecks(`en[${i + 1}][${j + 1}]`, l, out);
+        agentChecks(`en[${i + 1}][${j + 1}]`, l, "en", ground, out);
+      });
+    });
   }
   if (doc.ambiguities.length > STE_CAPS.ambiguities) out.push({ path: "ambiguities", rule: "cap", severity: "error", msg: `歧义点 ${doc.ambiguities.length} 条，至多 ${STE_CAPS.ambiguities} 条——只留最影响理解的语言表达障碍` });
   doc.ambiguities.forEach((a, i) => {
     const path = `ambiguities[${i + 1}]`;
     if (!STE_AMBIGUITY_KEYS.includes(a.key)) out.push({ path, rule: "key", severity: "error", msg: `类别 key「${a.key}」不在封闭集内——只能从 ${STE_AMBIGUITY_KEYS.join(" / ")} 中选` });
-    lineChecks(path, a.note, lang, L.note, out);
+    lc(path, a.note, L.note);
   });
   if (doc.readings.length > STE_CAPS.readings) out.push({ path: "readings", rule: "cap", severity: "error", msg: `多重解读 ${doc.readings.length} 条，至多 ${STE_CAPS.readings} 条` });
-  doc.readings.forEach((r, i) => lineChecks(`readings[${i + 1}]`, r, lang, L.line * 2, out));
-  if (doc.terms.length > STE_CAPS.terms) out.push({ path: "terms", rule: "cap", severity: "error", msg: `术语 ${doc.terms.length} 条，至多 ${STE_CAPS.terms} 条——只留读者无法从上下文理解的专业术语` });
-  doc.terms.forEach((t, i) => lineChecks(`terms[${i + 1}].def`, t.def, lang, L.term, out));
+  doc.readings.forEach((r, i) => lc(`readings[${i + 1}]`, r, L.line * 2));
+  const gCap = GK === "terms" ? STE_CAPS.terms : STE_CAPS.glossary;
+  if (doc.glossary.length > gCap) out.push({ path: GK, rule: "cap", severity: "error", msg: `术语 ${doc.glossary.length} 条，至多 ${gCap} 条——只留读者无法从上下文理解的专业术语` });
+  const bodyKeys = new Set([...doc.rewrites.flat(), ...doc.notes.map((x) => x.text)].map(norm));
+  doc.glossary.forEach((t, i) => {
+    const path = `${GK}[${i + 1}]`;
+    lc(`${path}.def`, t.def, L.term);
+    if (!t.def) out.push({ path, rule: "empty-def", severity: "error", msg: `术语「${t.term}」没有释义——写一句白话释义，或删除该术语` });
+    if (t.term.length > 80 || t.def.length > 300) out.push({ path, rule: "component", severity: "error", msg: `术语「${clip(t.term)}」或其释义太长——术语至多 80 字符、释义至多 300 字符` });
+    if (bodyKeys.has(norm(t.def))) out.push({ path, rule: "term-dup", severity: "warn", msg: `「${t.term}」的释义与正文重复——正文或术语表只留一处` });
+    if (v7) {
+      const hay = lang === "en" ? allText.toLowerCase() : allText;
+      if (!hay.includes(lang === "en" ? t.term.toLowerCase() : t.term))
+        out.push({ path, rule: "term-lock", severity: "error", msg: `术语「${t.term}」没有在改写正文里逐字出现——正文和术语表必须用同一个词` });
+    }
+  });
   if (doc.components.length > STE_CAPS.components) out.push({ path: "components", rule: "cap", severity: "error", msg: `组件 ${doc.components.length} 个，至多 ${STE_CAPS.components} 个` });
   doc.components.forEach((c, i) => {
     const path = `components[${i + 1}]`;
@@ -396,11 +573,16 @@ export function steLint(doc: SteDoc | null, ctx: SteLintContext): SteViolation[]
       return;
     }
     const type = String(c.block.type ?? "") as PresentationKind;
-    if (STE_BLOCKED_KINDS.has(type)) out.push({ path, rule: "component", severity: "error", msg: `简明解读不能用「${type}」组件（类比 / 举例会引入比喻或原文没有的信息）——删除它` });
+    if (STE_BLOCKED_KINDS.has(type)) out.push({ path, rule: "blocked", severity: "error", msg: `简明解读不能用「${type}」组件（类比 / 举例 / 拆句照抄会引入比喻、原文没有的信息或复述原句）——删除它` });
+    else if (v7 && type === "glossary") out.push({ path, rule: "blocked", severity: "error", msg: "术语只写进 glossary 字段，不要再放 glossary 组件——删除它" });
     else {
       const r = parseUIBlock(JSON.stringify(c.block));
       if (!r.ok) out.push({ path, rule: "component", severity: "error", msg: `组件格式错误（${r.error}）——照示范字段改正，或删除该组件` });
       else if (/〈|〉/.test(JSON.stringify(c.block))) out.push({ path, rule: "component", severity: "error", msg: "组件里还留着〈占位〉——换成材料里的真实内容，或删除该组件" });
+      else if (type === "glossary") {
+        const terms = (c.block.terms as Array<{ def?: unknown }> | undefined) ?? [];
+        terms.forEach((t, k) => lc(`${path}.terms[${k + 1}].def`, String(t?.def ?? ""), L.term));
+      }
     }
   });
   return out;
