@@ -372,7 +372,10 @@ export function layoutTree(c: LayoutCtx, opt: { compact: boolean; claimRoot: boo
     const lw = c.plan.labelW - FLOW.META_W;
     const maxL = opt.compact || kind === "kid" ? 1 : c.maxLines0;
     const lines = wrapLabel(n.title, st.fs, lw, maxL);
-    const v = n.blockStart != null && n.blockEnd != null ? Math.max(1, n.blockEnd - n.blockStart + 1) : 1;
+    // D338：已展开且真有子行的父节点不再按自身原文跨度拉伸——它的跨度由子行分摊承载；
+    // 否则父行与首个子行之间被拉出一大段空白（深挖后自动展开时尤其明显），且同一段原文被计两次高度。
+    const expandedParent = kind === "node" && id === c.expandedId && kidsOf(c, id).length > 0;
+    const v = expandedParent ? 0 : n.blockStart != null && n.blockEnd != null ? Math.max(1, n.blockEnd - n.blockStart + 1) : 1;
     pre.push({ id, kind, depth, st, lines, natural: lines.length * st.lh + FLOW.ROW_PAD_Y * 2 + (id === c.selectedId ? c.inlineH : 0), value: v, color, parentRow });
   };
   for (const id of order) {

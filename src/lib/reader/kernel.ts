@@ -227,6 +227,12 @@ export interface ReaderKernel {
   open(source: BookSource, init?: { location?: ReaderLocation }): Promise<void>;
   /** 跳转：CFI 位置 / 页码（PDF 引擎）/ 章节索引 / 目录 href / 文本搜索定位（返回是否发生导航） */
   goTo(target: ReaderLocation | { pageIndex: number } | { chapterIndex: number } | { href: string } | { search: string }): Promise<boolean>;
+  /**
+   * 段落精确定位（D338，可选能力）：先进 unitAnchor 所在单元，再在该单元正文里按首尾探针
+   * （与 setStructureTargets 同一套 findFlatSpan 口径）找到段落并滚到段首。
+   * 找不到段落时返回 false（调用方自行兜底），不做整书文本搜索。
+   */
+  goToText?(t: { unitAnchor: string; head: string; tail?: string }): Promise<boolean>;
   /** 按标记 id 精确定位，并仅使用引擎支持的锚点（EPUB：CFI；PDF：pageIndex + rects）。
    *  无匹配标记或锚点不可解析时返回 false；不回退到文本搜索。 */
   goToMark(id: string): Promise<boolean>;

@@ -12,6 +12,16 @@ import { IconChevronDown } from "../../icons";
 
 const V2_GENERATOR = "m15v2-engine-1";
 
+/** D338：导出格式（图片两种 + 可编辑大纲三种） */
+export type AtlasExportFormat = "svg" | "png" | "xmind" | "opml" | "md";
+const EXPORTS: [AtlasExportFormat, string][] = [
+  ["svg", "导出图片（SVG，矢量）"],
+  ["png", "导出图片（PNG）"],
+  ["xmind", "导出为 XMind（可编辑）"],
+  ["opml", "导出为 OPML（可编辑）"],
+  ["md", "导出为 Markdown 大纲"],
+];
+
 export interface AtlasRunInfo {
   runId: string;
   kind: "generate" | "expandAll";
@@ -56,7 +66,8 @@ export interface AtlasToolbarProps {
   currentMapId: string | null;
   onPickVersion: (id: string) => void;
   onDeleteVersion: (id: string) => void;
-  onExportSvg: () => void;
+  /** D338：导出（图片 SVG / PNG；可编辑 XMind / OPML / Markdown） */
+  onExport: (fmt: AtlasExportFormat) => void;
   canExport: boolean;
 }
 
@@ -388,7 +399,9 @@ export default function AtlasToolbar(p: AtlasToolbarProps) {
           <button type="button" className="dd-item" onClick={() => { setOpenMenu(null); expandLevel2(); }}>{T("全部展开到第 2 层")}</button>
           <button type="button" className="dd-item" onClick={() => { setOpenMenu(null); nearFocus(); }}>{T("只看焦点附近")}</button>
           <div className="dd-sep" aria-hidden="true" />
-          <button type="button" className="dd-item" disabled={!p.canExport} onClick={() => { setOpenMenu(null); p.onExportSvg(); }}>{T("导出 SVG")}</button>
+          {EXPORTS.map(([fmt, name]) => (
+            <button key={fmt} type="button" className="dd-item" disabled={!p.canExport} data-atlas-export={fmt} onClick={() => { setOpenMenu(null); p.onExport(fmt); }}>{T(name)}</button>
+          ))}
         </>,
       )}
 

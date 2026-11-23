@@ -11114,8 +11114,13 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
 .ag-fold:hover { color: color-mix(in srgb, var(--ag-fg) 90%, transparent); }
 .ag-fold-cell { position: absolute; right: 0; bottom: 2px; font-size: 10.5px; }
 /* v49.146（T4）：导图节点的全谱挂靠标记（小圆点 + 数量） */
-.ag-link { position: absolute; right: 0; top: 0; display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--accent); pointer-events: none; }
-.ag-link i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+/* D339：挂靠标记改为信息行右端的低调附注——空心锚环（主题色）+ 淡色数字；不贴边框、不与「+N 子节点」同形 */
+.ag-link { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; padding-left: 8px; font-size: 10px; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; color: color-mix(in srgb, var(--ag-fg) 40%, transparent); cursor: help; transition: color 160ms var(--flow-ease); }
+.ag-link i { box-sizing: border-box; width: 7px; height: 7px; border-radius: 50%; border: 1.25px solid color-mix(in srgb, var(--accent) 70%, transparent); background: radial-gradient(circle, color-mix(in srgb, var(--accent) 70%, transparent) 0 1.1px, transparent 1.4px); }
+.ag-link:not([data-inline]) { position: absolute; right: 6px; top: 5px; padding-left: 0; }
+.ag:hover .ag-link, .ag[data-focus="1"] .ag-link { color: color-mix(in srgb, var(--accent) 80%, var(--ag-fg)); }
+.ag[data-kind="root"] .ag-link { color: color-mix(in srgb, var(--ag-bg) 70%, transparent); }
+.ag[data-kind="root"] .ag-link i { border-color: var(--ag-bg); background: radial-gradient(circle, var(--ag-bg) 0 1.1px, transparent 1.4px); }
 .atlas-card-links { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; font-size: 12px; }
 .atlas-card-links button { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
 .atlas-card-links .atlas-link-x { margin-left: 2px; color: var(--text-helper, inherit); text-decoration: none; }
