@@ -1360,6 +1360,49 @@ function createMindmapEngineV2(deps) {
     return none;
   }
 
+  /**
+   * 原文术语抽取用的只读口（KG-SG I5）：某导图单元的带号原文块 + 与该单元块区间重叠的活动图节点（零 AI，不改会话 / LRU）。
+   * 会话不在 / 该单元尚未送入 → { ready:false }。nodes 只含 AI / 本地节点（不含目录骨架行）。
+   */
+  function unitBlocks(p) {
+    const o = p || {};
+    const docId = String(o.documentId == null ? "" : o.documentId);
+    const S = sessions.get(docId);
+    const notReady = { ready: false, blocks: [], nodes: [], structPath: "", title: "" };
+    if (!S || !S.blocks.length) return notReady;
+    const ui = Core.linearUnitIndexOf ? Core.linearUnitIndexOf(S.linear, String(o.unitAnchor || "")) : S.units.indexOf(String(o.unitAnchor || ""));
+    if (ui < 0 || ui >= S.unitsReady) return notReady;
+    const blocks = [];
+    for (const b of S.blocks) {
+      if (b.unit < ui) continue;
+      if (b.unit > ui) break;
+      blocks.push({ no: b.no, text: S.linear.text.slice(b.start, b.end) });
+    }
+    const out = { ready: true, blocks, nodes: [], structPath: "", title: S.title };
+    if (!blocks.length) return out;
+    const lo = blocks[0].no, hi = blocks[blocks.length - 1].no;
+    const sc = S.scopes.filter((x) => x.blockFrom <= lo && lo <= x.blockTo).sort((a, b) => b.depth - a.depth)[0] || null;
+    out.structPath = sc && Array.isArray(sc.path) && sc.path.length ? sc.path.join(" / ") : String(S.units[ui] == null ? "" : S.units[ui]);
+    let map = null;
+    try { map = store.getActiveMaterialMap(docId, "book"); } catch { map = null; }
+    if (!map) return out;
+    const g = loadGraph(map.id);
+    if (!g) return out;
+    for (const r of g.rows) {
+      if (r.source === "toc" || r.blockStart == null || r.blockEnd == null) continue;
+      if (r.blockEnd < lo || r.blockStart > hi) continue;
+      out.nodes.push({ type: r.type || "其他", blockStart: r.blockStart, blockEnd: r.blockEnd, depth: V.rowDepth(g.byId, r.nodeId) });
+    }
+    return out;
+  }
+
+  /** 只读：会话里的全部单元锚（full 模式「整本预处理」入队用）。会话不在 → { ready:false, units:[] } */
+  function sessionUnits(p) {
+    const S = sessions.get(String((p && p.documentId) == null ? "" : p.documentId));
+    if (!S) return { ready: false, complete: false, units: [] };
+    return { ready: true, complete: !!S.complete, units: S.units.slice(0, S.unitsReady).map(String) };
+  }
+
   async function graphEstimate(p) {
     const docId = String((p && p.documentId) || "");
     const S = sessions.get(docId);
@@ -1538,7 +1581,7 @@ function createMindmapEngineV2(deps) {
 
   return {
     graphLoad, graphFeed, graphEstimate, graphGenerate, graphExpand, graphExpandAll, graphExplain, graphCancel,
-    graphResume, graphSetView, graphMetrics, graphNodeText, graphLocate, graphEnsureMap, graphNodeAnchors,
+    graphResume, graphSetView, graphMetrics, graphNodeText, graphLocate, graphEnsureMap, graphNodeAnchors, unitBlocks, sessionUnits,
     readMindmapSettings, idle, scheduler,
     // 审计 #22 回归用只读诊断：在登记（未终态）的任务记录数——终态即回收，故反复跑不应单调增长
     pendingJobCount: () => jobs.size,

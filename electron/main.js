@@ -43,6 +43,10 @@ const NUTATION_APP_ID = "io.github.xiongdy54.nutation";
   app.setPath("userData", r.dir);
 })();
 
+// v49.171（D341）：无障碍支持默认关闭——必须在 app ready 之前、userData 定格之后（要读 settings.json）。
+// 外部无障碍客户端持续查询无障碍树会在主进程 UI 线程上阻塞 100–330 ms/次，阅读滚动卡顿；见 electron/accessibilitySupport.js。
+require("./accessibilitySupport").applyAccessibilitySwitch(app.commandLine, () => require("./settingsStore").readSettings());
+
 // v49.14（D187）：系统通知身份——Windows 通知署名按 AUMID（AppUserModelId）解析，无快捷方式可解析时
 // 回落显示 AUMID 原文。C-11 起与 appId 统一（通知归属、任务栏固定图标依赖二者一致）。
 app.setAppUserModelId(NUTATION_APP_ID);
@@ -313,6 +317,8 @@ ipcMain.handle("settings:set", (_e, scope, key, value) => {
   if (scope === "app" && key === "closeToTray") value = closeToTrayEnabled(value);
   // D180：自动检查更新开关（默认开，仅显式 false 为关；closeToTray 自 v49.37 / D208 起改 closeToTrayEnabled 平台默认，两键不再同口径）
   if (scope === "app" && key === "updateAutoCheck") value = value !== false;
+  // v49.171（D341）：无障碍支持开关（默认关，仅严格 true 为开；重启后生效）
+  if (scope === "app" && key === "accessibilitySupport") value = require("./accessibilitySupport").accessibilitySupportEnabled(value);
   // v49.8（D182）：界面语言写侧归一（enum 四值，非法回落 zh-CN；与渲染层 normalizeLocale 同规）
   if (scope === "app" && key === "language") value = mainI18n.normalizeLanguage(value);
   // D248（T12）：app.behavior 三键写侧归一（保留期枚举 / 两开关严格布尔），并即时应用到运行时
@@ -1183,6 +1189,7 @@ ipcMain.handle("ai:getConfig", async () => {
 ipcMain.handle("ai:setConfig", async (_e, partial) => {
   const r = await setAIConfig(partial || {});
   try { void getMapLinkAuto().onAiSettingsChanged(); } catch { /* 挂靠重扫失败不影响设置 */ }
+  try { void getSourceTermsAuto().onAiSettingsChanged(); } catch { /* 原文术语重扫失败不影响设置 */ }
   try { void getKgEdgeJudge().onAiSettingsChanged(); } catch { /* 关系判断失败不影响设置 */ }
   return r;
 });
@@ -1587,6 +1594,22 @@ ipcMain.handle("knowledge:resolveFamilies", (_e, ids) => {
 ipcMain.handle("kg:graph", (_e, opts) => require("./kgService").getGraph(opts || {}));
 ipcMain.handle("kg:snapshotAt", (_e, t) => require("./kgService").snapshotAt(Number(t)));
 ipcMain.handle("kg:today", () => require("./kgService").today());
+ipcMain.handle("kg:pathToLearned", (_e, atlasId, opts) => require("./kgService").pathToLearned(atlasId, opts || {}));
+// KG-SG-IMPL-PLAN I11：关联路径 AI 补链（用户主动触发；pending 提案只展示，接受后作为用户边参与搜索）
+let kgPathJudgeSingleton = null;
+function getKgPathJudge() {
+  if (kgPathJudgeSingleton) return kgPathJudgeSingleton;
+  const { createKgPathJudge } = require("./kgPathJudge");
+  kgPathJudgeSingleton = createKgPathJudge({
+    chatStream: (opts, send) => chatStream(opts, send),
+    getAIConfig: () => getAIConfig(),
+    getPromptTemplate: (scope) => getPromptTemplate(scope)
+  });
+  return kgPathJudgeSingleton;
+}
+ipcMain.handle("kg:pathJudge", (_e, atlasId) => getKgPathJudge().judge(atlasId));
+ipcMain.handle("kg:pathProposals", (_e, atlasId) => getKgPathJudge().proposals(atlasId));
+ipcMain.handle("kg:pathProposalDecide", (_e, id, decision) => getKgPathJudge().decide(id, decision));
 ipcMain.handle("kg:cardPanel", (_e, cardId) => require("./kgService").cardPanel(String(cardId)));
 ipcMain.handle("kg:appearances", (_e, kpId) => dbModule.kgAppearances(String(kpId)));
 ipcMain.handle("kg:atlasAppearances", (_e, atlasId) => dbModule.atlasAppearances(atlasId));
@@ -1633,6 +1656,45 @@ function getMapLinkAuto() {
   });
   return mapLinkAutoSingleton;
 }
+// v49.170 / D340 以原文为锚的知识层：原文术语惰性抽取队列（electron/sourceTermsAuto.js）。
+// 设置键 app.sourceTermsMode：off | reading（默认）| full。单向推送 `sourceTerms:changed` 载荷 { documentId }（渲染层订阅 = kgAPI.onSourceTermsChanged）。
+let sourceTermsAutoSingleton = null;
+function broadcastSourceTerms(payload) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send("sourceTerms:changed", payload);
+  }
+  try { require("./kgService").invalidate?.(); } catch { /* 缓存失效失败不影响落账 */ }
+}
+try { require("./kgService").setEngineGetter(() => getMindmapEngineV2()); } catch { /* S4：过期行过滤不可用时按有效处理 */ }
+function getSourceTermsAuto() {
+  if (sourceTermsAutoSingleton) return sourceTermsAutoSingleton;
+  const { createSourceTermsAuto, normMode } = require("./sourceTermsAuto");
+  sourceTermsAutoSingleton = createSourceTermsAuto({
+    chatStream: (opts, send) => chatStream(opts, send),
+    getAIConfig: () => getAIConfig(),
+    getPromptTemplate: (scope) => getPromptTemplate(scope),
+    atlas: { search: (q, o) => require("./atlas").search(q, o), candidates: (t, o) => require("./atlas").candidates(t, o) },
+    getDb: () => dbModule._sourceTermsDb(),
+    getEngine: () => getMindmapEngineV2(),
+    readMode: () => normMode(readSettings().app?.sourceTermsMode),
+    broadcast: (payload) => broadcastSourceTerms(payload)
+  });
+  return sourceTermsAutoSingleton;
+}
+// v49.170 / D340 / I6：原文术语的读取与手动修正（electron/kgTerms.js）；写入后推 sourceTerms:changed 并让图谱缓存失效
+function kgTermsCtx() {
+  let engine = null;
+  try { engine = getMindmapEngineV2(); } catch { engine = null; }
+  return { db: dbModule._sourceTermsDb(), atlas: require("./atlas"), engine, broadcast: broadcastSourceTerms };
+}
+ipcMain.handle("kg:sourceTermsForMap", (_e, mapId) => require("./kgTerms").sourceTermsForMap(kgTermsCtx(), String(mapId || "")));
+ipcMain.handle("kg:termAppearances", (_e, atlasId) => require("./kgTerms").termAppearances(kgTermsCtx(), atlasId));
+ipcMain.handle("kg:sourceTermReject", (_e, termId) => require("./kgTerms").sourceTermReject(kgTermsCtx(), String(termId || "")));
+ipcMain.handle("kg:sourceTermLink", (_e, termId, atlasId) => require("./kgTerms").sourceTermLink(kgTermsCtx(), String(termId || ""), atlasId == null ? null : atlasId));
+ipcMain.handle("kg:workAnchor", (_e, documentId) => require("./kgTerms").workAnchor(kgTermsCtx(), String(documentId || "")));
+ipcMain.handle("kg:workAnchorConfirm", (_e, documentId, atlasId, surface) => require("./kgTerms").workAnchorConfirm(kgTermsCtx(), String(documentId || ""), atlasId == null ? null : atlasId, String(surface || "")));
+ipcMain.handle("kg:unitRead", (_e, p) => getSourceTermsAuto().unitRead(p || {}));
+ipcMain.handle("kg:sourceTermsForce", (_e, documentId, unitAnchor) => getSourceTermsAuto().force(documentId, unitAnchor));
 ipcMain.handle("mapLink:refsForMap", (_e, mapId) => require("./mapLink").refsForMap(String(mapId)));
 ipcMain.handle("mapLink:refsForAtlas", (_e, ids) => require("./mapLink").refsForAtlas(ids));
 ipcMain.handle("mapLink:setUserRef", (_e, mapId, nodeId, atlasId, on) => require("./mapLink").setUserRef(String(mapId), String(nodeId), atlasId, !!on));
@@ -2242,22 +2304,22 @@ function getMindmapEngineV2() {
       for (const w of BrowserWindow.getAllWindows()) {
         if (!w.isDestroyed()) w.webContents.send("mindmap:changed", payload);
       }
-      // D314 修订：生成 / 深挖 run 完成（含部分完成）→ 后台把节点挂靠到全谱（静默；按节点续跑）
+      // D314 修订 → v49.170 / D340：生成 / 深挖 run 完成（含部分完成）→ 该文档已读单元入原文术语队列（mapLinkAuto 已停止派发）
       if (payload && (payload.stage === "completed" || payload.stage === "partial") && payload.documentId) {
-        try { void getMapLinkAuto().notifyDocument(payload.documentId); } catch { /* 挂靠失败不影响导图 */ }
+        try { void getSourceTermsAuto().notifyDocument(payload.documentId); } catch { /* 术语抽取失败不影响导图 */ }
       }
     },
     broadcastDelta: (payload) => {
       for (const w of BrowserWindow.getAllWindows()) {
         if (!w.isDestroyed()) w.webContents.send("mindmap:delta", payload);
       }
-      // 单节点展开等不走 changed 广播的增量：该文档 15 秒内没有新增量后再排队挂靠（按节点续跑，重复排队无害）
+      // 单节点展开等不走 changed 广播的增量：该文档 15 秒内没有新增量后再排队（重复排队无害：coverage 的 text_hash 去重）
       const docId = payload && payload.documentId;
       if (docId) {
         clearTimeout(mapLinkDeltaTimers.get(docId));
         mapLinkDeltaTimers.set(docId, setTimeout(() => {
           mapLinkDeltaTimers.delete(docId);
-          try { void getMapLinkAuto().notifyDocument(docId); } catch { /* 挂靠失败不影响导图 */ }
+          try { void getSourceTermsAuto().notifyDocument(docId); } catch { /* 术语抽取失败不影响导图 */ }
         }, 15000));
       }
     }
@@ -2265,7 +2327,18 @@ function getMindmapEngineV2() {
   return mindmapEngineV2Singleton;
 }
 ipcMain.handle("mindmap:graphLoad", (_e, p) => getMindmapEngineV2().graphLoad(p));
-ipcMain.handle("mindmap:graphFeed", (_e, p) => getMindmapEngineV2().graphFeed(p));
+// full 模式：原文送完（会话就绪）→ 全部单元入原文术语队列；会话刚就绪也顺带重试此前因会话未就绪而留在队列的条目
+function afterGraphFeed(r, p) {
+  try {
+    const doc = p && p.documentId;
+    if (doc != null) {
+      void getSourceTermsAuto().onDocumentReady(String(doc));
+      void getSourceTermsAuto().poke();
+    }
+  } catch { /* 不影响原文送入 */ }
+  return r;
+}
+ipcMain.handle("mindmap:graphFeed", (_e, p) => afterGraphFeed(getMindmapEngineV2().graphFeed(p), p));
 ipcMain.handle("mindmap:graphEstimate", (_e, p) => getMindmapEngineV2().graphEstimate(p));
 ipcMain.handle("mindmap:graphGenerate", (_e, p) => getMindmapEngineV2().graphGenerate(p));
 ipcMain.handle("mindmap:graphExpand", (_e, p) => getMindmapEngineV2().graphExpand(p));
@@ -2454,6 +2527,8 @@ app.whenReady().then(async () => {
   // D314 修订：启动后约 20 秒后台扫描一次：补挂靠还有未处理节点的活动导图
   setTimeout(() => {
     try { void getMapLinkAuto().sweep(); } catch { /* ignore */ }
+    // S8：已读但尚无 coverage 的单元补入原文术语队列（会话未就绪的条目留队，等 graphFeed 的 poke）
+    try { void getSourceTermsAuto().sweep(); } catch { /* ignore */ }
   }, 20000);
   // v49.148 / D317：启动后约 40 秒判断一次材料层候选对子的关系（无 AI 配置时什么都不做）
   scheduleKgEdgeJudge(40000);

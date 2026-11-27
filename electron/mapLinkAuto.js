@@ -132,15 +132,17 @@ function createMapLinkAuto(d) {
   };
 
   return {
-    /** 全量扫描：把所有有未处理节点的活动导图排队 */
-    sweep: () => enqueue(safePending().map((p) => p.mapId)),
-    /** 某文档的活动导图（引擎 completed / partial 广播后调用） */
-    notifyDocument: (documentId) => enqueue(safePending().filter((p) => String(p.documentId) === String(documentId)).map((p) => p.mapId)),
-    notifyMap: (mapId) => enqueue(safePending().filter((p) => p.mapId === String(mapId)).map((p) => p.mapId)),
-    /** AI 设置变更：清退避后全量重扫 */
+    // v49.170 / D340：自动挂靠派发已停用（改由 sourceTermsAuto 基于原文术语驱动）；保留函数签名与 onAiSettingsChanged / idle / _state
+    /** 停用：no-op */
+    sweep: () => Promise.resolve(),
+    /** 停用：no-op */
+    notifyDocument: () => Promise.resolve(),
+    /** 停用：no-op */
+    notifyMap: () => Promise.resolve(),
+    /** AI 设置变更：仅清退避（不再重扫派发） */
     onAiSettingsChanged: () => {
       failUntil = 0;
-      return enqueue(safePending().map((p) => p.mapId));
+      return Promise.resolve();
     },
     /** 测试：等待队列排空 */
     idle: async () => {

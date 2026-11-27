@@ -36,6 +36,8 @@ export interface GraphNode {
   atlasSplit?: string[];
   cardCount: number;
   extractCount: number;
+  /** v49.170 / D340：证据阶梯第 1 级——读过讲了它的单元（unit_reads × source_terms） */
+  readExplained?: boolean;
 }
 export interface GraphEdge {
   id: string;
@@ -56,6 +58,32 @@ export interface GraphEdge {
 
 /** v49.148 / D317 关系面板的证据明细（kg:edgeEvidence） */
 export type EdgeAnchor = KpAppearanceMaterial["anchor"];
+/** v49.170 / D340：论证边（P1–P5）的一条证据——作者在原文里的两处引句；code 为空＝同块（P1 / P5 同块） */
+export interface EdgeArgEvidence {
+  kind: "arg";
+  rule: "P1" | "P2" | "P3" | "P4" | "P5";
+  /** 支 | 据 | 推 | 因 | 比 | 驳 | 例；同块规则为 "" */
+  code: string;
+  /** 推出 / 导致 / 反驳（只有 P2 推因、P4 有） */
+  pred: string | null;
+  documentId: string;
+  title: string;
+  mapId: string;
+  fromNodeId: string;
+  toNodeId: string;
+  /** 兼容旧面板的「跳节点」入口：＝ toNodeId */
+  nodeId: string;
+  /** [fromNode 的标题, toNode 的标题] */
+  path: string[];
+  quoteA: string;
+  quoteB: string;
+  blockA: number;
+  blockB: number;
+  /** quoteA / quoteB 所讲（或所用）的知识点 id */
+  kpA: string;
+  kpB: string;
+  isNew: boolean;
+}
 export interface EdgeEvidence {
   a: { id: string; label: string };
   b: { id: string; label: string };
@@ -66,6 +94,7 @@ export interface EdgeEvidence {
   world: { type: string; from: string; to: string; pred?: string | null }[];
   material: (
     | { kind: "map" | "node"; documentId: string; title: string; mapId: string; nodeId: string; path: string[]; isNew: boolean }
+    | EdgeArgEvidence
     | { kind: "extract"; extractId: string; documentId: string; title: string; snippet: string; anchor: EdgeAnchor; isNew: boolean }
   )[];
   /** v49.153 / D322 / T3：M4 摘录原文同时提到两端（t:）；snippet 为前 60 字 */
@@ -142,6 +171,8 @@ export interface GraphBundle {
   history: Record<string, NodeHistory> | null;
   /** v49.148 / D317：只在一份材料导图里出现过的对子（不画线），节点详情里列为「可能相关」 */
   maybe?: Record<string, string[]>;
+  /** v49.170 / D340：读过讲了、但还不是知识点的全谱术语（≤200，按出现材料数降序）；「显示读过的」画成空心轮廓 */
+  readTerms?: ReadTerm[];
   /** v49.154 / D323 / A3：世界层完整性（incomplete＝未能取到完整关系的挂靠节点数） */
   world?: { complete: boolean; incomplete: number };
 }
@@ -185,15 +216,108 @@ export interface KpMapAppearance {
 }
 export interface KpAppearances { materials: KpAppearanceMaterial[]; maps: KpMapAppearance[] }
 
+// v49.170 / D340 / I6：原文术语
+export interface ReadTerm { atlasId: string; label: string; documentIds: string[] }
+export type SourceTermRole = "defines" | "explains" | "argues" | "uses" | "instance";
+export interface SourceTermItem {
+  termId: string;
+  surface: string;
+  /** 已链接 / 用户确认时为 "Q…"，否则 null */
+  atlasId: string | null;
+  /** 已链接时是全谱名称，否则是术语写法 */
+  label: string;
+  role: SourceTermRole;
+  quote: string;
+  linkState: "linked" | "unlinked" | "user";
+}
+export interface SourceTermsNode {
+  nodeId: string;
+  /** 该节点所在的导图单元锚（会话就绪时取引擎，否则取区间内术语行，都没有 null） */
+  unitAnchor: string | null;
+  lowDensity: boolean;
+  taught: SourceTermItem[];
+  used: SourceTermItem[];
+}
+export interface SourceTermsForMap { documentId: string | null; nodes: SourceTermsNode[] }
+export interface TermAppearance {
+  documentId: string;
+  title: string;
+  blockNo: number;
+  quote: string;
+  role: SourceTermRole;
+  nodePath: string[];
+  mapId: string | null;
+  nodeId: string | null;
+  /** 该单元读过（unit_reads） */
+  read: boolean;
+}
+export interface TermAppearances { taught: TermAppearance[]; used: TermAppearance[] }
+export interface WorkAnchorCandidate { atlasId: number; id: string; label: string; gloss: string; kind: "work" | "person" }
+export interface WorkAnchorProposal {
+  documentId: string;
+  title: string;
+  author: string;
+  works: WorkAnchorCandidate[];
+  persons: WorkAnchorCandidate[];
+  confirmed: { surface: string; atlasId: string | null; linkState: string }[];
+}
+
+// KG-SG-IMPL-PLAN §5.2：到目标全谱节点的关联路径走廊（electron/atlasPath.js findCorridor 的返回形状）
+export interface PathNode { atlasId: string; label: string; kind: string | null; learned: boolean; kpId?: string | null; pathCount: number; dG: number; dL: number }
+export interface PathEdge { from: string; to: string; type: string; pred: string | null; p: number; source: string; dir: "out" | "in"; sentence: string; weak?: boolean }
+export interface PathEndpoint { kpId: string | null; atlasId: string; label: string; pathCount: number }
+export interface PathLadder {
+  breadcrumb: { level: "domain" | "field" | "topic"; label: string; atlasId: string | null }[];
+  learnedInField: { kpId: string | null; atlasId: string; label: string }[];
+  entries: { atlasId: string; label: string; taughtIn: unknown[] }[];
+}
+export interface PathCorridor {
+  status: "near" | "reachable" | "far" | "unavailable";
+  scope?: "full" | "core";
+  truncated?: boolean;
+  target?: { atlasId: string; label: string; kind: string | null };
+  nodes?: PathNode[];
+  edges?: PathEdge[];
+  endpoints?: PathEndpoint[];
+  best?: { hops: number; reliability: number } | null;
+  totalPaths?: number;
+  hiddenWeaker?: number;
+  ladder?: PathLadder;
+  /** I11：待确认的 AI 补链（只展示，不进搜索；接受后成为用户边） */
+  aiChains?: PathAiChain[];
+}
+export interface PathAiHop { from: string; to: string; rel: string; basis: string; fromLabel: string; toLabel: string }
+export interface PathAiChain { id: string; hops: PathAiHop[] }
+export interface PathProposal { id: string; status: "pending" | "accepted" | "rejected"; target: string; hops: { from: string; to: string; rel: string; basis: string }[]; model: string | null; createdAt: number }
+export interface PathJudgeResult {
+  status: "proposed" | "none" | "invalid" | "no-ai";
+  proposal?: PathProposal | null;
+  reason?: string;
+  reasons?: string[];
+}
+
 interface KgApi {
   graph(opts?: { history?: boolean }): Promise<GraphBundle>;
   snapshotAt(t: number): Promise<GraphSnapshot>;
   today(): Promise<TodaySummary>;
+  pathToLearned(atlasId: string | number, opts?: { maxExpand?: number }): Promise<PathCorridor>;
+  pathJudge(atlasId: string | number): Promise<PathJudgeResult>;
+  pathProposals(atlasId: string | number): Promise<PathProposal[]>;
+  pathProposalDecide(id: string, decision: "accept" | "reject"): Promise<PathProposal>;
   cardPanel(cardId: string): Promise<KpPanelData | null>;
   appearances(kpId: string): Promise<KpAppearances>;
   atlasAppearances(atlasId: string): Promise<{ maps: KpMapAppearance[] }>;
   atlasReport(payload: { atlasId: string; kind: string; note?: string }): Promise<{ channel: "post" | "github" | "none"; ok: boolean; error?: string }>;
   onMapLinkChanged(cb: (p: { mapId: string }) => void): () => void;
+  unitRead(documentId: string, unitAnchor: string, dwellMs: number): Promise<{ ok: boolean; recorded: boolean }>;
+  sourceTermsForce(documentId: string, unitAnchor: string): Promise<{ ok: boolean }>;
+  sourceTermsForMap(mapId: string): Promise<SourceTermsForMap>;
+  termAppearances(atlasId: string | number): Promise<TermAppearances>;
+  sourceTermReject(termId: string): Promise<{ ok: boolean; documentId?: string }>;
+  sourceTermLink(termId: string, atlasId: string | number | null): Promise<{ ok: boolean; documentId?: string; linkState?: "user" | "unlinked" }>;
+  workAnchor(documentId: string): Promise<WorkAnchorProposal>;
+  workAnchorConfirm(documentId: string, atlasId: string | number | null, surface: string): Promise<{ ok: boolean; atlasId: number | null; linkState: "user" | "rejected" }>;
+  onSourceTermsChanged(cb: (p: { documentId: string }) => void): () => void;
   mapLinkRefsForMap(mapId: string): Promise<{ nodeId: string; atlasId: string; label: string | null; source: "ai" | "user" | "match"; confidence: number | null }[]>;
   mapLinkRefsForAtlas(ids: string[]): Promise<{ atlasId: string; mapId: string; nodeId: string; source: string; documentId: string; mapTitle: string }[]>;
   mapLinkSetUserRef(mapId: string, nodeId: string, atlasId: string, on: boolean): Promise<boolean>;

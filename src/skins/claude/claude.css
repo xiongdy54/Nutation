@@ -440,3 +440,25 @@ body.skin-claude.motion-full .reader-engine-controls .dd-caret {
    页签计数 / grade-due / cb 计数等），此处补皮肤层缺口：书架进度行（pct · 日期）、
    书架表格进度列、复习计数与复习 meta（日期区间）。数字不抖宽，读感更稳。 */
 body.skin-claude :is(.cap-meta, .col-num, .review-count, .review-meta) { font-variant-numeric: tabular-nums; }
+
+/* ============ 8. 右下角通知卡（v49.173 / D343）============
+   基线（瑞士）：直角、左缘 2px 状态色条。本皮肤按 §5「左缘条在 skin 层全部退役」与圆角阶梯改写：
+   卡片圆角＝浮层档 --radius-popover（基线 .toast-card 已消费，Token 生效即可）；
+   状态色条 → 6px 圆点（颜色仍读 --toast-tone：进行中＝accent、完成/警告/失败＝语义色族，不覆盖语义色）。
+   几何：标记宽归零（--toast-mark-w: 0）→ 两种卡文字左缘仍同为 12；圆点占「6 + 间距 8」，
+   后台活动详情块随之右移 14，与书名文字同列。宽高仍由基线 --toast-w / --toast-row-h 统一。 */
+body.skin-claude .toast-stack { --toast-mark-w: 0px; }
+body.skin-claude .toast-card .bg-activity-row:hover { background: var(--accent-soft); }
+body.skin-claude .changelog-notice::before,
+body.skin-claude .bg-activity-row::before {
+  content: "";
+  position: static;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--toast-tone);
+}
+/* 通知行：圆点与文字间距 8（行 gap 12 收回 4） */
+body.skin-claude .changelog-notice::before { margin-right: calc(var(--sp-2) - var(--sp-3)); }
+body.skin-claude .bg-activity-extra-in { padding-left: calc(var(--sp-3) + 6px + var(--sp-2)); }

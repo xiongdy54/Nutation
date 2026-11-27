@@ -183,52 +183,92 @@ export function createPdfKernel(host: HTMLElement): ReaderKernel {
     };
   };
 
+  /** 视口外留白：页面离开容器视口超过这一段才隐藏其标记（滚动中途不出现「标记晚一帧跟上」的空档） */
+  const MARK_CULL_MARGIN = 240;
+
+  /**
+   * 标记逐帧排版（滚动/缩放/翻页都走这里）。性能口径：**先读后写、一帧只读一次几何**——
+   * 每页的内容框只量一次（按页缓存），量完再统一写样式；写完不再回读（角标位置由同一批数值推出）。
+   * 旧实现逐条「写样式 → 下一条 getBoundingClientRect」，每条标记都强制一次同步重排，
+   * 数百条标记时单帧 400–700ms，滚动严重卡顿。视口外的页整页隐藏（层本身 overflow:hidden，视觉无差）。
+   */
   const layoutMarks = () => {
     if (markEntries.length === 0) return;
+    // ---- 读阶段 ----
     const cRect = container.getBoundingClientRect();
-    for (const e of markEntries) {
+    const hostRect = viewerEl.getBoundingClientRect();
+    const layerRect = markLayer.getBoundingClientRect(); // 标记元素的定位原点（角标换算回视口坐标用）
+    const pageBoxes = new Map<number, { left: number; top: number; width: number; height: number } | null>();
+    const pageBox = (pageIdx: number) => {
+      if (pageBoxes.has(pageIdx)) return pageBoxes.get(pageIdx) ?? null;
+      const pageEl = viewerEl.querySelector(`.page[data-page-number="${pageIdx + 1}"]`) as HTMLElement | null;
+      let box: { left: number; top: number; width: number; height: number } | null = null;
+      if (pageEl) {
+        const r = pageEl.getBoundingClientRect();
+        const visible = r.bottom >= cRect.top - MARK_CULL_MARGIN && r.top <= cRect.bottom + MARK_CULL_MARGIN;
+        if (visible) {
+          const p = pageContentRect(pageEl);
+          if (p.width > 0) box = p;
+        }
+      }
+      pageBoxes.set(pageIdx, box);
+      return box;
+    };
+    const layouts: ({ left: number; top: number; width: number; height: number } | null)[] = markEntries.map((e) => {
       const pageIdx = Number(e.mark.pageIndex);
       const rect = e.mark.rects?.[e.ord];
-      const pageEl = Number.isFinite(pageIdx)
-        ? (viewerEl.querySelector(`.page[data-page-number="${pageIdx + 1}"]`) as HTMLElement | null)
-        : null;
-      if (!pageEl || !rect) {
-        e.el.style.display = "none";
-        continue;
-      }
-      const p = pageContentRect(pageEl);
-      if (!(p.width > 0)) {
-        e.el.style.display = "none";
-        continue;
-      }
+      if (!rect || !Number.isFinite(pageIdx)) return null;
+      const p = pageBox(pageIdx);
+      if (!p) return null;
       // 页内百分比 → 像素：不做取整，浮点 px 让实测矩形与换算值对齐（几何断言才有意义）
-      e.el.style.display = "block";
-      e.el.style.left = `${p.left - cRect.left + (rect.x / 100) * p.width}px`;
-      e.el.style.top = `${p.top - cRect.top + (rect.y / 100) * p.height}px`;
-      e.el.style.width = `${Math.max(1, (rect.w / 100) * p.width)}px`;
-      e.el.style.height = `${Math.max(1, (rect.h / 100) * p.height)}px`;
-    }
-    drawMarkBadges();
+      return {
+        left: p.left - cRect.left + (rect.x / 100) * p.width,
+        top: p.top - cRect.top + (rect.y / 100) * p.height,
+        width: Math.max(1, (rect.w / 100) * p.width),
+        height: Math.max(1, (rect.h / 100) * p.height)
+      };
+    });
+    // ---- 写阶段 ----
+    markEntries.forEach((e, i) => {
+      const l = layouts[i];
+      const s = e.el.style;
+      if (!l) {
+        if (s.display !== "none") s.display = "none";
+        return;
+      }
+      if (s.display !== "block") s.display = "block";
+      s.left = `${l.left}px`;
+      s.top = `${l.top}px`;
+      s.width = `${l.width}px`;
+      s.height = `${l.height}px`;
+    });
+    drawMarkBadges(layouts, layerRect, hostRect);
   };
 
   /**
    * 角标（批 4 Task 16 / §5.2）：只画**有批注的段锚摘录**（纯高亮与整卡不画，§5.4）；
    * 位置＝该标记首行矩形（PDF 标记本身就是一条 rect，即首行片段）的右上角；
    * 颜色＝该条的批注色（--annot-* 实色）——**内联 style.fill**，不写 CSS 规则。
+   * 位置由 layoutMarks 刚算出的数值推出（层坐标 + 容器视口原点＝视口坐标），不回读 DOM。
    */
-  const drawMarkBadges = () => {
-    const hostRect = viewerEl.getBoundingClientRect();
-    badgeLayer.setAttribute("width", String(hostRect.width));
-    badgeLayer.setAttribute("height", String(hostRect.height));
+  const drawMarkBadges = (
+    layouts: ({ left: number; top: number; width: number; height: number } | null)[],
+    layerRect: DOMRect,
+    hostRect: DOMRect
+  ) => {
+    const w = String(hostRect.width);
+    const h = String(hostRect.height);
+    if (badgeLayer.getAttribute("width") !== w) badgeLayer.setAttribute("width", w);
+    if (badgeLayer.getAttribute("height") !== h) badgeLayer.setAttribute("height", h);
     const targets: { right: number; top: number; color: string }[] = [];
-    for (const e of markEntries) {
-      if (!e.mark.comment) continue;
-      if (e.mark.kind === "highlight") continue;
-      if (e.el.style.display === "none" || e.ord !== 0) continue;
-      const r = e.el.getBoundingClientRect();
-      if (!(r.width > 0) || !(r.height > 0)) continue;
-      targets.push({ right: r.right, top: r.top, color: annotSolid(e.mark.color, "var(--annot-yellow)") });
-    }
+    markEntries.forEach((e, i) => {
+      if (!e.mark.comment) return;
+      if (e.mark.kind === "highlight") return;
+      const l = layouts[i];
+      if (!l || e.ord !== 0) return;
+      if (!(l.width > 0) || !(l.height > 0)) return;
+      targets.push({ right: layerRect.left + l.left + l.width, top: layerRect.top + l.top, color: annotSolid(e.mark.color, "var(--annot-yellow)") });
+    });
     drawBadges(badgeLayer, viewerEl, targets, { left: hostRect.left, top: hostRect.top });
   };
 

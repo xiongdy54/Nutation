@@ -137,6 +137,8 @@ function buildModel(input) {
       cards: [],
       selfExplain: [],
       extractCount: Number((input.extractCounts && input.extractCounts.get(String(kp.id))) || 0),
+      // v49.170 / D340 / I6 证据阶梯第 1 级：读过讲了它的单元（由 kgService 按 unit_reads × source_terms 算好传入）
+      readExplained: kp.readExplained === true,
       litAt: null,
       firstReviewAt: null,
       facetPassedAt: {},
@@ -395,7 +397,8 @@ function snapshotAt(model, t) {
       atlasAlso: n.atlasAlso,
       atlasSplit: n.atlasSplit,
       cardCount: n.cards.length,
-      extractCount: n.extractCount
+      extractCount: n.extractCount,
+      readExplained: n.readExplained === true
     });
   }
   const present = new Set(nodes.map((x) => x.id));

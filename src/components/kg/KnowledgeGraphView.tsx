@@ -12,7 +12,7 @@ type JumpToDoc = (docId: string, anchor: NonNullable<KpAppearanceMaterial["ancho
 import { ForceSim, seedPosition, type SimLink, type SimNode } from "../../lib/kgForce";
 import { drawGraph, nodeRadius, readPalette, type DrawEdge, type DrawNode, type ResolvedPalette } from "./graphRenderer";
 import { aiConfigUsable, aiGateway } from "../../lib/ai";
-import { atlasApi, atlasGloss, atlasLabel, CONTEXT_EDGE_CAP, edgeText, rankContext, relationText, type AtlasNeighbor, type AtlasNode, type AtlasNodeDetail, type Roadmap } from "../../lib/atlas";
+import { atlasApi, atlasGloss, atlasLabel, CONTEXT_EDGE_CAP, edgeText, rankContext, relationText, type AtlasNeighbor, type AtlasNode, type AtlasNodeDetail } from "../../lib/atlas";
 import type { GraphEdge } from "../../lib/kg";
 import EditableField from "../editor/EditableField";
 import MarkdownEditor from "../editor/MarkdownEditor";
@@ -20,9 +20,13 @@ import { knowledgeApi, relationLabel, KP_RELATION_TYPES, type KnowledgePoint, ty
 import AttachExistingCards from "./AttachExistingCards";
 import AtlasMissHint from "./AtlasMissHint";
 import MapAppearRows from "./MapAppearRows";
+import TermAppearRows from "./TermAppearRows";
 import AtlasReport from "./AtlasReport";
 import { IconKgDots, IconKgHelp, IconKgPause, IconKgPlay, IconKgSearch, PlotSvg } from "../icons";
 import { EdgePanel, LinkCard, LinkSearch, type KgToast } from "./EdgePanel";
+import { PathBar, PathBlock, type LensState } from "./PathLens";
+import { laneLayout, pathPredText, pickPaths, type Pt } from "../../lib/pathLayout";
+import type { PathAiChain } from "../../lib/kg";
 // 解散预览按需加载（首屏包体预算 d237）
 const ReattachPreview = lazy(() => import("./ReattachPreview"));
 import type { ReattachResult } from "../../lib/atlas";
@@ -49,9 +53,19 @@ function motionOn(): boolean {
   return !(typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 }
 const clamp = (x: number, a: number, b: number) => Math.max(a, Math.min(b, x));
+/** ease-in-out（三次）：慢起步、慢落定、无回弹——路径节点滑行与视野移动共用 */
+const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+/** 读取时长 Token（ms / s 都认）；读不到用回落值 */
+function cssMs(el: Element, name: string, fallback: number): number {
+  const raw = getComputedStyle(el).getPropertyValue(name).trim();
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return /ms$/.test(raw) ? n : /s$/.test(raw) ? n * 1000 : n;
+}
 
 /** 图谱页叠加的边（全谱情境层 / 主题归属 / 学习路线）：不进快照事实 */
-type ViewEdge = GraphEdge & { label?: string; faint?: boolean; w?: number };
+/** path：v49.172 / D342 关联路径（on＝图谱里的连线；ai＝AI 推测、待确认，画虚线） */
+type ViewEdge = GraphEdge & { label?: string; faint?: boolean; w?: number; path?: "on" | "ai" };
 const NO_FACETS: GraphNode["facets"] = { definition: "none", why: "none", example: "none", contrast: "none", relation: "none" };
 /** 合成节点：全谱虚影（ghost）或主题集群中心（hub） */
 function synthNode(id: string, label: string, anchor: string | null, kind: GraphNode["kind"] = "concept"): GraphNode {
@@ -74,6 +88,8 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [showGhosts, setShowGhosts] = useState(false);
+  // v49.170 / D340：证据第 1 级「读过讲解」——默认关；开启后把读过讲解、还没成为知识点的术语画成空心轮廓
+  const [showRead, setShowRead] = useState(() => localStorage.getItem("kg.showRead") === "1");
   const [focusId, setFocusId] = useState<string | null>(initialFocusId ?? null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -113,7 +129,12 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
-    (cv as unknown as { kgProbe?: { pos(id: string): [number, number] | null } }).kgProbe = {
+    (cv as unknown as { kgProbe?: { pos(id: string): [number, number] | null; world(id: string): [number, number] | null; view(): { x: number; y: number; k: number } } }).kgProbe = {
+      world: (id: string) => {
+        const sn = simRef.current.get(id);
+        return sn ? [sn.x, sn.y] : null;
+      },
+      view: () => ({ ...viewRef.current }),
       pos: (id: string) => {
         const sn = simRef.current.get(id);
         const v = viewRef.current;
@@ -234,21 +255,76 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
     (ctx && ctx.atlasId === focusAtlasId && (!ctx.complete || ctx.truncated)) ||
     bundle?.world?.complete === false
   );
-  const [route, setRoute] = useState<{ target: string; data: Roadmap | null } | null>(null);
+  // v49.170 / D340：关联路径透镜（取代沿前置边的学习路线——全谱前置边只有 90 条，走不通）
+  const [lens, setLens] = useState<LensState | null>(null);
+  const [goal, setGoal] = useState<{ target: string; label: string } | null>(() => {
+    try {
+      const g = JSON.parse(localStorage.getItem("kg.pathGoal") || "null");
+      return g && typeof g.target === "string" ? { target: g.target, label: String(g.label || g.target) } : null;
+    } catch {
+      return null;
+    }
+  });
+  const pinGoal = useCallback((target: string, label: string, on: boolean) => {
+    const g = on ? { target, label } : null;
+    if (g) localStorage.setItem("kg.pathGoal", JSON.stringify(g));
+    else localStorage.removeItem("kg.pathGoal");
+    setGoal(g);
+  }, []);
+  const openLens = useCallback((target: string, label: string, maxExpand?: number) => {
+    setLens((cur) => (cur && cur.target === target && cur.data && !maxExpand ? cur : { target, label, data: null, maxExpand: maxExpand ?? 20000 }));
+  }, []);
   useEffect(() => {
-    if (!route || route.data) return;
+    if (!lens || lens.data || lens.error) return;
     let alive = true;
-    const target = route.target;
-    void atlasApi()?.atlasRoadmap([target]).then((d) => alive && setRoute((r) => (r && r.target === target ? { ...r, data: d } : r))).catch(() => undefined);
+    const { target, maxExpand } = lens;
+    void kgApi()
+      ?.pathToLearned(target, { maxExpand })
+      .then((d) => alive && setLens((l) => (l && l.target === target && l.maxExpand === maxExpand ? { ...l, data: d, label: d.target?.label || l.label } : l)))
+      .catch((e) => alive && setLens((l) => (l && l.target === target ? { ...l, error: String((e as Error)?.message || e) } : l)));
     return () => {
       alive = false;
     };
-  }, [route]);
+  }, [lens]);
+  // v49.172 / D342：图谱里找不到可靠连线时，系统自动请 AI 找一次（每个目标每次打开图谱至多一次；结果仍是虚线、待用户确认）
+  const aiTried = useRef(new Set<string>());
+  useEffect(() => {
+    const d = lens?.data;
+    if (!lens || !d || d.status !== "far" || (d.aiChains?.length ?? 0) > 0 || aiTried.current.has(lens.target)) return;
+    const api = kgApi();
+    if (!api?.pathJudge) return;
+    const target = lens.target;
+    aiTried.current.add(target);
+    const setAi = (ai: LensState["ai"]) => setLens((l) => (l && l.target === target ? { ...l, ai } : l));
+    setAi({ busy: true });
+    void api
+      .pathJudge(target)
+      .then((r) => {
+        if (r.status === "proposed") setLens((l) => (l && l.target === target ? { ...l, data: null, ai: { busy: false } } : l));
+        else if (r.status === "no-ai") setAi({ busy: false });
+        else setAi({ busy: false, note: T("AI 也没有找到可靠的连线") });
+      })
+      .catch(() => setAi({ busy: false }));
+  }, [lens, T]);
+  const decideAi = useCallback((chain: PathAiChain, verdict: "accept" | "reject") => {
+    void (kgApi()?.pathProposalDecide?.(chain.id, verdict) ?? Promise.resolve(null))
+      .catch(() => null)
+      .then(() => setLens((l) => (l ? { ...l, data: null, error: undefined } : l)));
+  }, []);
+  const closeLens = useCallback(() => setLens(null), []);
+  const pathCtl = { lens, open: openLens, close: closeLens, goal: goal?.target ?? null, pin: pinGoal };
+  useEffect(() => {
+    if (!goal || !bundle) return;
+    const hit = bundle.snapshot.nodes.find((n) => n.atlasId === goal.target);
+    if (hit && (hit.state === "lit" || hit.state === "solid" || hit.state === "firm" || hit.state === "fading")) pinGoal(goal.target, goal.label, false);
+  }, [goal, bundle, pinGoal]);
 
   const overlay = useMemo(() => {
     const nodes: GraphNode[] = [];
     const edges: ViewEdge[] = [];
-    if (!snap || playT != null) return { nodes, edges };
+    /** v49.172 / D342：图上的关联路径（关系图节点 id；已学终点在前、目标在后），供固定版式 */
+    const paths: string[][] = [];
+    if (!snap || playT != null) return { nodes, edges, paths };
     const byAtlas = new Map(baseVisible.filter((n) => n.atlasId).map((n) => [n.atlasId as string, n.id]));
     const have = new Set(baseVisible.map((n) => n.id));
     const add = (n: GraphNode) => {
@@ -266,8 +342,42 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
       if (hub.startsWith("hub:")) add(synthNode(hub, th.label, null, "hub"));
       for (const m of members) if (m !== hub) edges.push({ id: `hubE:${m}>${hub}`, from: m, to: hub, type: "part_of", group: "hierarchy", status: "confirmed", strength: 0.2, faint: true, w: 0.25 });
     }
+    // v49.172 / D342：关联路径直接画在关系图上——已学终点就是你的知识点，其余是虚线空心的全谱节点；
+    // 路径打开时不叠情境星形，图上只留路径本身
+    const pd = lens?.data;
+    const onGraph = !!pd && (pd.status === "near" || pd.status === "reachable");
+    if (lens && pd && onGraph) {
+      const pk = pickPaths(pd);
+      const lab = new Map(pk.nodes.map((n) => [n.atlasId, n.label]));
+      // 已学终点就是用户自己的知识点（含没有全谱条目、经代理边连上的知识点）
+      const mine = new Map<string, string>();
+      for (const n of pk.nodes) if (n.learned && n.kpId && baseById.has(n.kpId)) mine.set(n.atlasId, n.kpId);
+      const pid = (q: string) => mine.get(q) ?? gid(q);
+      for (const p of pk.paths) {
+        const home = mine.get(p[0]) ?? byAtlas.get(p[0]) ?? null;
+        for (const q of p) if (!mine.has(q) && !byAtlas.has(q)) add(synthNode(gid(q), lab.get(q) ?? q, home ?? gid(lens.target)));
+        paths.push(p.map(pid));
+      }
+      for (const e of pk.edges) {
+        const [from, to] = e.dir === "in" ? [pid(e.to), pid(e.from)] : [pid(e.from), pid(e.to)];
+        edges.push({ id: `path:${from}>${to}`, from, to, type: e.type, group: GROUP_OF[e.type as AtlasNeighbor["type"]] ?? "support", status: "confirmed", strength: 0.6, label: T(pathPredText(e)), w: 0.6, path: "on" });
+      }
+    }
+    // AI 推测只在图谱里没有现成连线时出现（此刻有更可靠的路径，就不添乱）
+    if (lens && pd && !onGraph) {
+      // AI 推测（待确认）：虚线；节点不在图上就补成全谱虚影
+      for (const c of pd.aiChains || [])
+        for (const h of c.hops) {
+          const a = gid(h.from), b = gid(h.to);
+          if (!byAtlas.has(h.from)) add(synthNode(a, h.fromLabel, byAtlas.get(h.to) ?? null));
+          if (!byAtlas.has(h.to)) add(synthNode(b, h.toLabel, byAtlas.get(h.from) ?? null));
+          edges.push({ id: `pathai:${c.id}:${a}>${b}`, from: a, to: b, type: "related", group: "support", status: "confirmed", strength: 0.5, label: T(h.rel), w: 0.5, path: "ai" });
+        }
+    }
+    // 目标在整个路径期间都留在图上（加载中也在），位置不重置——不会先消失再弹出
+    if (lens && !have.has(gid(lens.target))) add(synthNode(gid(lens.target), lens.label, null));
     // 聚焦：情境层（用户节点只叠情境边；全谱节点叠全部关系）——图上至多 CONTEXT_EDGE_CAP 条，其余进详情列表
-    if (ctx && ctx.atlasId === focusAtlasId && focusId) {
+    if (!lens && ctx && ctx.atlasId === focusAtlasId && focusId) {
       const center = atlasFocus ? gid(ctx.atlasId) : focusId;
       if (atlasFocus && !have.has(center)) add(synthNode(center, ctx.node ? atlasLabel(ctx.node) : ctx.atlasId, null, focusId.startsWith("hub:") ? "hub" : "concept"));
       const rows = rankContext(ctx.rows.filter((r) => atlasFocus || r.layer === "context")).slice(0, CONTEXT_EDGE_CAP);
@@ -280,25 +390,15 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
         edges.push({ id: `ctx:${from}>${to}:${r.type}:${r.pred ?? ""}`, from, to, type: r.type, group: GROUP_OF[r.type], status: "confirmed", strength: 0.15, label: text ? T(text) : undefined, w: 0.3 });
       }
     }
-    // 学习路线：缺口节点沿前置边排开
-    if (route?.data) {
-      const ids = new Map<string, string>();
-      const targetId = gid(route.target);
-      for (const g of route.data.gap) {
-        const id = g.kp && baseById.has(g.kp.id) ? g.kp.id : gid(g.id);
-        ids.set(g.id, id);
-        add(synthNode(id, atlasLabel(g), have.has(targetId) ? targetId : null));
+    if (showRead && bundle?.readTerms)
+      for (const r of bundle.readTerms) {
+        const id = byAtlas.get(r.atlasId) ?? "atlas:" + r.atlasId;
+        if (have.has(id)) continue;
+        add({ ...synthNode(id, r.label, null), state: "outline", atlasId: r.atlasId });
       }
-      for (const g of route.data.gap)
-        for (const pq of g.prereqs) {
-          const a = ids.get(pq);
-          const b = ids.get(g.id);
-          if (a && b) edges.push({ id: `route:${a}>${b}`, from: a, to: b, type: "prerequisite", group: "prerequisite", status: "suggested", strength: 0.5, w: 0.6 });
-        }
-    }
-    return { nodes, edges };
+    return { nodes, edges, paths };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snap, playT, baseVisible, baseById, ctx, focusAtlasId, focusId, atlasFocus, route]);
+  }, [snap, playT, baseVisible, baseById, ctx, focusAtlasId, focusId, atlasFocus, showRead, bundle, lens, T]);
 
   const visible = useMemo(() => (overlay.nodes.length ? [...baseVisible, ...overlay.nodes] : baseVisible), [baseVisible, overlay]);
   const visById = useMemo(() => new Map(visible.map((n) => [n.id, n])), [visible]);
@@ -308,7 +408,21 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
   }, [snap, visById, playT, overlay]);
 
   const activeId = hoverId ?? focusId;
+  /** v49.172 / D342：路径打开时，路径上的节点（含目标）之外全部淡出 */
+  const pathSet = useMemo(() => {
+    if (!lens || !lens.data) return null;
+    const s = new Set<string>();
+    for (const e of visEdges)
+      if (e.path) {
+        s.add(e.from);
+        s.add(e.to);
+      }
+    const t = baseVisible.find((n) => n.atlasId === lens.target)?.id ?? "atlas:" + lens.target;
+    if (visById.has(t)) s.add(t);
+    return s;
+  }, [lens, visEdges, baseVisible, visById]);
   const neighborSet = useMemo(() => {
+    if (pathSet && (!hoverId || pathSet.has(hoverId))) return pathSet;
     if (!activeId) return null;
     const s = new Set<string>([activeId]);
     for (const e of visEdges) {
@@ -316,24 +430,31 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
       if (e.to === activeId) s.add(e.from);
     }
     return s;
-  }, [activeId, visEdges]);
+  }, [activeId, visEdges, pathSet, hoverId]);
 
   // ---------------- 视图 ----------------
-  const fit = useCallback((instant: boolean, ids?: string[]) => {
+  /** v49.172 / D342：路径节点的固定位置（世界坐标）；帧循环把它们缓动过去并钉住，关闭路径时松开 */
+  const pinRef = useRef(new Map<string, Pt>());
+  /** 节点滑行（起点 / 开始时刻 / 时长）与视野同步移动——同一条 ease-in-out、同一段时长（--kg-path-move） */
+  const pinTweenRef = useRef<{ from: Map<string, Pt>; t0: number; dur: number } | null>(null);
+  const viewTweenRef = useRef<{ from: { x: number; y: number; k: number }; to: { x: number; y: number; k: number }; t0: number; dur: number } | null>(null);
+  const focusRef = useRef<string | null>(null);
+  const fit = useCallback((instant: boolean, ids?: string[], inset = 0, maxK = 2.4) => {
     const wrap = wrapRef.current;
     const sim = simRef.current;
     if (!wrap) return;
-    const w = wrap.clientWidth || 800;
+    const w = Math.max(240, (wrap.clientWidth || 800) - inset);
     const h = wrap.clientHeight || 600;
     const home = animRef.current.home;
-    const pts = (ids ?? sim.nodes.map((n) => n.id)).map((id) => home.get(id) ?? (sim.get(id) ? [sim.get(id)!.x, sim.get(id)!.y] : null)).filter(Boolean) as [number, number][];
+    const pin = pinRef.current;
+    const pts = (ids ?? sim.nodes.map((n) => n.id)).map((id) => pin.get(id) ?? home.get(id) ?? (sim.get(id) ? [sim.get(id)!.x, sim.get(id)!.y] : null)).filter(Boolean) as [number, number][];
     if (!pts.length) {
       goalRef.current = { k: 1, x: w / 2, y: h / 2 };
     } else {
       const xs = pts.map((p) => p[0]);
       const ys = pts.map((p) => p[1]);
       const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-      const k = clamp(Math.min((w - 120) / (x1 - x0 + 1), (h - 170) / (y1 - y0 + 1)), 0.2, 2.4);
+      const k = clamp(Math.min((w - 120) / (x1 - x0 + 1), (h - 170) / (y1 - y0 + 1)), 0.2, maxK);
       goalRef.current = { k, x: w / 2 - ((x0 + x1) / 2) * k, y: h / 2 + 6 - ((y0 + y1) / 2) * k };
     }
     if (instant || !motion) viewRef.current = { ...goalRef.current };
@@ -414,6 +535,57 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, visEdges]);
 
+  // 只在路径本身变化时重排（overlay 其它变化不重启滑行与视野）
+  const pathsKey = useMemo(() => JSON.stringify(overlay.paths), [overlay.paths]);
+  // v49.172 / D342：路径的固定版式——终点（用户自己的知识点）原地钉住，目标与中间节点排成泳道
+  useEffect(() => {
+    const sim = simRef.current;
+    const pin = pinRef.current;
+    const release = () => {
+      for (const id of pin.keys()) {
+        const sn = sim.get(id);
+        if (sn) {
+          sn.fx = null;
+          sn.fy = null;
+        }
+      }
+      pin.clear();
+    };
+    release();
+    pinTweenRef.current = null;
+    const paths = overlay.paths;
+    if (paths.length) {
+      const fixed = new Map<string, Pt>();
+      for (const p of paths) {
+        const sn = sim.get(p[0]);
+        if (sn) fixed.set(p[0], [sn.x, sn.y]);
+      }
+      let cx = 0;
+      let cy = 0;
+      for (const n of sim.nodes) {
+        cx += n.x / sim.nodes.length;
+        cy += n.y / sim.nodes.length;
+      }
+      for (const [id, q] of fixed) pin.set(id, q);
+      const tsn = sim.get(paths[0][paths[0].length - 1]);
+      for (const [id, q] of laneLayout({ paths, fixed, center: [cx, cy], targetAt: tsn ? [tsn.x, tsn.y] : null })) pin.set(id, q);
+      // 从各自现在的位置出发，与视野一起在同一段时长里滑到泳道上
+      const from = new Map<string, Pt>();
+      for (const id of pin.keys()) {
+        const sn = sim.get(id);
+        from.set(id, sn ? [sn.x, sn.y] : pin.get(id)!);
+      }
+      const dur = motion && wrapRef.current ? cssMs(wrapRef.current, "--kg-path-move", 620) : 0;
+      const t0 = performance.now();
+      pinTweenRef.current = { from, t0, dur };
+      fit(false, [...pin.keys()], focusRef.current ? 352 : 0, 1.6);
+      viewTweenRef.current = dur ? { from: { ...viewRef.current }, to: { ...goalRef.current }, t0, dur } : null;
+    }
+    sim.reheat(0.3);
+    kick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathsKey]);
+
   // ---------------- 主循环：只在有东西在动时跑帧 ----------------
   const rafRef = useRef(0);
   const lastTs = useRef(0);
@@ -454,6 +626,24 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
           if (st.beat !== S.beat) setBeat(st.beat);
         }
       }
+      // D342：路径节点缓动到泳道位置并钉住（动效关闭时直接落位）
+      if (pinRef.current.size) {
+        const tw = pinTweenRef.current;
+        const pp = tw && tw.dur > 0 ? clamp((ts - tw.t0) / tw.dur, 0, 1) : 1;
+        const e = easeInOut(pp);
+        if (pp < 1) busy = true;
+        for (const [id, q] of pinRef.current) {
+          const sn = sim.get(id);
+          if (!sn) continue;
+          const f = tw?.from.get(id) ?? q;
+          const nx = f[0] + (q[0] - f[0]) * e;
+          const ny = f[1] + (q[1] - f[1]) * e;
+          sn.fx = nx;
+          sn.fy = ny;
+          sn.x = nx;
+          sn.y = ny;
+        }
+      }
       if (sim.running()) {
         sim.tick();
         busy = true;
@@ -467,6 +657,18 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
           v[key] += d * z;
           busy = true;
         } else v[key] = g[key];
+      }
+      // D342：路径视野与节点滑行同步（同一时长、同一曲线），覆盖上面的指数逼近
+      const vt = viewTweenRef.current;
+      if (vt) {
+        const vp = clamp((ts - vt.t0) / vt.dur, 0, 1);
+        const e = easeInOut(vp);
+        v.x = vt.from.x + (vt.to.x - vt.from.x) * e;
+        v.y = vt.from.y + (vt.to.y - vt.from.y) * e;
+        v.k = vt.from.k + (vt.to.k - vt.from.k) * e;
+        goalRef.current = { ...vt.to };
+        if (vp < 1) busy = true;
+        else viewTweenRef.current = null;
       }
       const fz = motion ? 1 - Math.exp(-dt / 60) : 1;
       for (const n of S.visible) {
@@ -513,7 +715,7 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
       for (const e of S.visEdges) {
         const a = dn.get(e.from);
         const b = dn.get(e.to);
-        if (a && b) de.push({ e, a, b, shown: prog(A.edgeShown, e.id, 450), label: e.label, faint: e.faint });
+        if (a && b) de.push({ e, a, b, shown: prog(A.edgeShown, e.id, e.path ? 700 : 450), label: e.label, faint: e.faint, path: e.path });
       }
       // v49.148 / D317：悬停节点外缘的连线把手（远离画面中心的一侧，不挡标签）
       let handle: { x: number; y: number; on: boolean } | null = null;
@@ -601,7 +803,7 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
     let best: GraphEdge | null = null;
     let bd = Infinity;
     for (const e of stateRef.current.visEdges) {
-      if (/^(hubE|ctx|route):/.test(e.id)) continue;
+      if (/^(hubE|ctx|route|path|pathai):/.test(e.id)) continue;
       const a = simRef.current.get(e.from);
       const b = simRef.current.get(e.to);
       if (!a || !b) continue;
@@ -933,6 +1135,15 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
 
   const focusNode = useMemo(() => (focusId && snap ? snap.nodes.find((n) => n.id === focusId) ?? null : null), [focusId, snap]);
 
+  focusRef.current = focusId;
+  // 详情卡关掉、或转去看路径以外的节点 → 路径收起（此刻没用的不留在图上）
+  const pathSetRef = useRef(pathSet);
+  pathSetRef.current = pathSet;
+  useEffect(() => {
+    if (!focusId) setLens(null);
+    else if (pathSetRef.current && !pathSetRef.current.has(focusId)) setLens(null);
+  }, [focusId]);
+
   /** 聚焦一个全谱节点：用户已有对应知识点就聚焦它；否则以虚影出现在视野中央 */
   const focusAtlas = (q: string) => {
     const mine = baseVisible.find((n) => n.atlasId === q);
@@ -1025,6 +1236,7 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
       } else if (e.key === "Escape" && linkDragRef.current) {
         cancelLink();
       } else if (e.key === "Escape" && !typing) {
+        setLens(null);
         setFocusId(null);
         setEdgeSel(null);
         setMenuOpen(false);
@@ -1080,6 +1292,7 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
             aria-label={T("知识图谱")}
             role="img"
           />
+          {lens && <PathBar state={lens} onClose={closeLens} onDecide={decideAi} />}
           {empty && (
             <div className="kg-hint">
               {T("这里会长出你真正掌握的知识。复习一张归属于某个知识点的卡，隔天再答对，它就会点亮。")}
@@ -1104,6 +1317,12 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
               )}
               <span className="kg-sep">·</span>
               {T("褪色 {n}", { n: snap.summary.fading })}
+              {goal && playT == null && (
+                <button className="kg-goal" data-testid="kg-goal" onClick={() => openLens(goal.target, goal.label)} title={T("关联路径")}>
+                  <i aria-hidden />
+                  {T("目标：{name}", { name: goal.label })}
+                </button>
+              )}
             </div>
             <div className="kg-tools">
               {/* v49.167 / D337：BufferedInput 自持文字——击键不再重渲染整张图谱；Enter 前先冲刷 */}
@@ -1168,6 +1387,15 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
                 </button>
               ))}
             </div>
+            <button
+              className="kg-item"
+              onClick={() => setShowRead((v) => (localStorage.setItem("kg.showRead", v ? "0" : "1"), !v))}
+              role="switch"
+              aria-checked={showRead}
+              title={T("读过讲解、还没制卡的术语以空心轮廓显示")}
+            >
+              {T("显示读过的")} <span className={`kg-switch${showRead ? " is-on" : ""}`} />
+            </button>
             <button className="kg-item" onClick={() => setShowGhosts((v) => !v)} role="switch" aria-checked={showGhosts}>
               {T("显示虚影")} <span className={`kg-switch${showGhosts ? " is-on" : ""}`} />
             </button>
@@ -1214,7 +1442,7 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
               onChanged={() => void load()}
               onJumpToDoc={onJumpToDoc}
               onOpenMap={onOpenMap}
-              atlas={atlasOn ? { ctx: ctx && ctx.atlasId === focusNode.atlasId ? ctx : null, relationsIncomplete: atlasRelationsIncomplete, route, setRoute, onPick: focusAtlas } : null}
+              atlas={atlasOn ? { ctx: ctx && ctx.atlasId === focusNode.atlasId ? ctx : null, relationsIncomplete: atlasRelationsIncomplete, path: pathCtl, onPick: focusAtlas } : null}
               maybe={bundle.maybe?.[focusNode.id] ?? []}
               onOpenEdge={(other) => openEdge(focusNode.id, other)}
               onLinkTo={(other) => openLinkCard(focusNode.id, other)}
@@ -1287,7 +1515,7 @@ export default function KnowledgeGraphView({ onReview, initialFocusId, autoRepla
             </div>
           )}
           {!focusNode && atlasFocus && ctx && ctx.atlasId === atlasFocus && ctx.node && (
-            <AtlasCard key={atlasFocus} ctx={ctx} route={route} setRoute={setRoute} onPick={focusAtlas} onClose={() => setFocusId(null)} onOpenKp={(id) => centerOn(id)} onOpenMap={onOpenMap} />
+            <AtlasCard key={atlasFocus} ctx={ctx} path={pathCtl} onPick={focusAtlas} onClose={() => setFocusId(null)} onOpenKp={(id) => centerOn(id)} onOpenMap={onOpenMap} />
           )}
           {mapOpen && (
             <AtlasMapPanel
@@ -1540,6 +1768,7 @@ function NodeDetail({
               ))}
             </ul>
           )}
+          {node.atlasId && <TermAppearRows atlasId={node.atlasId} onOpenMap={onOpenMap} />}
           <MapAppearRows maps={appear.maps} onOpenMap={onOpenMap} onRemove={readOnly ? undefined : (ids, m, n) => void removeAi(ids, m, n)} />
         </section>
       )}
@@ -1590,7 +1819,9 @@ function NodeDetail({
                 <small>{[atlasGloss(atlas.ctx.node), atlas.ctx.node.chain.map((c) => c.label).reverse().join(" › ")].filter(Boolean).join(" · ")}</small>
               </div>
             )}
-            <RouteBlock target={node.atlasId} route={atlas.route} setRoute={atlas.setRoute} onPick={atlas.onPick} />
+            {node.state !== "lit" && node.state !== "solid" && node.state !== "firm" && node.state !== "fading" && (
+              <PathBlock target={node.atlasId} label={node.label} lens={atlas.path.lens} onOpen={atlas.path.open} onClose={atlas.path.close} pinned={atlas.path.goal === node.atlasId} onPin={(on) => atlas.path.pin(node.atlasId!, node.label, on)} />
+            )}
             {atlas.ctx && <AtlasRelations rows={atlas.ctx.rows} onPick={atlas.onPick} />}
             {atlas.relationsIncomplete && (
               <div className="kp-muted" data-testid="kg-atlas-incomplete">{T("部分关系需要联网获取；下载完整全谱可离线查看全部")}</div>
@@ -1802,12 +2033,18 @@ function NodeManage({ node, snap, onChanged, onJump, onLinkTo }: { node: GraphNo
 
 // ---------------- v49.143 / D311 全谱面板 ----------------
 
+interface PathCtl {
+  lens: LensState | null;
+  open: (target: string, label: string) => void;
+  close: () => void;
+  goal: string | null;
+  pin: (target: string, label: string, on: boolean) => void;
+}
 interface AtlasProps {
   ctx: { atlasId: string; rows: AtlasNeighbor[]; node: AtlasNodeDetail | null; complete: boolean; truncated: boolean } | null;
   /** v49.154 / D323 / A3：关系不完整（聚焦节点被截断 / 降级，或世界层不完整） */
   relationsIncomplete?: boolean;
-  route: { target: string; data: Roadmap | null } | null;
-  setRoute: (r: { target: string; data: Roadmap | null } | null) => void;
+  path: PathCtl;
   onPick: (atlasId: string) => void;
 }
 
@@ -1847,37 +2084,8 @@ function AtlasRelations({ rows, onPick }: { rows: AtlasNeighbor[]; onPick: (atla
 }
 
 /** 学习路线：设为目标 → 缺口（前置闭包 − 已掌握）沿前置边画到图上 */
-function RouteBlock({ target, route, setRoute, onPick }: { target: string; route: AtlasProps["route"]; setRoute: AtlasProps["setRoute"]; onPick: (atlasId: string) => void }) {
-  const T = useT();
-  const active = route?.target === target;
-  const gap = active && route?.data ? route.data.gap.filter((g) => !g.target) : [];
-  const ready = gap.filter((g) => g.ready).slice(0, 5);
-  return (
-    <div className="kg-route" data-testid="kg-route">
-      <button className="btn btn-outline btn-sm" onClick={() => setRoute(active ? null : { target, data: null })}>
-        {active ? T("清除路线") : T("设为学习目标")}
-      </button>
-      {active && route?.data && (
-        <span className="kg-route-sum">
-          {gap.length === 0
-            ? T("前置知识都已掌握")
-            : T("还差 {n} 个知识点（已掌握 {m}）", { n: gap.length, m: route.data.mastered })}
-        </span>
-      )}
-      {active && ready.length > 0 && (
-        <span className="kg-route-ready">
-          {T("可以先学：")}
-          {ready.map((g) => (
-            <button key={g.id} className="kg-link" onClick={() => onPick(g.id)}>{atlasLabel(g)}</button>
-          ))}
-        </span>
-      )}
-    </div>
-  );
-}
-
 /** 全谱节点卡（用户还没有对应知识点的节点；自由探索） */
-function AtlasCard({ ctx, route, setRoute, onPick, onClose, onOpenKp, onOpenMap }: { ctx: NonNullable<AtlasProps["ctx"]>; route: AtlasProps["route"]; setRoute: AtlasProps["setRoute"]; onPick: (atlasId: string) => void; onClose: () => void; onOpenKp: (kpId: string) => void; onOpenMap?: OpenMap }) {
+function AtlasCard({ ctx, path, onPick, onClose, onOpenKp, onOpenMap }: { ctx: NonNullable<AtlasProps["ctx"]>; path: PathCtl; onPick: (atlasId: string) => void; onClose: () => void; onOpenKp: (kpId: string) => void; onOpenMap?: OpenMap }) {
   const T = useT();
   const n = ctx.node!;
   const [maps, setMaps] = useState<KpMapAppearance[]>([]);
@@ -1903,13 +2111,14 @@ function AtlasCard({ ctx, route, setRoute, onPick, onClose, onOpenKp, onOpenMap 
       </div>
       {atlasGloss(n) && <div className="kg-def-text">{atlasGloss(n)}</div>}
       {n.chain.length > 0 && <div className="kg-chain">{n.chain.map((c) => c.label).reverse().join(" › ")}</div>}
-      <RouteBlock target={n.id} route={route} setRoute={setRoute} onPick={onPick} />
+      {!n.kp && <PathBlock target={n.id} label={atlasLabel(n)} lens={path.lens} onOpen={path.open} onClose={path.close} pinned={path.goal === n.id} onPin={(on) => path.pin(n.id, atlasLabel(n), on)} />}
       {n.kp && (
         <div className="kg-actions">
           <button className="btn btn-outline btn-sm" onClick={() => onOpenKp(n.kp!.id)}>{T("打开我的知识点")}</button>
         </div>
       )}
       <AtlasRelations rows={ctx.rows} onPick={onPick} />
+      <TermAppearRows atlasId={n.id} onOpenMap={onOpenMap} />
       {maps.length > 0 && (
         <section data-testid="kg-atlas-appear">
           <div className="kg-sec-title">{T("出现在")}</div>

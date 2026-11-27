@@ -73,6 +73,12 @@ function open() {
   return null;
 }
 
+/** 路径搜索用：已打开的只读库句柄与来源（无库＝{db:null,source:'none'}）；不改变任何状态 */
+function openHandle() {
+  const d = open();
+  return { db: d || null, source: d ? dbSource : "none" };
+}
+
 /** 测试用：切换到指定全谱文件（或关闭）；不带参数＝按默认候选重新打开（下载完成后用） */
 function _reset(p) {
   try {
@@ -825,4 +831,4 @@ function roadmap(targetIds, masteredIds, opts = {}) {
   return { available: true, gap, closure: seen.size, mastered: [...seen].filter((x) => mastered.has(x)).length };
 }
 
-module.exports = { status, search, searchAsync, node, nodeAsync, nodeLocal, getNodes, getNodesAsync, getNodesLocal, neighbors, neighborsAsync, skeletonAmong, contextAmong, worldAmong, edgesOf, edgesOfMany, _limits: { MAX_ENDS, MAX_CACHED_NODE_FILES, MAX_REMOTE_ENDS, MAX_REMOTE_FILES, MAX_SYNC_EDGE_FILES }, candidates, roadmap, norm, _reset, KIND_LABEL };
+module.exports = { status, search, searchAsync, node, nodeAsync, nodeLocal, getNodes, getNodesAsync, getNodesLocal, neighbors, neighborsAsync, skeletonAmong, contextAmong, worldAmong, edgesOf, edgesOfMany, _limits: { MAX_ENDS, MAX_CACHED_NODE_FILES, MAX_REMOTE_ENDS, MAX_REMOTE_FILES, MAX_SYNC_EDGE_FILES }, candidates, roadmap, norm, _reset, openHandle, KIND_LABEL };

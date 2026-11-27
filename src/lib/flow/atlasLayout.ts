@@ -12,7 +12,7 @@ import { compareTable, parseTime, patternFor, textW, tierOf, wrapLabel } from ".
 export const AL = {
   // 字形
   PAD_X: 10, PAD_R: 10, PAD_Y: 4, // D254 修订：节点改为圆角「标签胶囊」，左右内边距对称 10
-  META_H: 15, TIME_H: 15, MIN_W: 64,
+  META_H: 15, META_FS: 10.5, TIME_H: 15, MIN_W: 64, // META_FS 与 theme.css .ag-meta 字号一致
   // 大纲 · 扇形树
   FAN_GAP: 72, FAN_PORT: 4, ELBOW_R: 6, FAN_VGAP: 10, FAN_VGAP_BLOCK: 26,
   // 并列 · 网格
@@ -166,11 +166,15 @@ export function makeGlyph(
   const padH = glyphPadH(kind);
   const textWmax = Math.max(0, ...lines.map((l) => textW(l, st.fs)));
   const tw = Math.ceil(textWmax * 1.04) + 2;
-  const w = kind === "tile" ? Math.max(AL.GRID_TILE_W, tw + padH) : Math.max(AL.MIN_W, tw + padH);
   const kidsAll = childrenOf(g, nodeId).filter((k) => !!g.nodes[k]);
   const type = String(n?.type ?? "");
   const t = tierOf(type);
   const meta = nodeId === ROOT_ID ? o.rootMeta(kidsAll.length) : TYPE_HIDDEN.has(type) ? "" : type;
+  // 元信息行（类型字 + 折叠钮「+n / −」）也要放得下：标题很短时（如根「新工具」）按它撑宽，否则会折行压到标题上
+  const metaRowW = kind === "cell" || kind === "more" ? 0
+    : (meta ? textW(meta, AL.META_FS) : 0) + (kidsAll.length ? textW(`+${kidsAll.length}`, AL.META_FS) + 4 + (meta ? 6 : 0) : 0);
+  const contentW = Math.max(tw, metaRowW ? Math.ceil(metaRowW * 1.04) + 2 : 0);
+  const w = kind === "tile" ? Math.max(AL.GRID_TILE_W, contentW + padH) : Math.max(AL.MIN_W, contentW + padH);
   const time = kind === "event" ? (n?.timeText ? String(n.timeText) : null) : null;
   const hasMetaRow = kind !== "cell" && kind !== "more" && (meta !== "" || kidsAll.length > 0);
   const h = lines.length * st.lh + AL.PAD_Y * 2 + (hasMetaRow ? AL.META_H : 0) + (time ? AL.TIME_H : 0);
@@ -634,10 +638,11 @@ function layoutChain(gi: GroupIn): ABlock {
     let x = dir > 0 ? 0 : maxW;
     const cy = y + R, labelTop = y + 2 * R + AL.CH_LABEL_GAP;
     for (const i of r) {
+      // 子块整体占住自己的槽 [left, left+w]（子块展开后组头未必居中——按组头中心摆会压到相邻步骤）；圆点对准组头中心
       const b = list[i], w = sw(b);
-      const c = dir > 0 ? x + w / 2 : x - w / 2;
-      put(out, b, Math.round(c - (b.anchor.x + b.anchor.w / 2)), labelTop - b.anchor.y);
-      disc[i] = { cx: Math.round(c), cy, row: ri };
+      const left = (dir > 0 ? x : x - w) + (w - b.w) / 2;
+      put(out, b, Math.round(left), labelTop - b.anchor.y);
+      disc[i] = { cx: Math.round(left + b.anchor.x + b.anchor.w / 2), cy, row: ri };
       x += dir * (w + AL.CH_GX);
     }
     y = labelTop + Math.max(...r.map((i) => list[i].h)) + AL.CH_GY;

@@ -433,7 +433,8 @@ async function matchOnly(mapId) {
 
 function refsForMap(mapId) {
   const rows = H().queryAll(
-    "SELECT node_id, atlas_id, source, confidence FROM material_map_node_refs WHERE map_id = ? AND is_deleted = 0 ORDER BY rowid",
+    // v49.170 / D340：ai / match 来源的挂靠已停用（改由原文术语 source_terms 提供），读取处隐藏、不删；user 照常
+    "SELECT node_id, atlas_id, source, confidence FROM material_map_node_refs WHERE map_id = ? AND is_deleted = 0 AND source NOT IN ('ai','match') ORDER BY rowid",
     [String(mapId)]
   );
   const names = new Map();

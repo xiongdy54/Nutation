@@ -35,6 +35,8 @@ import { installMindmapBridge, mindmapApi } from "./lib/mindmap";
 import { installActivityStore, seedFromRuns } from "./lib/activity";
 import { ensureDismissalsLoaded, isDismissed } from "./lib/activityDismiss";
 import { BackgroundActivity } from "./components/BackgroundActivity";
+import ToastStack from "./components/ToastStack";
+import { useChangelog } from "./components/ChangelogHost";
 import { readingWorkflow, parseContextRef, type ExtractSpan } from "./lib/readingWorkflow";
 // D237：合成 EPUB 管线（markdown-it + JSZip + KaTeX 渲染）只在打开粘贴/Word/TXT/MD 书时按需装载（见 loadReaderBook）
 import type { SynthImage } from "./lib/epub";
@@ -161,6 +163,8 @@ export default function App() {
   // v49.125（D291 §12 D5）：本批唯一一处 App 级新增 UI——粘贴保存成功的短时提示宿主
   // （复用 .reader-toast；useFlash 单计时器 1800ms，后一条覆盖前一条）。粘贴窗关窗后提示仍在。
   const [appToast, showFlash] = useFlash();
+  // v49.173 / D343：更新日志——提示进右下角通知栈，面板叠在设置模态之上
+  const changelog = useChangelog();
   // C-37：theme = 解析后的落窗档（恒 "light"|"dark"，与 SkinHost 的 ColorMode 同型）；
   // themeMode = theme.mode 原始档（"light"|"dark"|"system"）——与 motion 的 motionSetting/motion 同构：
   // themeMode 是设置真源（驱动设置页高亮与系统跟随监听），theme 消费解析结果（body 类 / accent 默认值 / SkinHost）。
@@ -983,7 +987,11 @@ export default function App() {
         {/* D265（v49.99）：非阅读上下文不再挂侧栏制卡台宿主；制卡走 Ctrl+Alt+K 独立窗口 */}
       </div>
       {/* v48.13（P2）：全局后台活动指示器——生成任务在主进程持有，与当前界面无关 */}
-      <BackgroundActivity onOpenMap={(documentId, mapId, resumeRunId) => void openMaterialMap(documentId, mapId, resumeRunId)} />
+      {/* v49.173 / D343：右下角通知栈——更新提示在上，后台活动指示器恒在最下（底边钉死、向上展开） */}
+      <ToastStack>
+        {changelog.notice}
+        <BackgroundActivity onOpenMap={(documentId, mapId, resumeRunId) => void openMaterialMap(documentId, mapId, resumeRunId)} />
+      </ToastStack>
       {importOpen && <ImportFilesModal onClose={() => setImportOpen(false)} />}
       {pasteOpen && (
         <PasteMaterialModal
@@ -1024,6 +1032,7 @@ export default function App() {
           />
         </Suspense>
       )}
+      {changelog.panel}
       {/* v49.125（D291 §12 D5）：粘贴保存成功提示（复用 .reader-toast，position:fixed 全局 Token） */}
       {appToast && <div className="reader-toast" role="status">{appToast}</div>}
     </div>

@@ -5,6 +5,7 @@ const DEVICE_KEYS = [
   "backupDir", "autoBackupKeep", "closeToTray", "updateAutoCheck",
   "keybindings", "multiSelectKey",  // 与平台相关；C-26 的 Mod 抽象完成后可改为资料库层（⚠D-07）
   "activeThemePlugin",              // 主题插件文件只装在本机
+  "accessibilitySupport",           // v49.171 / D341：取决于本机装了哪些辅助技术工具
 ];
 /** 整个文件都只属于本机 */
 const DEVICE_FILES = ["ai-config.json", "device.json"]; // Key 由本机钥匙串加密，换机无法解密

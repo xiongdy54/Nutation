@@ -18,11 +18,11 @@
 //   ② 收起态只剩**一行**：非最新的行、行分隔线、「另有 N 项」那行都要一并藏掉。
 //
 // 视觉（Swiss / International Typographic Style，§4.19-9）：单一 accent、灰阶面、无渐变、
-// 无大圆角（--radius: 0）、全应用唯一允许的 shadow-float、12px metadata、8px 间距基线、
-// 单一功能动效且尊重 prefers-reduced-motion。
+// 无大圆角（--radius: 0）、12px metadata、8px 间距基线、单一功能动效且尊重 prefers-reduced-motion。
+// v49.173 / D343：外观并入统一「通知卡」语言（与更新提示同款）——常驻浮层阴影、行高 32、
+// 状态由任务左侧 2px 色条表达（原 8px 方块圆点退役）；两条几何恒等式与交互不变。
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { mindmapApi } from "../lib/mindmap";
 import { describeTask, dismissTask, listTasks, subscribe, type ActivityTask } from "../lib/activity";
 import { rememberDismissed } from "../lib/activityDismiss";
@@ -123,9 +123,8 @@ export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
     if (phase !== "running") dispose(runId);
   };
 
-  // 挂到 body：.app-shell 自成层叠上下文（z-index:0），留在壳内时 --z-toast 只在壳内生效，
-  // 会被同样挂在 body 上的结构流层（.flow-layer z 24）盖住、悬停反复失焦（D329）
-  return createPortal(
+  // v49.173 / D343：定位与挂载（portal 到 body，D329）移交右下角通知栈 ToastStack；本组件只是栈底那一项
+  return (
     <div
       ref={rootRef}
       className={`bg-activity${expanded ? " is-expanded" : ""}`}
@@ -147,7 +146,7 @@ export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
         }
       }}
     >
-      <div className="bg-activity-card" data-ui="card-interactive" role="status" aria-live="polite">
+      <div className="toast-card bg-activity-card" data-ui="card-interactive" role="status" aria-live="polite">
         {hiddenCount > 0 && (
           <button type="button" className="bg-activity-more" onClick={() => setShowAll(true)}>
             {T("另有 {n} 项 · 点此全展开", { n: hiddenCount })}
@@ -179,7 +178,6 @@ export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
                   }
                 }}
               >
-                <span className="bg-activity-dot" aria-hidden="true" />
                 <span className="bg-activity-meta">
                   <span className="bg-activity-title">{v.heading}</span>
                   <span className="bg-activity-vr" aria-hidden="true" />
@@ -227,7 +225,5 @@ export function BackgroundActivity({ onOpenMap }: BackgroundActivityProps) {
         )}
       </div>
     </div>
-  ,
-    document.body,
   );
 }
