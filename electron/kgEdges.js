@@ -1,13 +1,16 @@
 "use strict";
 // v49.148 / D317 知识图谱连线分三层（设计 docs/design/KG-EDGE-LAYERS.md）——纯函数，不碰数据库（node 可测）。
 //   世界层：全谱骨架 / 私有上级 / 也涉及（kgService 现算后传入）
-//   材料层：M1 导图上下级、M2 导图同节点、M3 同一摘录制出的不同知识点卡片、AI 判断（kg-edge-judge 提案）
+//   材料层：P1–P5 原文术语论证边（v49.170 / D340 取代 M1 导图上下级 / M2 导图同节点）、M3 同一摘录制出的不同知识点卡片、AI 判断（kg-edge-judge 提案）
 //   你的层：U1 带 relatedKpId 的自我解释、U2 就地批注提到另一知识点、U3 用户写的定义提到另一知识点
 // 实线只来自用户（knowledge_relations）；其余达到门槛的是淡色推断线。
 // 解除＝对当时的证据说「不」：证据都在解除快照里时不画；出现快照外的材料层 / 你的层新证据就重新以推断线出现。
 
 // v49.153 / D322 / T2：世界层类型排序——骨架类型在前，情境边（example_of / application_of）随后，related_to 最后
 const WORLD_TYPE_ORDER = ["part_of", "prerequisite", "contrasts_with", "analogous_to", "example_of", "application_of", "related_to"];
+
+const TP = require("./termProject");
+const { normName } = require("./kgSenseCore");
 
 const parse = (s, d) => {
   try {
@@ -71,6 +74,203 @@ function buildMatcher(kps) {
   };
 }
 
+// ───────────────────────── v49.170 / D340 / I6：论证边 P1–P5（KG-SG-IMPL-PLAN §4.2） ─────────────────────────
+// 节点间论证关系 ＝ 显式 material_map_edges.code ∪ 按节点类型推导的父子隐含关系（隐含关系不入库，这里现算）。
+const ARG_TYPE_ORDER = ["prerequisite", "contrasts_with", "example_of", "related_to"];
+/** 子节点类型 → 隐含关系；from 指明关系的声明方（A）是子还是父 */
+const IMPLICIT_BY_CHILD = {
+  理由: { code: "支", from: "child" },
+  证据: { code: "支", from: "child" },
+  例证: { code: "例", from: "child" },
+  案例: { code: "例", from: "child" },
+  反方观点: { code: "驳", from: "child" },
+  反驳: { code: "驳", from: "child" },
+  定义: { code: "据", from: "parent" },
+  前提: { code: "据", from: "parent" },
+  引理: { code: "据", from: "parent" },
+  推导: { code: "推", from: "parent" },
+  结论: { code: "推", from: "parent" }
+};
+/** 父节点是叙事 / 背景 / 引言时，父子之间只是行文顺序，不产生任何隐含论证关系（设计 §7） */
+const NO_IMPLICIT_PARENT_TYPES = new Set(["叙事", "背景", "引言"]);
+const COMPARE_PATTERNS = new Set(["compare", "对照"]);
+
+/**
+ * ta = { terms:[{id, documentId, blockNo, quote, surface, surfaceNorm, role, atlasId(已链接时的整数，否则 null)}],
+ *        nodes:[{documentId, mapId, nodeId, parentId, type, pattern, blockStart, blockEnd}],
+ *        edges:[{documentId, mapId, fromId, toId, code}] }
+ * 证据对象（推入 p.material）：{ key:"m:<documentId>", kind:"arg", rule:"P1".."P5", code, pred, argType, argFrom, argTo,
+ *   documentId, mapId, fromNodeId, toNodeId, quoteA, quoteB, blockA, blockB, kpA, kpB }
+ *   A＝关系的声明方（from）节点一侧，B＝to 一侧；kpA / kpB 是 quoteA / quoteB 所讲 / 所用的知识点；
+ *   argFrom → argTo 是推断线方向（P2 据：B 的 Y 是 A 的 X 的依据，Y → X；P2 支：A 的 X 是 B 的 Y 的依据，X → Y）；P1 / P5 同块无 code（code=""）。
+ */
+function collectTermArgs(ta, ctx) {
+  const { kps, kpByAtlas, canon, get } = ctx;
+  const terms = Array.isArray(ta.terms) ? ta.terms : [];
+  if (!terms.length) return;
+  const nodes = Array.isArray(ta.nodes) ? ta.nodes : [];
+  const nodeMap = new Map();
+  for (const n of nodes) nodeMap.set(`${n.mapId}\u0000${n.nodeId}`, n);
+  const index = TP.buildIndex(nodes);
+
+  // 术语 → 知识点：atlas_id 命中知识点 atlasId（Q 前缀），或 surface_norm 等于知识点 normName(label)
+  const byName = new Map();
+  for (const k of kps) {
+    const nn = normName(k.label);
+    if (!nn) continue;
+    if (!byName.has(nn)) byName.set(nn, []);
+    byName.get(nn).push(String(k.id));
+  }
+  const kpsOfTerm = (t) => {
+    const out = new Set();
+    if (t.atlasId != null) {
+      const id = kpByAtlas.get("Q" + t.atlasId);
+      if (id) out.add(id);
+    }
+    for (const id of byName.get(String(t.surfaceNorm || "")) || []) out.add(id);
+    return [...out].sort();
+  };
+
+  // 术语归属节点（最深覆盖），按 讲 / 用 / 实例 分组
+  const sorted = [...terms].sort((x, y) => Number(x.blockNo) - Number(y.blockNo) || String(x.id).localeCompare(String(y.id)));
+  const nodeTerms = new Map(); // nodeKey → { node, taught, used, inst }
+  for (const t of sorted) {
+    if (t.role === "work" || !(Number(t.blockNo) >= 0)) continue;
+    const ks = kpsOfTerm(t);
+    if (!ks.length) continue;
+    for (const o of TP.ownersOf(index, t.documentId, Number(t.blockNo))) {
+      const nk = `${o.mapId}\u0000${o.nodeId}`;
+      let g = nodeTerms.get(nk);
+      if (!g) {
+        g = { node: nodeMap.get(nk) || o, taught: [], used: [], inst: [], seen: new Set() };
+        nodeTerms.set(nk, g);
+      }
+      const list = TP.isTeach(t.role) ? g.taught : t.role === "uses" ? g.used : t.role === "instance" ? g.inst : null;
+      if (!list) continue;
+      for (const kp of ks) {
+        const dk = `${t.role === "instance" ? "i" : t.role === "uses" ? "u" : "t"}|${kp}|${t.blockNo}`;
+        if (g.seen.has(dk)) continue;
+        g.seen.add(dk);
+        list.push({ kp, quote: String(t.quote || ""), block: Number(t.blockNo), surface: String(t.surface || ""), termId: String(t.id) });
+      }
+    }
+  }
+  if (!nodeTerms.size) return;
+
+  const emitted = new Set();
+  const emit = (rule, code, pred, type, A, B, ea, eb, fromKp, toKp) => {
+    if (ea.kp === eb.kp) return;
+    const p = get(fromKp, toKp);
+    if (!p) return;
+    const documentId = String(A.documentId);
+    const nodePair = rule === "P3" && String(A.nodeId) > String(B.nodeId) ? [B.nodeId, A.nodeId] : [A.nodeId, B.nodeId];
+    const dk = `${p.key}|${rule}|${code}|${A.mapId}|${nodePair.join(">")}|${ea.block}|${eb.block}|${[ea.kp, eb.kp].sort().join(",")}`;
+    if (emitted.has(dk)) return;
+    emitted.add(dk);
+    p.docs.add(documentId);
+    p.material.push({
+      key: `m:${documentId}`,
+      kind: "arg",
+      rule,
+      code,
+      pred,
+      argType: type,
+      argFrom: canon(fromKp),
+      argTo: canon(toKp),
+      documentId,
+      mapId: String(A.mapId),
+      fromNodeId: String(A.nodeId),
+      toNodeId: String(B.nodeId),
+      quoteA: ea.quote,
+      quoteB: eb.quote,
+      blockA: ea.block,
+      blockB: eb.block,
+      kpA: ea.kp,
+      kpB: eb.kp
+    });
+  };
+  const termsOf = (n) => nodeTerms.get(`${n.mapId}\u0000${n.nodeId}`) || null;
+
+  // P1：同一节点（同块必同节点）内，Y 被讲、X 被 uses → X 前置于 Y
+  for (const g of nodeTerms.values()) {
+    for (const X of g.used) for (const Y of g.taught) emit("P1", "", null, "prerequisite", g.node, g.node, X, Y, X.kp, Y.kp);
+    // P5（同块）：同块 instance X 与讲 Y → X 是 Y 的例子
+    for (const X of g.inst) for (const Y of g.taught) if (X.block === Y.block) emit("P5", "", null, "example_of", g.node, g.node, X, Y, X.kp, Y.kp);
+  }
+
+  // 节点间关系：显式码 ∪ 父子隐含（答 不产生连线；叙事 / 背景 / 引言 父节点不产生隐含关系）
+  const rels = new Map();
+  const addRel = (a, b, code) => {
+    const rk = `${a.mapId}\u0000${a.nodeId}\u0000${b.nodeId}\u0000${code}`;
+    if (!rels.has(rk)) rels.set(rk, { A: a, B: b, code });
+  };
+  for (const e of ta.edges || []) {
+    const a = nodeMap.get(`${e.mapId}\u0000${e.fromId}`);
+    const b = nodeMap.get(`${e.mapId}\u0000${e.toId}`);
+    if (a && b && a !== b) addRel(a, b, String(e.code));
+  }
+  for (const n of nodes) {
+    if (n.parentId == null) continue;
+    const impl = IMPLICIT_BY_CHILD[n.type];
+    const parent = nodeMap.get(`${n.mapId}\u0000${n.parentId}`);
+    if (!impl || !parent || NO_IMPLICIT_PARENT_TYPES.has(parent.type)) continue;
+    if (impl.from === "child") addRel(n, parent, impl.code);
+    else addRel(parent, n, impl.code);
+  }
+  for (const [, r] of [...rels].sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0))) {
+    const ga = termsOf(r.A);
+    const gb = termsOf(r.B);
+    if (!ga || !gb) continue;
+    const { A, B, code } = r;
+    if (code === "据") {
+      // P2（据）：A 依据 B——B 的 Y 是 A 的 X 的依据 → Y 前置于 X
+      for (const X of ga.taught) for (const Y of gb.taught) emit("P2", code, null, "prerequisite", A, B, X, Y, Y.kp, X.kp);
+    } else if (code === "支") {
+      // P2（支）：A 支持 B——A 的 X 是 B 的 Y 的依据 → X 前置于 Y（与「据」方向相反；见交接报告的偏离说明）
+      for (const X of ga.taught) for (const Y of gb.taught) emit("P2", code, null, "prerequisite", A, B, X, Y, X.kp, Y.kp);
+    } else if (code === "推" || code === "因") {
+      for (const X of ga.taught) for (const Y of gb.taught) emit("P2", code, code === "推" ? "推出" : "导致", "related_to", A, B, X, Y, X.kp, Y.kp);
+    } else if (code === "比") {
+      for (const X of ga.taught) for (const Y of gb.taught) emit("P3", code, null, "contrasts_with", A, B, X, Y, X.kp, Y.kp);
+    } else if (code === "驳") {
+      for (const X of ga.taught) for (const Y of gb.taught) emit("P4", code, "反驳", "contrasts_with", A, B, X, Y, X.kp, Y.kp);
+    } else if (code === "例") {
+      for (const X of [...ga.inst, ...ga.taught]) for (const Y of gb.taught) emit("P5", code, null, "example_of", A, B, X, Y, X.kp, Y.kp);
+    }
+  }
+
+  // P3（兄弟）：同一 {对照} 父节点下的兄弟，分讲 X、Y
+  for (const g of nodes) {
+    if (!COMPARE_PATTERNS.has(String(g.pattern || ""))) continue;
+    const kids = nodes.filter((n) => n.mapId === g.mapId && n.parentId === g.nodeId).sort((x, y) => (String(x.nodeId) < String(y.nodeId) ? -1 : 1));
+    for (let i = 0; i < kids.length; i++) {
+      for (let j = i + 1; j < kids.length; j++) {
+        const ga = termsOf(kids[i]);
+        const gb = termsOf(kids[j]);
+        if (!ga || !gb) continue;
+        for (const X of ga.taught) for (const Y of gb.taught) emit("P3", "比", null, "contrasts_with", kids[i], kids[j], X, Y, X.kp, Y.kp);
+      }
+    }
+  }
+}
+
+/** 论证证据给出的推断类型（仅在无 AI 判断、无世界层时使用）：最多者胜，平手按 prerequisite > contrasts_with > example_of > related_to；方向取该类型里最多的 from→to */
+function argSuggestion(p) {
+  const entries = p.material.filter((m) => m.kind === "arg" && m.argType);
+  if (!entries.length) return null;
+  const tally = new Map();
+  for (const e of entries) tally.set(e.argType, (tally.get(e.argType) || 0) + 1);
+  let type = null;
+  for (const t of ARG_TYPE_ORDER) {
+    const n = tally.get(t) || 0;
+    if (n > 0 && (type == null || n > tally.get(type))) type = t;
+  }
+  const dirs = new Map();
+  for (const e of entries) if (e.argType === type) dirs.set(`${e.argFrom}|${e.argTo}`, (dirs.get(`${e.argFrom}|${e.argTo}`) || 0) + 1);
+  const best = [...dirs].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1))[0][0].split("|");
+  return { type, from: best[0], to: best[1] };
+}
+
 /**
  * 汇总每个无序对的三层证据。
  * input = { kps, allKps, confirmed, world, defVersions, edgeFacts, cardKp: Map, matchLimit }
@@ -122,56 +322,9 @@ function collectPairs(input) {
   // 材料层
   const kpByAtlas = new Map();
   for (const k of kps) if (k.atlasId) kpByAtlas.set(String(k.atlasId), String(k.id));
-  const kpOfAtlasInt = (n) => kpByAtlas.get("Q" + n) || null;
-  // M1 父↔子 / M2 同节点（v49.153 / D322 / T4）：节点上的知识点 = 全谱挂靠 ∪ 卡片挂靠
-  //   （卡片 context_ref_json.mindmapNodeId = "v2:<mapId>:<nodeId>" 落在该节点上，私有知识点也适用）。
-  //   真实 kgEdgeFacts 提供 mapRefs（全谱挂靠）时按并集重算；只注入 mapParent / mapSame 的旧调用走原路径。
-  if (Array.isArray(ef.mapRefs)) {
-    const nodes = new Map(); // `${mapId}\u0000${nodeId}` → { documentId, mapId, nodeId, parentNodeId, kps }
-    const attach = (r, kpId) => {
-      if (!kpId) return;
-      const key = `${r.mapId}\u0000${r.nodeId}`;
-      let n = nodes.get(key);
-      if (!n) {
-        n = { documentId: String(r.documentId), mapId: String(r.mapId), nodeId: String(r.nodeId), parentNodeId: r.parentNodeId == null ? null : String(r.parentNodeId), kps: new Set() };
-        nodes.set(key, n);
-      }
-      n.kps.add(String(kpId));
-    };
-    for (const r of ef.mapRefs) attach(r, kpOfAtlasInt(r.atlasId));
-    for (const r of ef.mapCardNodes || []) attach(r, canon(r.kpId));
-    const addMapPair = (a, b, material) => {
-      const p = get(a, b);
-      if (!p) return;
-      p.docs.add(material.documentId);
-      p.material.push(material);
-    };
-    for (const n of nodes.values()) {
-      const ids = [...n.kps].sort();
-      for (let i = 0; i < ids.length; i++)
-        for (let j = i + 1; j < ids.length; j++)
-          addMapPair(ids[i], ids[j], { key: `m:${n.documentId}`, kind: "node", documentId: n.documentId, mapId: n.mapId, nodeId: n.nodeId });
-      if (n.parentNodeId == null) continue;
-      const parent = nodes.get(`${n.mapId}\u0000${n.parentNodeId}`);
-      if (!parent) continue;
-      for (const a of parent.kps)
-        for (const b of n.kps)
-          addMapPair(a, b, { key: `m:${n.documentId}`, kind: "map", documentId: n.documentId, mapId: n.mapId, parentNodeId: parent.nodeId, childNodeId: n.nodeId });
-    }
-  } else {
-    for (const r of ef.mapParent || []) {
-      const p = get(kpOfAtlasInt(r.parentAtlas), kpOfAtlasInt(r.childAtlas));
-      if (!p) continue;
-      p.docs.add(String(r.documentId));
-      p.material.push({ key: `m:${r.documentId}`, kind: "map", documentId: String(r.documentId), mapId: String(r.mapId), parentNodeId: String(r.parentNodeId), childNodeId: String(r.childNodeId) });
-    }
-    for (const r of ef.mapSame || []) {
-      const p = get(kpOfAtlasInt(r.atlasA), kpOfAtlasInt(r.atlasB));
-      if (!p) continue;
-      p.docs.add(String(r.documentId));
-      p.material.push({ key: `m:${r.documentId}`, kind: "node", documentId: String(r.documentId), mapId: String(r.mapId), nodeId: String(r.nodeId) });
-    }
-  }
+  // v49.170 / D340 / I6：论证边 P1–P5 取代 M1 父↔子 / M2 同节点（设计 KG-SOURCE-GROUNDED §7；契约 KG-SG-IMPL-PLAN §4.2）。
+  //   原料 ef.termArgs = { terms, nodes, edges }（db.kgEdgeFacts）；节点上的知识点不再来自挂靠 / 卡片挂靠，而来自原文术语。
+  if (ef.termArgs) collectTermArgs(ef.termArgs, { kps, kpByAtlas, canon, get });
   const cardKp = input.cardKp || new Map();
   const kpsByExtract = new Map();
   for (const r of ef.extractCards || []) {
@@ -359,7 +512,7 @@ function resolveEdges(pairs, dismissals) {
       }
     }
     // v49.153 / D322 / T5：门槛改写（设计 KG-EDGE-DENSITY §3.3）——强证据，或两类不同的弱证据组合。
-    //   强：世界层（骨架 / 私有上级 / 也涉及 / 情境边）/ M1-M2 ≥2 份材料 / M3 / M4a / M4b ≥2 条不同摘录 /
+    //   强：世界层（骨架 / 私有上级 / 也涉及 / 情境边）/ P1–P5 ≥2 份材料 / M3 / M4a / M4b ≥2 条不同摘录 /
     //       AI 判断 / 你的层任一（U1-U3，含 u:card:）。
     //   弱（同一类别只算一次，不与自己组合）：单份材料的导图证据（docCount = 1）/ M4b / 卡片正文 c: / AI 写的定义 d:。
     const m4bExtracts = new Set(p.text.filter((t) => !t.strong).map((t) => t.extractId));
@@ -388,6 +541,14 @@ function resolveEdges(pairs, dismissals) {
       type = w.type;
       from = w.fromId;
       to = w.toId;
+    } else {
+      // v49.170 / D340 / I6：只有材料论证证据时用 P1–P5 的建议类型（无 AI 判断、无世界层）
+      const sg = argSuggestion(p);
+      if (sg) {
+        type = sg.type;
+        from = sg.from;
+        to = sg.to;
+      }
     }
     p.inferredType = { type, from, to };
     edges.push({
@@ -413,4 +574,41 @@ function resolveEdges(pairs, dismissals) {
   return { edges, maybe, pairs };
 }
 
-module.exports = { collectPairs, resolveEdges, evidenceKeys, canResurface, pairKey, buildMatcher };
+/**
+ * v49.172 / D342：材料论证关系投影到全谱（设计 KG-SOURCE-GROUNDED §8.6 第 1 层旁的「材料投影」，精确率 material 0.92）。
+ * 与 collectTermArgs 同一套 P1–P5 规则，但术语不必是知识点：链接了全谱的术语以 "Q<id>" 作端点，
+ * 名称等于知识点的术语仍归到该知识点。这样书里「特朗普……美国梦」的论证，即使「唐纳德·特朗普」不是你的知识点也不会被丢掉。
+ * @param ta  db.kgEdgeFacts().termArgs（已 dropStale）
+ * @param kps [{id, label, atlasId:"Q…"|null}]
+ * @returns [{a, b, argType, from, to, pred, docs}]  a/b/from/to＝"Q<id>" 或知识点 id
+ */
+function projectTermArgs(ta, kps) {
+  if (!ta || !Array.isArray(ta.terms) || !ta.terms.length) return [];
+  const kpAtlas = new Map();
+  for (const k of kps || []) if (k.atlasId) kpAtlas.set(String(k.atlasId), String(k.id));
+  const pairs = new Map();
+  const get = (a, b) => {
+    if (!a || !b || a === b) return null;
+    const key = pairKey(a, b);
+    let p = pairs.get(key);
+    if (!p) {
+      p = { key, material: [], docs: new Set() };
+      pairs.set(key, p);
+    }
+    return p;
+  };
+  // 已有知识点的条目归到知识点；其余链接了全谱的术语直接以条目作端点
+  const kpByAtlas = { get: (q) => kpAtlas.get(q) || q };
+  collectTermArgs(ta, { kps: kps || [], kpByAtlas, canon: (id) => (id ? String(id) : null), get });
+  const out = [];
+  for (const p of pairs.values()) {
+    const sg = argSuggestion(p);
+    if (!sg) continue;
+    const pred = (p.material.find((m) => m.argType === sg.type && m.pred) || {}).pred || null;
+    const [a, b] = p.key.split("|");
+    out.push({ a, b, argType: sg.type, from: sg.from, to: sg.to, pred, docs: p.docs.size });
+  }
+  return out;
+}
+
+module.exports = { collectPairs, resolveEdges, evidenceKeys, canResurface, pairKey, buildMatcher, projectTermArgs };

@@ -5,6 +5,7 @@
 const { fsrs, generatorParameters, createEmptyCard } = require("ts-fsrs");
 const kgCore = require("./kgCore");
 const kgEdges = require("./kgEdges");
+const { normName } = require("./kgSenseCore");
 const lmParams = require("./lmParams");
 const learnerDb = require("./learnerDb");
 const { learningDayStartMs } = require("./fsrsTime");
@@ -13,6 +14,19 @@ let dbModule = null;
 function db() {
   if (!dbModule) dbModule = require("./db");
   return dbModule;
+}
+
+// S4：过期原文术语行（block_hash 与会话现文不符）过滤用的引擎句柄（main.js 注入；未注入 / 会话不在 → 不过滤）
+let engineGetter = null;
+function setEngineGetter(fn) {
+  engineGetter = typeof fn === "function" ? fn : null;
+}
+function currentEngine() {
+  try {
+    return engineGetter ? engineGetter() : null;
+  } catch {
+    return null;
+  }
 }
 
 const parse = (s, d) => {
@@ -79,7 +93,7 @@ function writeDensityReport(pairs, resolved, model, ms) {
     for (const p of pairs.values()) {
       if (p.world.length) byKind.world++;
       if (p.confirmed.length) byKind.confirmed++;
-      if (p.material.some((m) => m.kind === "map" || m.kind === "node")) byKind.map++;
+      if (p.material.some((m) => m.kind === "map" || m.kind === "node" || m.kind === "arg")) byKind.map++;
       if (p.material.some((m) => m.kind === "extract")) byKind.extract++;
       if (p.ai.length) byKind.ai++;
       if (p.mine.length) byKind.mine++;
@@ -122,6 +136,58 @@ function fingerprint() {
   const d = db();
   const f = d.kgFingerprint ? d.kgFingerprint() : String(Date.now());
   return `${f}|${lmParams.PARAM_VERSION}`;
+}
+
+/**
+ * v49.170 / D340 / I6：给 kps 逐个写 readExplained（就地），返回 readTerms。
+ * 读过的单元＝unit_reads；讲类术语＝defines / explains / argues。term → 知识点：atlas_id 命中知识点 atlasId（Q 前缀），或 surface_norm ＝ normName(label)。
+ */
+function computeReadExplained(d, kps) {
+  const rows = d.kgReadTermFacts ? require("./kgTerms").dropStale(currentEngine(), d.kgReadTermFacts()) : [];
+  if (!rows.length) {
+    for (const k of kps) k.readExplained = false;
+    return [];
+  }
+  const readAtlas = new Set();
+  const readNames = new Set();
+  for (const r of rows) {
+    if (r.atlasId != null) readAtlas.add(Number(r.atlasId));
+    readNames.add(String(r.surfaceNorm || ""));
+  }
+  const kpAtlas = new Set();
+  const kpNames = new Set();
+  for (const k of kps) {
+    const nn = normName(k.label);
+    if (nn) kpNames.add(nn);
+    const n = k.atlasId ? Number(String(k.atlasId).slice(1)) : 0;
+    if (n) kpAtlas.add(n);
+    k.readExplained = Boolean((n && readAtlas.has(n)) || (nn && readNames.has(nn)));
+  }
+  const groups = new Map(); // atlasInt → { docs:Set, surface, names:Set }
+  for (const r of rows) {
+    if (r.atlasId == null) continue;
+    const n = Number(r.atlasId);
+    if (kpAtlas.has(n)) continue;
+    let g = groups.get(n);
+    if (!g) {
+      g = { docs: new Set(), surface: String(r.surface || ""), names: new Set() };
+      groups.set(n, g);
+    }
+    g.docs.add(String(r.documentId));
+    g.names.add(String(r.surfaceNorm || ""));
+  }
+  const list = [...groups]
+    .filter(([, g]) => ![...g.names].some((nm) => kpNames.has(nm)))
+    .sort((x, y) => y[1].docs.size - x[1].docs.size || x[0] - y[0])
+    .slice(0, 200);
+  if (!list.length) return [];
+  const labels = new Map();
+  try {
+    for (const n of require("./atlas").getNodes(list.map(([n]) => "Q" + n))) if (n) labels.set(n.id, n.zh || n.en || n.ja || null);
+  } catch {
+    /* 全谱不可用：用术语写法当标签 */
+  }
+  return list.map(([n, g]) => ({ atlasId: "Q" + n, label: labels.get("Q" + n) || g.surface, documentIds: [...g.docs].sort() }));
 }
 
 async function loadModel(now) {
@@ -195,6 +261,9 @@ async function loadModel(now) {
     if (st && st.metrics && st.metrics.extractCount) extractCounts.set(String(k.id), Number(st.metrics.extractCount));
   }
   const selfExplain = (facts.selfExplain || []).map((e) => ({ kpId: e.kpId, t: Number(e.ts), clear: (parse(e.payloadJson, {}) || {}).selfRating === "clear" }));
+  // v49.170 / D340 / I6 证据阶梯第 1 级：读过的单元里讲了它（atlas 命中或名称命中）＝ readExplained；
+  //   readTerms ＝ 还不是知识点的、已链接全谱的讲类术语（≤200，按出现材料数降序），供图谱「显示读过的」画空心轮廓
+  const readTerms = computeReadExplained(d, kps);
   // 关系：用户确认的边 + 全谱派生边（世界层证据）；三层汇总见下方 kgEdges（v49.148 / D317）
   const relations = (facts.relations || []).map((r) => ({ ...r }));
   // v49.143 / D311：挂了全谱的知识点之间的全谱骨架边（属于 / 前置 / 区分 / 类比）；主题取全谱主题。
@@ -282,6 +351,9 @@ async function loadModel(now) {
   // v49.148 / D317：连线分三层——全谱派生边只是世界层证据（淡色推断线），实线只来自用户（knowledge_relations）
   const worldRels = relations.filter((r) => r.source === "atlas");
   const edgeFacts = d.kgEdgeFacts ? d.kgEdgeFacts() : {};
+  if (edgeFacts.termArgs && Array.isArray(edgeFacts.termArgs.terms) && edgeFacts.termArgs.terms.length) {
+    edgeFacts.termArgs = { ...edgeFacts.termArgs, terms: require("./kgTerms").dropStale(currentEngine(), edgeFacts.termArgs.terms) };
+  }
   const edgesStarted = Date.now();
   const pairs = kgEdges.collectPairs({ kps, allKps: facts.kps, confirmed: facts.relations, world: worldRels, defVersions: facts.defVersions, edgeFacts, cardKp });
   const resolved = kgEdges.resolveEdges(pairs, edgeFacts.dismissals);
@@ -300,7 +372,7 @@ async function loadModel(now) {
     themeLabels
   });
   const worldInfo = { complete: world.complete, incomplete: world.incomplete.length, incompleteIds: world.incomplete };
-  cache = { fp, model, builtAt: now, pairs, maybe: resolved.maybe, edgeFacts, world: worldInfo, atlasIds: [...atlasIds] };
+  cache = { fp, model, builtAt: now, pairs, maybe: resolved.maybe, edgeFacts, world: worldInfo, atlasIds: [...atlasIds], readTerms };
   writeDensityReport(pairs, resolved, model, edgesMs);
   kickAtlasPrefetch([...atlasIds], worldInfo);
   return model;
@@ -421,6 +493,8 @@ async function getGraph(opts) {
     today: kgCore.todaySummary(model, todayFrom),
     history: withHistory ? historyIndex(model) : null,
     maybe: maybeIndex(model),
+    // v49.170 / D340 / I6：读过讲了、但还不是知识点的全谱术语（≤200）；图谱「显示读过的」画成空心轮廓
+    readTerms: (cache && cache.model === model && cache.readTerms) || [],
     // v49.154 / D323 / A3：世界层完整性（界面据此提示「部分关系需要联网」）；只给计数，不传 id 列表
     world: { complete: !ws || ws.complete !== false, incomplete: ws ? Number(ws.incomplete) || 0 : 0 }
   };
@@ -500,6 +574,7 @@ async function edgeEvidence(a, b) {
   for (const m of p.material) {
     if (m.kind === "map") mapNodes.push({ mapId: m.mapId, nodeId: m.parentNodeId }, { mapId: m.mapId, nodeId: m.childNodeId });
     if (m.kind === "node") mapNodes.push({ mapId: m.mapId, nodeId: m.nodeId });
+    if (m.kind === "arg") mapNodes.push({ mapId: m.mapId, nodeId: m.fromNodeId }, { mapId: m.mapId, nodeId: m.toNodeId });
   }
   const look = d.kgEvidenceLookup({
     docIds: [...p.docs],
@@ -520,7 +595,31 @@ async function edgeEvidence(a, b) {
   const material = [];
   const seenMap = new Set();
   for (const m of p.material) {
-    if (m.kind === "map" || m.kind === "node") {
+    if (m.kind === "arg") {
+      const k = `arg|${m.rule}|${m.code}|${m.mapId}|${m.fromNodeId}|${m.toNodeId}|${m.blockA}|${m.blockB}|${m.kpA}|${m.kpB}`;
+      if (seenMap.has(k)) continue;
+      seenMap.add(k);
+      material.push({
+        kind: "arg",
+        rule: m.rule,
+        code: m.code,
+        pred: m.pred || null,
+        documentId: m.documentId,
+        title: docTitle(m.documentId),
+        mapId: m.mapId,
+        fromNodeId: m.fromNodeId,
+        toNodeId: m.toNodeId,
+        nodeId: m.toNodeId,
+        path: [look.nodes[`${m.mapId}|${m.fromNodeId}`] || "", look.nodes[`${m.mapId}|${m.toNodeId}`] || ""],
+        quoteA: m.quoteA,
+        quoteB: m.quoteB,
+        blockA: m.blockA,
+        blockB: m.blockB,
+        kpA: m.kpA,
+        kpB: m.kpB,
+        isNew: fresh.has(m.key)
+      });
+    } else if (m.kind === "map" || m.kind === "node") {
       const k = m.kind === "map" ? `${m.mapId}|${m.parentNodeId}|${m.childNodeId}` : `${m.mapId}|${m.nodeId}`;
       if (seenMap.has(k)) continue;
       seenMap.add(k);
@@ -741,6 +840,7 @@ async function judgeCandidates(limit, done) {
         if (m.kind === "extract") extractIds.push(m.extractId);
         else if (m.kind === "map") mapNodes.push({ mapId: m.mapId, nodeId: m.parentNodeId }, { mapId: m.mapId, nodeId: m.childNodeId });
         else if (m.kind === "node") mapNodes.push({ mapId: m.mapId, nodeId: m.nodeId });
+        else if (m.kind === "arg") mapNodes.push({ mapId: m.mapId, nodeId: m.fromNodeId }, { mapId: m.mapId, nodeId: m.toNodeId });
         if (m.documentId) docIds.push(m.documentId);
       }
       for (const m of p.text) if (m.extractId) extractIds.push(m.extractId);
@@ -790,6 +890,11 @@ async function judgeCandidates(limit, done) {
       if (!snippets.length) {
         for (const m of p.material) {
           if (snippets.length >= 2) break;
+          if (m.kind === "arg") {
+            // 论证证据自带原文引句：直接作为片段（两句都是原文子串）
+            add(m.key, [m.quoteA, m.quoteB].filter(Boolean).join(" … "));
+            continue;
+          }
           if (m.kind !== "map" && m.kind !== "node") continue;
           const path = m.kind === "map" ? [look.nodes[`${m.mapId}|${m.parentNodeId}`], look.nodes[`${m.mapId}|${m.childNodeId}`]] : [look.nodes[`${m.mapId}|${m.nodeId}`]];
           const title = look.docs[m.documentId] || "";
@@ -923,6 +1028,226 @@ async function contrastCandidate() {
   return best;
 }
 
+// ---------- 关联路径（KG-SG-IMPL-PLAN §5.2 / I9）：从「我已点亮的知识点」到目标全谱节点的走廊 ----------
+/** 额外边钩子（材料投影 / 用户边，后续任务接入）；返回 [{src,dst,source,type?,pred?}] */
+function pathExtraEdges() {
+  const out = [];
+  // I11：用户已接受的 AI 补链——每一跳按用户边（p 0.99）参与搜索；待确认 / 已拒绝的不参与
+  try {
+    const { hopEdge } = require("./kgPathJudge");
+    for (const pr of db().kgPathProposalAccepted()) for (const h of pr.hops) { const e = hopEdge(h); if (e) out.push(e); }
+  } catch { /* 无库 / 无提案表：当作没有 */ }
+  return out;
+}
+
+/**
+ * 点亮的知识点 → 路径搜索的「已学端点」（与 runPath / kgPathJudge 同口径）。
+ * v49.172 / D342：没有对应全谱条目的点亮知识点不再被忽略——每个这样的知识点成为一个虚拟端点（负整数 id），
+ * 经「代理边」连到全谱：挂在上级下（atlasParent，属于）/ 也涉及（atlasAlso）＝用户确认的边（source user）；
+ * 两者都没有时，取名称里出现的全谱词前 2 个（source name，精确率见 atlasEdgePrecision）。
+ * @returns {{ learned:int[], kpOf:Map<int,kpId>, proxyEdges:object[], virtual:Map<int,{label,kpId}>, atlasLearned:int[] }}
+ *   atlasLearned＝真实全谱端点 ∪ 代理条目（AI 补链用：AI 只认识全谱条目）
+ */
+async function pathLearned(now = Date.now()) {
+  const model = await loadModel(now);
+  const learned = [];
+  const kpOf = new Map();
+  const proxyEdges = [];
+  const virtual = new Map();
+  const atlasLearned = new Set();
+  const qnum = (q) => { const v = Number(String(q || "").replace(/^Q/, "")); return Number.isInteger(v) && v > 0 ? v : null; };
+  let vid = -1;
+  for (const n of model.nodes.values()) {
+    if (n.litAt == null || n.litAt > now || n.archivedAt != null) continue;
+    const q = qnum(n.atlasId);
+    if (q != null) {
+      learned.push(q);
+      kpOf.set(q, n.id);
+      atlasLearned.add(q);
+      continue;
+    }
+    const links = [];
+    const par = qnum(n.atlasParent);
+    if (par != null) links.push({ dst: par, source: "user", type: "b" });
+    for (const a of n.atlasAlso || []) { const x = qnum(a); if (x != null) links.push({ dst: x, source: "user", type: "r", pred: "涉及" }); }
+    if (!links.length) for (const x of nameProxies(n.label)) links.push({ dst: x, source: "name", type: "r", pred: "名称含" });
+    // 没有任何代理也给虚拟 id：你自己图谱里的连线 / 材料论证仍可能把它连进来（pathGraphEdges）
+    const v = vid--;
+    learned.push(v);
+    kpOf.set(v, n.id);
+    virtual.set(v, { label: n.label, kpId: n.id });
+    for (const l of links) {
+      proxyEdges.push({ src: v, dst: l.dst, source: l.source, type: l.type, ...(l.pred ? { pred: l.pred } : {}) });
+      atlasLearned.add(l.dst);
+    }
+  }
+  return { learned, kpOf, proxyEdges, virtual, atlasLearned: [...atlasLearned] };
+}
+
+/**
+ * v49.172 / D342：路径搜索也走「你自己的图谱」与「你读的书」——此前这两层证据从没进过搜索（钩子一直空着）。
+ *  ① 知识点之间的连线：已确认 → user（0.99）；有材料证据（导图论证 / 摘录 / 正文同现，不含只靠 AI 或只靠全谱的推断线）→ material（0.92）；
+ *  ② 材料论证投影到全谱（kgEdges.projectTermArgs）：术语不必是知识点 → material（0.92）。
+ * 端点 id：有全谱条目的知识点＝条目整数 id；点亮但没有条目的知识点＝pathLearned 给的虚拟 id；其余（未点亮且无条目）跳过。
+ * @param {Map<string,number>} kpToInt  知识点 id → 搜索用整数 id
+ */
+const GRAPH_TYPE = { part_of: "b", specialization_of: "b", generalization_of: "b", example_of: "e", prerequisite: "p", contrasts_with: "c", analogous_to: "a", application_of: "u", related_to: "r" };
+const ARG_PRED_OK = new Set(["导致", "影响", "论述", "提出"]);
+async function pathGraphEdges(kpToInt) {
+  const out = [];
+  await loadModel(Date.now());
+  const c = cache;
+  if (!c) return out;
+  const idOf = (x) => {
+    const s = String(x || "");
+    if (/^Q\d+$/.test(s)) return Number(s.slice(1));
+    return kpToInt.has(s) ? kpToInt.get(s) : null;
+  };
+  // ① 知识点之间的连线
+  for (const p of (c.pairs && c.pairs.values && c.pairs.values()) || []) {
+    let source = null, type = "r", from = p.a, to = p.b;
+    if (p.state === "confirmed" && p.confirmed.length) {
+      source = "user";
+      const r = p.confirmed[0];
+      type = GRAPH_TYPE[r.type] || "r";
+      from = r.fromId; to = r.toId;
+    } else if (p.state === "inferred") {
+      const nonAi = p.docs.size + p.material.filter((m) => m.kind === "extract").length + p.text.length + p.cardText.length + p.mine.length;
+      if (!nonAi) continue; // 只靠 AI 判断或只靠全谱（全谱边本来就在搜索里）
+      source = "material";
+      const it = p.inferredType || {};
+      type = GRAPH_TYPE[it.type] || "r";
+      from = it.from || p.a; to = it.to || p.b;
+    } else continue;
+    const a = idOf(from), b = idOf(to);
+    if (a == null || b == null || a === b) continue;
+    // p：前置的方向约定与全谱一致（src 依赖 dst：dst 是 src 的前置）——知识点关系里 from 是前置
+    const rt = p.state === "confirmed" ? p.confirmed[0].type : (p.inferredType || {}).type;
+    if (type === "p" || rt === "generalization_of") out.push({ src: b, dst: a, source, type }); // 泛化：B 属于 A
+    else out.push({ src: a, dst: b, source, type });
+  }
+  // ② 材料论证投影到全谱
+  try {
+    const kps = [...c.model.nodes.values()].map((n) => ({ id: n.id, label: n.label, atlasId: n.atlasId || null }));
+    const key = c.builtAt;
+    if (!c.projected || c.projected.key !== key) c.projected = { key, rows: require("./kgEdges").projectTermArgs(c.edgeFacts && c.edgeFacts.termArgs, kps) };
+    for (const r of c.projected.rows) {
+      const from = idOf(r.from), to = idOf(r.to);
+      if (from == null || to == null || from === to) continue;
+      if (r.argType === "prerequisite") out.push({ src: to, dst: from, source: "material", type: "p" }); // from 前置于 to
+      else if (r.argType === "example_of") out.push({ src: from, dst: to, source: "material", type: "e" });
+      else if (r.argType === "contrasts_with") out.push({ src: from, dst: to, source: "material", type: "c" });
+      else out.push({ src: from, dst: to, source: "material", type: "r", pred: ARG_PRED_OK.has(r.pred) ? r.pred : "导致" });
+    }
+  } catch { /* 无材料：只用知识点连线 */ }
+  return out;
+}
+
+/** 名称代理：名称里出现的全谱词（本地字典召回），去掉被更长命中包含的碎片（「特朗」⊂「特朗普」）与同名重复，取前 2 */
+const nameProxyCache = new Map();
+function nameProxies(label) {
+  const key = String(label || "").trim();
+  if (key.length < 2) return [];
+  if (nameProxyCache.has(key)) return nameProxyCache.get(key);
+  let out = [];
+  try {
+    const hits = require("./atlas").candidates(key.replace(/[《》「」]/g, ""), { limit: 12 }) || [];
+    const keys = hits.map((h) => String(h.matched || ""));
+    const seen = new Set();
+    for (let i = 0; i < hits.length && out.length < 2; i++) {
+      const k = keys[i];
+      if (k.length < 2 || seen.has(k)) continue;
+      if (keys.some((o) => o.length > k.length && o.includes(k))) continue;
+      seen.add(k);
+      const q = Number(String(hits[i].id || "").replace(/^Q/, ""));
+      if (Number.isInteger(q) && q > 0) out.push(q);
+    }
+  } catch { out = []; }
+  if (nameProxyCache.size > 2000) nameProxyCache.clear();
+  nameProxyCache.set(key, out);
+  return out;
+}
+
+/** 决议 / 新提案后让在飞的路径搜索不再被复用（pathRuns 只缓存在飞 Promise） */
+function pathInvalidate(atlasId) {
+  const t = String(atlasId == null ? "" : atlasId).replace(/^Q/i, "");
+  for (const k of [...pathRuns.keys()]) if (!atlasId || k.split("|")[0].replace(/^Q/i, "") === t) pathRuns.delete(k);
+}
+
+/** 在全谱访问器外包一层：负 id＝虚拟端点（不查库） */
+function withVirtual(acc, virtual) {
+  return {
+    ...acc,
+    edgesOf: (id, eo) => (virtual.has(id) ? [] : acc.edgesOf(id, eo)),
+    edgesBetween: (id, others) => (virtual.has(id) ? [] : acc.edgesBetween(id, (others || []).filter((o) => !virtual.has(o)))),
+    nodeOf: (id) => (virtual.has(id) ? { id, kind: "concept", topic: null, field: null, label: virtual.get(id).label } : acc.nodeOf(id)),
+    degreeOf: (id) => (virtual.has(id) ? 1 : acc.degreeOf(id)),
+    isFieldOrDomainNode: (id) => (virtual.has(id) ? false : acc.isFieldOrDomainNode(id)),
+    isTopicNode: (id) => (virtual.has(id) ? false : acc.isTopicNode(id))
+  };
+}
+
+let pathAccessor = null; // { db, acc }
+function accessorFor(handle) {
+  if (!pathAccessor || pathAccessor.db !== handle) {
+    pathAccessor = { db: handle, acc: require("./atlasPath").sqliteAccessor(handle) };
+  }
+  return pathAccessor.acc;
+}
+const pathRuns = new Map(); // key → Promise（同一目标并发调用共享）
+
+/** S3：「继续搜索」放大 maxExpand 时同比放大超时预算（基准 4000 ms @ 20000，上限 16000 ms），否则超时截断的搜索翻倍无效 */
+function pathBudgetOpts(opts) {
+  const me = opts && Number(opts.maxExpand) > 0 ? Number(opts.maxExpand) : 0;
+  if (!me) return {};
+  return { maxExpand: me, timeoutMs: Math.min(16000, Math.max(4000, Math.round((4000 * me) / 20000))) };
+}
+
+async function runPath(atlasId, opts) {
+  const { findCorridor } = require("./atlasPath");
+  const atlas = require("./atlas");
+  const target = Number(String(atlasId == null ? "" : atlasId).replace(/^Q/i, ""));
+  const h = atlas.openHandle();
+  if (!h.db || !Number.isInteger(target) || target <= 0) return { status: "unavailable" };
+  const { learned, kpOf, proxyEdges, virtual } = await pathLearned(Date.now());
+  const kpToInt = new Map();
+  for (const n of (await loadModel(Date.now())).nodes.values()) { const q = Number(String(n.atlasId || "").replace(/^Q/, "")); if (Number.isInteger(q) && q > 0) kpToInt.set(String(n.id), q); }
+  for (const [q, k] of kpOf) if (q < 0) kpToInt.set(String(k), q);
+  const graphEdges = await pathGraphEdges(kpToInt).catch(() => []);
+  try {
+    const base = accessorFor(h.db);
+    // D342：虚拟端点（没有全谱条目的点亮知识点）只有代理边，标签取知识点名称
+    const acc = virtual.size ? withVirtual(base, virtual) : base;
+    const res = await findCorridor({
+      accessor: acc,
+      target,
+      learned,
+      extraEdges: pathExtraEdges().concat(proxyEdges, graphEdges),
+      opts: { ...pathBudgetOpts(opts), scope: h.source === "core" ? "core" : "full", kpIdOf: (q) => kpOf.get(q) ?? null, passNodes: new Set(proxyEdges.map((e) => e.dst)) }
+    });
+    // I11：待确认的 AI 补链只用于展示，不进搜索
+    const lab = (qid) => { const nd = acc.nodeOf(Number(String(qid).replace(/^Q/i, ""))); return (nd && nd.label) || String(qid); };
+    let aiChains = [];
+    try {
+      aiChains = db().kgPathProposalList("Q" + target).filter((p) => p.status === "pending")
+        .map((p) => ({ id: p.id, hops: p.hops.map((x) => ({ from: x.from, to: x.to, rel: x.rel, basis: x.basis, fromLabel: lab(x.from), toLabel: lab(x.to) })) }));
+    } catch { /* 无提案表：不展示 */ }
+    return { ...res, aiChains };
+  } catch (e) {
+    try { require("./appLog").log("WARN", "kg-path", String((e && e.message) || e)); } catch { /* 日志失败不影响返回 */ }
+    return { status: "unavailable" };
+  }
+}
+
+/** @param {string|number} atlasId "Q123" 或整数；opts.maxExpand 透传（「继续搜索」翻倍） */
+function pathToLearned(atlasId, opts = {}) {
+  const key = String(atlasId) + "|" + (opts.maxExpand || "");
+  if (pathRuns.has(key)) return pathRuns.get(key);
+  const p = runPath(atlasId, opts).finally(() => pathRuns.delete(key));
+  pathRuns.set(key, p);
+  return p;
+}
+
 // v49.143 / D310：布局缓存（kg_layout）退役——关系图位置不持久化，初始位置由 id 固定种子生成。
 
-module.exports = { edgeEvidence, dismissPair, pickRelationAsk, judgeCandidates, contrastCandidate, getGraph, snapshotAt, today, cardPanel, invalidate, prefetchAtlasEdges, worldStatus, atlasNeighbors, replaySeries, _loadModel: loadModel, _atlasPrefetch: { invalidations: () => prefetchInvalidations, pending: () => prefetchRun, runs: () => prefetchRuns, queued: () => prefetchQueued, run: (ids) => runAtlasPrefetch(ids) } };
+module.exports = { setEngineGetter, pathToLearned, pathExtraEdges, pathGraphEdges, pathLearned, pathInvalidate, _pathInternals: { accessorFor, pathBudgetOpts }, edgeEvidence, dismissPair, pickRelationAsk, judgeCandidates, contrastCandidate, getGraph, snapshotAt, today, cardPanel, invalidate, prefetchAtlasEdges, worldStatus, atlasNeighbors, replaySeries, _loadModel: loadModel, _atlasPrefetch: { invalidations: () => prefetchInvalidations, pending: () => prefetchRun, runs: () => prefetchRuns, queued: () => prefetchQueued, run: (ids) => runAtlasPrefetch(ids) } };

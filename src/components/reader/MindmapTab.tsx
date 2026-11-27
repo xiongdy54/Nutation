@@ -26,7 +26,7 @@ import { buildCanvasSvg, type SvgLabels } from "../../lib/mindmap/v2/svg";
 import { expandAllForExport, inlineSvgVars, pngScale, toMarkdown, toOpml, toOutline, toXmindEntries } from "../../lib/mindmap/v2/exportDoc";
 import { HOW_NAMES, PATTERN_NAMES, type PatternHow } from "../../lib/mindmap/v2/pattern";
 import AtlasStage, { type AtlasEntry } from "./atlas/AtlasStage";
-import AtlasCard from "./atlas/AtlasCard";
+import AtlasCard, { type NodeTerms } from "./atlas/AtlasCard";
 import AtlasToolbar, { type AtlasExportFormat, type AtlasRunInfo } from "./atlas/AtlasToolbar";
 import { useThrottled } from "./atlas/useThrottled";
 import { ATLAS_T, atlasChain, defaultExpanded, expandFor, normalizeSnapshot, type FlowSnapshot } from "../../lib/flow/atlasLayout";
@@ -199,7 +199,46 @@ export default function MindmapTab(props: MindmapTabProps) {
     await kg.mapLinkSetUserRef(mapId, nodeId, atlasId, on).catch(() => false);
     setRefsTick((n) => n + 1);
   }, [mapId]);
-  const linkCounts = useMemo(() => Object.fromEntries(Object.entries(refsByNode).map(([k, v]) => [k, v.length])), [refsByNode]);
+  // v49.170 / D340：原文术语投影（讲了 / 用到）；sourceTerms:changed 推送后重读
+  type TermsReply = { documentId: string; nodes: NodeTerms[] };
+  type TermsApi = {
+    sourceTermsForMap?(id: string): Promise<TermsReply>;
+    onSourceTermsChanged?(cb: (p: { documentId: string }) => void): () => void;
+    sourceTermReject?(termId: string): Promise<unknown>;
+    sourceTermsForce?(documentId: string, unitAnchor: string): Promise<unknown>;
+  };
+  const termsApi = () => (window as unknown as { kgAPI?: TermsApi }).kgAPI;
+  const [termsByNode, setTermsByNode] = useState<Record<string, NodeTerms>>({});
+  const [termsTick, setTermsTick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const kg = termsApi();
+    if (!mapId || !kg?.sourceTermsForMap) { setTermsByNode({}); return; }
+    void kg.sourceTermsForMap(mapId).then((r) => {
+      if (!alive) return;
+      const m: Record<string, NodeTerms> = {};
+      for (const n of r?.nodes || []) m[n.nodeId] = n;
+      setTermsByNode(m);
+    }).catch(() => { if (alive) setTermsByNode({}); });
+    return () => { alive = false; };
+  }, [mapId, termsTick]);
+  useEffect(() => {
+    const kg = termsApi();
+    if (!mapId || !kg?.onSourceTermsChanged) return;
+    return kg.onSourceTermsChanged((p) => { if (p && p.documentId === documentId) setTermsTick((n) => n + 1); });
+  }, [mapId, documentId]);
+  const rejectTerm = useCallback(async (termId: string) => {
+    await termsApi()?.sourceTermReject?.(termId).catch(() => null);
+    setTermsTick((n) => n + 1);
+  }, []);
+  // 锚环计数（D339 位置不变）：只数「讲了」+ 用户手动挂的；顺带提到的从来不记
+  const linkCounts = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(refsByNode)) out[k] = (out[k] || 0) + v.length;
+    for (const [k, v] of Object.entries(termsByNode)) out[k] = (out[k] || 0) + v.taught.length;
+    for (const k of Object.keys(out)) if (!out[k]) delete out[k];
+    return out;
+  }, [refsByNode, termsByNode]);
   const openGraphFor = useCallback((atlasId: string) => {
     const kg = (window as unknown as { kgAPI?: { atlasNode(id: string): Promise<{ kp?: { id: string } | null } | null> } }).kgAPI;
     void (kg ? kg.atlasNode(atlasId).catch(() => null) : Promise.resolve(null)).then((n) => {
@@ -833,6 +872,14 @@ export default function MindmapTab(props: MindmapTabProps) {
       onFocusNode={navigate}
       onSetPattern={setPattern}
       links={refsByNode[selected.node.id]}
+      terms={termsByNode[selected.node.id] ?? null}
+      documentId={documentId}
+      onRejectTerm={mapId ? (id) => void rejectTerm(id) : undefined}
+      onForceTerms={(() => {
+        const t = termsByNode[selected.node.id];
+        const api = termsApi();
+        return t?.lowDensity && t.unitAnchor && api?.sourceTermsForce ? () => void api.sourceTermsForce!(documentId, t.unitAnchor!) : undefined;
+      })()}
       onSetLink={mapId ? (aid, on) => void setLink(selected.node.id, aid, on) : undefined}
       onOpenGraph={props.onOpenGraph ? openGraphFor : undefined}
     />

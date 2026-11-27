@@ -704,3 +704,120 @@ li.is-waiting > .kg-map-cands { opacity: 0.5; }
 .kg-chip:not(.is-on):focus-visible, .kp-facet-btn:not(.active):focus-visible { outline: none; border-color: var(--accent); } /* D320 */
 .kg-edge-toast { z-index: 3; flex-wrap: wrap; color: var(--text-primary); }
 .kg-lrow .lg-faint { opacity: 0.4; stroke-width: 0.7; }
+
+/* 详情卡里的「连到我学过的」 */
+.kg-path { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-2); margin-top: var(--sp-2); font-size: var(--fs-meta); color: var(--text-secondary); }
+.kg-path-acts { display: flex; align-items: center; gap: var(--sp-2); }
+.kg-path-acts .btn.is-on { color: var(--accent); border-color: var(--accent); }
+
+/* 顶栏里的「目标」：固定后常驻 */
+.kg-goal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: var(--sp-4);
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-xs);
+  background: none;
+  font: inherit;
+  font-size: var(--fs-meta);
+  color: var(--accent);
+  cursor: pointer;
+}
+.kg-goal i { width: 6px; height: 6px; background: var(--accent); }
+
+/* —— v49.172 / D342 关联路径细栏：路径本身画在关系图上，这里只说一句话 + 关闭 ——
+   位于顶栏数字下方，发丝线底边；等待时底边上滑过一段强调色（动效取 Token，reduce-motion / motion-off 不动）。 */
+.kg-pathbar {
+  position: absolute;
+  z-index: 2;
+  top: 52px;
+  left: var(--sp-6);
+  max-width: min(640px, calc(100% - 2 * var(--sp-6) - 352px));
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-1) 0 var(--sp-1) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+  overflow: hidden;
+}
+.kg-pathbar-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.kg-pathbar-ai { display: inline-flex; align-items: center; gap: var(--sp-1); flex: none; }
+.kg-pathbar-cap { color: var(--text-helper); margin-right: var(--sp-1); }
+.kg-pathbar-x {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-secondary);
+  line-height: 1;
+  color: var(--text-helper);
+  cursor: pointer;
+  transition: color var(--dur-hover) var(--ease-out-soft);
+}
+.kg-pathbar-x:hover, .kg-pathbar-x:focus-visible { color: var(--text-primary); outline: none; }
+.kg-pathbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: 48px;
+  height: 1px;
+  background: var(--accent);
+  opacity: 0;
+}
+.kg-pathbar.is-wait .kg-pathbar-text { color: var(--text-secondary); }
+.kg-pathbar.is-wait::after { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .kg-pathbar { animation: kg-path-rise var(--dur-stage) var(--ease-enter) both; }
+  .kg-pathbar.is-wait::after { animation: kg-path-scan calc(var(--dur-chart-in) * 3) var(--ease-out-soft) infinite; }
+  body.motion-off .kg-pathbar, body.motion-off .kg-pathbar::after { animation: none; }
+}
+@keyframes kg-path-rise { from { opacity: 0; transform: translateY(-4px); } }
+@keyframes kg-path-scan { from { transform: translateX(-48px); } to { transform: translateX(640px); } }
+
+/* —— v49.170 / D340：论证证据（关系面板）与「原文里」（节点详情）——
+   引句一律一根 1px 竖线起头（同摘录引用的语汇），两句之间一行小号强调色动词：读作「上句—动词→下句」。 */
+.kg-arg { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.kg-arg-src { font-size: var(--fs-meta); color: var(--text-helper); }
+.kg-arg-q {
+  display: block;
+  border: 0;
+  border-left: 1px solid var(--grey-3);
+  background: none;
+  padding: 0 0 0 var(--sp-2);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  line-height: 1.55;
+  text-align: left;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  transition: border-color var(--dur-hover) var(--ease-out-soft), color var(--dur-hover) var(--ease-out-soft);
+}
+button.kg-arg-q { cursor: pointer; }
+button.kg-arg-q:hover, button.kg-arg-q:focus-visible { border-left-color: var(--accent); outline: none; }
+.kg-arg-verb { padding-left: var(--sp-2); font-size: var(--fs-meta); letter-spacing: 0.04em; color: var(--accent); }
+.kg-arg-verb::before { content: "↓"; margin-right: 4px; }
+
+.kg-tapp { display: flex; flex-direction: column; gap: var(--sp-2); }
+.kg-tapp-group { display: flex; flex-direction: column; gap: var(--sp-1); }
+.kg-tapp-k { display: flex; align-items: baseline; gap: var(--sp-2); font-size: var(--fs-meta); color: var(--text-secondary); }
+.kg-tapp-k span { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-helper); }
+.kg-tapp-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.kg-tapp-list li { display: grid; grid-template-columns: 6px minmax(0, 1fr); column-gap: var(--sp-2); align-items: start; }
+.kg-tapp-mark { width: 6px; height: 6px; margin-top: 7px; border: 1px solid var(--grey-3); box-sizing: border-box; }
+.kg-tapp-list li.is-read .kg-tapp-mark { border-color: var(--ink); background: var(--ink); }
+.kg-tapp-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.kg-tapp-body small { font-size: var(--fs-meta); color: var(--text-helper); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kg-tapp-q { border: 0; background: none; padding: 0; font: inherit; font-size: var(--fs-secondary); line-height: 1.55; text-align: left; color: var(--text-primary); overflow-wrap: anywhere; }
+button.kg-tapp-q { cursor: pointer; transition: color var(--dur-hover) var(--ease-out-soft); }
+button.kg-tapp-q:hover, button.kg-tapp-q:focus-visible { color: var(--accent); outline: none; }
+.kg-tapp-group[data-role="used"] .kg-tapp-q { color: var(--text-secondary); }
+.kg-tapp-more { align-self: flex-start; font-size: var(--fs-meta); color: var(--text-secondary); }
+

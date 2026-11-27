@@ -109,6 +109,8 @@ export interface DrawEdge {
   label?: string;
   /** 淡线（主题归属） */
   faint?: boolean;
+  /** v49.172 / D342：关联路径（on＝实线强调；ai＝AI 推测、待确认的虚线） */
+  path?: "on" | "ai";
 }
 export interface DrawState {
   w: number;
@@ -143,6 +145,21 @@ export function drawGraph(ctx: CanvasRenderingContext2D, s: DrawState): void {
   for (const de of s.edges) {
     const { a, b, e } = de;
     const sel = s.edgeId != null && e.id === s.edgeId;
+    if (de.path) {
+      // 关联路径：强调色，入场时从一端描到另一端（shown 0→1）
+      const al = 0.9 * Math.min(a.born, b.born) * Math.min(1, Math.max(a.vis, b.vis));
+      if (al < 0.01) continue;
+      const t = de.shown;
+      ctx.globalAlpha = al;
+      ctx.strokeStyle = css(pal.focus);
+      ctx.lineWidth = 1.3 / k;
+      ctx.setLineDash(de.path === "ai" ? [4 / k, 3 / k] : []);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+      ctx.stroke();
+      continue;
+    }
     const hl = sel || (s.activeId != null && (e.from === s.activeId || e.to === s.activeId));
     // v49.148 / D317：推断边淡色细线（聚焦时也比实线淡一档）；实线只来自用户
     const inferred = e.status === "suggested" && !de.faint;
@@ -223,14 +240,16 @@ export function drawGraph(ctx: CanvasRenderingContext2D, s: DrawState): void {
       continue;
     }
     if (n.state === "outline" || n.state === "ghost") {
+      // v49.172 / D342：被点亮的虚影（关联路径 / 聚焦邻居）画得更清楚——仍是虚线空心圆，但不再半透明、略大一圈
+      const lit = n.state === "ghost" && !!s.neighbors && s.neighbors.has(n.id);
       ctx.fillStyle = css(pal.canvas);
-      ctx.strokeStyle = css(n.state === "ghost" ? pal.edge : pal.node);
+      ctx.strokeStyle = css(n.state === "ghost" ? (lit ? pal.focus : pal.edge) : pal.node);
       if (n.state === "ghost") {
-        ctx.globalAlpha *= 0.5;
+        ctx.globalAlpha *= lit ? 0.95 : 0.5;
         ctx.setLineDash([1.6 / k, 1.6 / k]);
       }
       ctx.beginPath();
-      ctx.arc(d.x, d.y, r * 0.85, 0, Math.PI * 2);
+      ctx.arc(d.x, d.y, (lit ? Math.max(r, 4.6) : r) * 0.85, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
       ctx.setLineDash([]);
@@ -261,7 +280,7 @@ export function drawGraph(ctx: CanvasRenderingContext2D, s: DrawState): void {
     const isAct = n.id === s.activeId;
     const isNb = !!s.neighbors && s.neighbors.has(n.id);
     let la = Math.max(smooth(z0, z0 + 0.3, k), isNb ? 1 : 0) * d.vis * d.born;
-    if (n.state === "ghost" || n.state === "archived") la *= 0.6;
+    if ((n.state === "ghost" && !isNb) || n.state === "archived") la *= 0.6;
     if (la < 0.02) continue;
     ctx.globalAlpha = la;
     ctx.fillStyle = css(isAct ? pal.node : pal.label);

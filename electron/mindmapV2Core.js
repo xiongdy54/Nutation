@@ -168,10 +168,28 @@ function extendUnitBlocks(blocks, linear) {
   return prev.concat(segmentUnits(linear, { fromUnit, startNo }));
 }
 
+// ---------- 纯编号标题（格言体 / 条目体：「一」「二」…「一〇」「12」「(3)」「§4」） ----------
+// 去掉编号后什么都不剩的标题不是结构：同一父节点下 ≥3 个这样的「无子标题」叶子、且占兄弟 ≥60% 时整串并回父节点，
+// 原文归父节点作用域（够长时照常切分），由 AI 按语义归纳子节点；跳回原文仍走节点的块区间。
+const NUM_ONLY_TITLE_RE = /^(?:[(（\[【]\s*)?(?:第\s*)?(?:[\d零〇一二三四五六七八九十百千两]+|(?=[ivxlcdm])m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3}))(?:\s*[.\-－–—·．]\s*\d+)*\s*(?:[)）\]】])?\s*[.、．:：]?$|^§\s*\d+(?:\.\d+)*$/i;
+const NUM_RUN_MIN = 3;
+function isNumberOnlyTitle(t) {
+  const s = String(t == null ? "" : t).normalize("NFKC").trim();
+  return s !== "" && NUM_ONLY_TITLE_RE.test(s);
+}
+function foldNumberedHeadings(node) {
+  const kids = Array.isArray(node && node.children) ? node.children : [];
+  for (const k of kids) foldNumberedHeadings(k);
+  const isNumLeaf = (k) => isNumberOnlyTitle(k && k.label) && !(k.children && k.children.length);
+  const num = kids.filter(isNumLeaf).length;
+  if (num >= NUM_RUN_MIN && num >= kids.length * 0.6) node.children = kids.filter((k) => !isNumLeaf(k));
+  return node;
+}
+
 // ---------- 骨架（复用 core 的 TOC 归一与「正文」伪节点修复） ----------
 function buildSkeleton({ title, tocItems, unitAnchors } = {}) {
   const label = String(title || "").trim() || "材料知识导图";
-  const tree = core.normalizeTocTree(core.buildTocTree(tocItems || [], label), label);
+  const tree = foldNumberedHeadings(core.normalizeTocTree(core.buildTocTree(tocItems || [], label), label));
   const model = core.buildExtractionModel(tree, unitAnchors || []);
   const flat = model.flat;
   const ids = flat.map((_, i) => `t${i}`);
@@ -864,7 +882,7 @@ module.exports = {
   ENGINE_VERSION, SCOPE_FLOOR_CHARS, SCOPE_SPLIT_CHARS, SCOPE_PART_MAX, STATES, SOURCES,
   V1_ROLE_TO_TYPE, TYPE_TO_V1_ROLE, v1RoleToType, typeToV1Role,
   extendUnitBlocks,
-  buildSkeleton, planScopes, skeletonRows,
+  buildSkeleton, planScopes, skeletonRows, isNumberOnlyTitle, foldNumberedHeadings,
   buildAliasTable, outlineRefCandidates, expandRefCandidates,
   nodeStateOf, recheckAfterExpand, expandGate,
   createJobAssembler, coverageStubs, markTruncated,

@@ -214,6 +214,8 @@
   --mm-enter: 240ms;  /* 新元素淡入 + 位移 */
   --mm-exit: 200ms;   /* 离场淡出 */
   --mm-ease: cubic-bezier(0.2, 0.7, 0.2, 1); /* 结构流 --flow-ease 与之同一曲线 */
+  /* v49.172 / D342：知识图谱关联路径——节点滑入泳道与视野移动共用一段时长（JS 读取，ease-in-out，慢起步慢落定、无回弹） */
+  --kg-path-move: 620ms;
 
   /* —— 阅读翻页（D241）：vendor/foliate-js/paginator.js 的 #motion() 每次翻页读取一次（统一管理）。
      滑行＝分页章内翻页（transform 合成层动画）与滚动模式整屏缓动；out＝跨章淡出；shift＝跨章入场位移。
@@ -8177,32 +8179,21 @@ body.capture-body #root { height: 100vh; }
         否则顶边带着整块位移，光标被甩出卡片 → mouseleave 自动收起（用户实测报过）。
      ② 收起态只剩**一行** → 非最新的行、行分隔线、「另有 N 项」必须一并藏掉。 */
 .bg-activity {
-  --ba-row-h: var(--sp-6); /* 24px：既是 8px 网格，也是 WCAG 2.2 最小目标 */
+  /* v49.173 / D343：24 → 32，与更新提示同一行高（统一通知卡）；仍是 8px 网格 */
+  --ba-row-h: var(--toast-row-h, var(--sp-8));
   /* 8 + 3×18.6（文案 3 行）+ 8 + 2（进度槽）+ 8 + 26（按钮）+ 12 ≈ 120：
      实测 describeTask 各阶段文案最长 40 字 = 2.39 行，108px 会真截断，故给到 3 行 */
   --ba-extra-h: 120px;
-  position: fixed;
-  right: var(--sp-4);
-  bottom: var(--sp-4);
-  z-index: var(--z-toast);
+  /* v49.173 / D343：fixed 定位移交 .toast-stack（右下角通知栈，本卡恒在栈底） */
   font-size: var(--fs-meta);
 }
 .bg-activity-card {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  width: max-content;
-  max-width: 240px; /* 收起态：随内容变宽，最长 240（原 .bg-activity-pill 的口径） */
-  background: var(--surface-card);
-  border: var(--bw-hairline) solid var(--border-subtle);
-  border-radius: var(--radius-card);
   color: var(--ink);
-  transition: width var(--dur) var(--ease), max-width var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
-}
-.bg-activity.is-expanded .bg-activity-card {
-  width: 272px; /* 8px 网格 */
-  max-width: 272px;
-  box-shadow: var(--shadow-popover);
+  /* D343：宽 / 底 / 边框 / 圆角 / 阴影全部由 .toast-card 统一给出——与更新提示同宽同高；
+     收起与展开同宽（原「随内容变宽 → 展开 272」的宽度过渡退役），展开只向上长高 */
 }
 
 /* 恒等式②：收起态只留最新那一行，其余整条（含详情、分隔线、"另有 N 项"）都不得占位 */
@@ -8213,11 +8204,16 @@ body.capture-body #root { height: 100vh; }
 .bg-activity-task {
   display: flex;
   flex-direction: column;
-  /* 主题色竖线常驻占位，展开时才上色 → 上色这一瞬间不会产生 2px 位移。
+  /* D343：状态色条（统一通知卡语言，取代原 8px 方块圆点）——常驻、按状态上色；
      它同时穿过书名行与详情块，多任务同时在场时看得出详情属于哪一行。 */
-  border-left: 2px solid transparent;
+  --toast-tone: var(--text-helper);
+  border-left: var(--toast-mark-w) solid var(--toast-tone);
 }
-.bg-activity-task.is-expanded { border-left-color: var(--accent); }
+.bg-activity-task.tone-busy { --toast-tone: var(--accent); }
+.bg-activity-task.tone-done { --toast-tone: var(--success); }
+.bg-activity-task.tone-partial,
+.bg-activity-task.tone-warn { --toast-tone: var(--warning); }
+.bg-activity-task.tone-error { --toast-tone: var(--error); }
 /* 行间分隔线交给 CSS 而不是 DOM：收起态那条不能被它多撑 1px */
 .bg-activity-task + .bg-activity-task { border-top: var(--bw-hairline) solid var(--border-subtle); }
 .bg-activity:not(.is-expanded) .bg-activity-task { border-top: none; }
@@ -8228,7 +8224,7 @@ body.capture-body #root { height: 100vh; }
   gap: var(--sp-2);
   width: 100%;
   height: var(--ba-row-h);
-  padding: 0 var(--sp-2);
+  padding: 0 var(--sp-3) 0 var(--toast-pad-l); /* 色条宽计入左内距：文字左缘与更新提示同缘 */
   background: transparent;
   border: none;
   border-radius: var(--radius-control);
@@ -8268,13 +8264,6 @@ body.capture-body #root { height: 100vh; }
   font-variant-numeric: tabular-nums;
 }
 .bg-activity-count { flex: none; opacity: 0.75; font-variant-numeric: tabular-nums; }
-/* 直角方块而非圆点：与全应用「直角是灵魂」一致 */
-.bg-activity-dot { flex: none; width: var(--sp-2); height: var(--sp-2); background: var(--text-secondary); }
-.bg-activity-task.tone-busy .bg-activity-dot { background: var(--accent); }
-.bg-activity-task.tone-done .bg-activity-dot { background: var(--success); }
-.bg-activity-task.tone-partial .bg-activity-dot,
-.bg-activity-task.tone-warn .bg-activity-dot { background: var(--warning); }
-.bg-activity-task.tone-error .bg-activity-dot { background: var(--error); }
 
 /* 详情块：定高 + 只 transition height，切行时 Δ总高恒等于 0（恒等式①） */
 .bg-activity-extra {
@@ -8288,12 +8277,12 @@ body.capture-body #root { height: 100vh; }
   visibility: visible;
   transition: height var(--dur) var(--ease), visibility 0s;
 }
-/* 左边界 24px + 竖线 2px = 26px，与书名行的文字同列（点 10 → 文字 26）→ 缩进即"这是上面那行的下级" */
+/* D343：详情与书名行文字同列（左内距 = 行文字左缘 12 - 色条 2），读作同一条通知的展开 */
 .bg-activity-extra-in {
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: var(--sp-2) var(--sp-3) var(--sp-3) var(--sp-6);
+  padding: 0 var(--sp-3) var(--sp-3) var(--toast-pad-l);
 }
 .bg-activity-detail {
   margin: 0 0 var(--sp-2);
@@ -8348,6 +8337,207 @@ body.capture-body #root { height: 100vh; }
   .bg-activity-card,
   .bg-activity-extra,
   .bg-activity-bar > span { transition: none; }
+}
+
+/* ===== v49.173 / D343：右下角通知栈 + 统一通知卡 + 更新提示 + 更新日志面板（docs/design/CHANGELOG-VIEWER.md §4） =====
+   栈：fixed 右下角，竖向、右对齐、间距 8；后台活动卡恒在最下（DOM 最后一项），其余通知排在它上面。
+   项增减时其余项的让位滑动由 ToastStack.tsx 的 FLIP 驱动（只写 transform；过渡参数在这里）。
+   通知卡：surface-card 底、hairline 边框、直角、常驻浮层阴影、行高 32、12px meta；
+   状态 / 类别用左侧 2px 色条表达（后台活动按任务状态上色，更新提示＝accent）。 */
+.toast-stack {
+  /* 统一通知卡几何（皮肤可覆盖）：宽 288（8px 网格）、内容行高 32、状态标记宽 2（瑞士＝左缘色条）；
+     --toast-pad-l = 行文字左缘到卡片内缘的距离减去标记宽 → 所有卡片文字同一左缘 */
+  --toast-w: 288px;
+  --toast-row-h: var(--sp-8);
+  --toast-mark-w: 2px;
+  --toast-pad-l: calc(var(--sp-3) - var(--toast-mark-w));
+  position: fixed;
+  right: var(--sp-4);
+  bottom: var(--sp-4);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  pointer-events: none; /* 栈本身不挡点击；项自己接指针 */
+}
+.toast-stack > * { pointer-events: auto; }
+@media (prefers-reduced-motion: no-preference) {
+  .toast-stack > * { transition: transform var(--dur-panel) var(--ease-out-soft); }
+}
+.toast-card {
+  width: var(--toast-w);
+  max-width: calc(100vw - var(--sp-8));
+  overflow: hidden; /* 皮肤圆角下，行 hover 底与色条不出角 */
+  background: var(--surface-card);
+  border: var(--bw-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-popover);
+  box-shadow: var(--shadow-popover);
+  color: var(--text-secondary);
+  font-size: var(--fs-meta);
+}
+
+/* 更新提示：一行 = 色条 · 「已更新至 vX」· 链接 · 关闭 */
+.changelog-notice {
+  --toast-tone: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  /* 与后台活动卡同高：不写死卡高，由内容行（文字行高 = --toast-row-h）撑开 + 同一发丝边——
+     两卡的边框在同一缩放下取整一致（写 calc(32 + 2×边框) 会在 150% 缩放下与取整后的边框差 0.4px） */
+  position: relative;
+  padding: 0 var(--sp-1) 0 var(--sp-3);
+  white-space: nowrap;
+}
+/* 状态标记：与后台活动任务的色条同一几何（卡片发丝边之内、贴左缘、贯通全高）；皮肤可改成圆点 */
+.changelog-notice::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--toast-mark-w);
+  background: var(--toast-tone);
+}
+.changelog-notice-text {
+  min-width: 0;
+  line-height: var(--toast-row-h);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.changelog-notice .toast-close { margin-left: auto; }
+.changelog-notice-ver {
+  font-family: var(--font-mono);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.changelog-notice-link,
+.about-changelog {
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--dur-hover) var(--ease-out-soft);
+}
+.changelog-notice-link:hover,
+.about-changelog:hover { text-decoration-color: currentColor; }
+.changelog-notice-link:focus-visible,
+.about-changelog:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toast-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: var(--sp-6);
+  height: var(--sp-6);
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-control);
+  color: var(--text-helper);
+  cursor: pointer;
+  transition: color var(--dur-hover) var(--ease-out-soft), background-color var(--dur-hover) var(--ease-out-soft);
+}
+.toast-close:hover { color: var(--ink); background: var(--grey-1); }
+.toast-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* 进出场只动 translate / opacity（独立 translate 属性：与栈的 FLIP transform 叠加不冲突）。
+   入：上移 4px 淡入（--dur-stage / --ease-out-soft）；出：右移 4px 淡出（--dur-exit / --ease-exit）。 */
+@keyframes toast-in {
+  from { opacity: 0; translate: 0 var(--shift-sm); }
+  to { opacity: 1; translate: 0 0; }
+}
+@keyframes toast-out {
+  to { opacity: 0; translate: var(--shift-sm) 0; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .changelog-notice { animation: toast-in var(--dur-stage) var(--ease-out-soft) both; }
+  .changelog-notice.is-closing { animation: toast-out var(--dur-exit) var(--ease-exit) forwards; }
+}
+
+/* 设置 · 关于：版本号同行的「更新日志」入口 */
+.about-name { display: inline-flex; align-items: baseline; gap: var(--sp-3); }
+
+/* 更新日志面板（复用 .modal-panel 骨架；520 宽，正文区内部滚动） */
+.modal-panel.changelog-panel { width: min(520px, calc(100vw - var(--sp-16))); }
+.modal-panel > .modal-header.changelog-head {
+  margin-bottom: 0;
+  padding-bottom: var(--sp-4);
+  border-bottom: var(--bw-hairline) solid var(--border-subtle);
+}
+.modal-panel > .modal-scroll.changelog-body { padding-top: 0; }
+.changelog-rel {
+  padding: var(--sp-6) 0 var(--sp-2);
+  border-bottom: var(--bw-hairline) solid var(--border-subtle);
+}
+.changelog-rel:last-child { border-bottom: none; padding-bottom: 0; }
+.changelog-rel-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+.changelog-ver {
+  font-family: var(--font-mono);
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.changelog-rel.is-current .changelog-ver { font-weight: 600; color: var(--ink); }
+.changelog-cur {
+  padding: 0 var(--sp-1);
+  border: var(--bw-hairline) solid currentColor;
+  color: var(--accent);
+  font-size: var(--fs-meta);
+  line-height: 16px;
+}
+.changelog-date {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-helper);
+  font-variant-numeric: tabular-nums;
+}
+.changelog-sum {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-secondary);
+  line-height: 1.7;
+  color: var(--ink);
+}
+.changelog-grp {
+  display: grid;
+  grid-template-columns: var(--sp-12) 1fr;
+  column-gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+}
+.changelog-kind {
+  font-size: var(--fs-meta);
+  line-height: 22px;
+  color: var(--text-helper);
+}
+.changelog-grp ul { margin: 0; padding: 0; list-style: none; }
+.changelog-grp li {
+  position: relative;
+  padding-left: var(--sp-3);
+  font-size: var(--fs-secondary);
+  line-height: 22px;
+  color: var(--text-secondary);
+}
+/* 短横引导（不用圆点：直角语言） */
+.changelog-grp li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 11px;
+  width: var(--sp-1);
+  height: var(--bw-hairline);
+  background: var(--text-helper);
 }
 
 /* ---------- 摘录复习（v48.22 / D58 §6.8）：沉浸式连续处理页 + 摘录卡面 ---------- */
@@ -11106,7 +11296,7 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
 .ag[data-kind="cell"] .ag-text { color: color-mix(in srgb, var(--ag-fg) 84%, transparent); }
 .ag[data-kind="more"] .ag-text { color: color-mix(in srgb, var(--ag-fg) 52%, transparent); }
 .ag-time { display: block; font-family: var(--font-mono, inherit); font-variant-numeric: tabular-nums; font-size: 11px; line-height: 15px; color: color-mix(in srgb, var(--ag-fg) 58%, transparent); white-space: nowrap; }
-.ag-meta { display: flex; align-items: center; gap: 6px; height: 15px; font-size: 10.5px; color: color-mix(in srgb, var(--ag-fg) 46%, transparent); }
+.ag-meta { display: flex; align-items: center; gap: 6px; height: 15px; white-space: nowrap; font-size: 10.5px; color: color-mix(in srgb, var(--ag-fg) 46%, transparent); }
 .ag[data-align="center"] .ag-meta { justify-content: center; }
 .ag[data-counter="1"] .ag-type { color: var(--flow-counter); }
 .ag[data-counter="1"] .ag-type::before { content: "⟂ "; }
@@ -11127,6 +11317,28 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
 .atlas-card-links .atlas-add-link { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .atlas-card-links .atlas-add-link-input { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: transparent; color: inherit; min-width: 120px; }
 .atlas-card-links .atlas-add-link-hits { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; }
+/* v49.170 / D340：节点卡「讲了 / 用到」——两列：左侧小号标签，右侧术语。
+   已对上全谱＝实下划线（强调色淡描）；全谱对照待确认＝点状下划线；只在本书里＝无下划线、淡墨。
+   「用到」整行降一档墨色（前提，不是本段在讲的东西）。× 悬停 / 聚焦才显形（.reveal-on-hover）。 */
+.atlas-terms { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; padding-top: 6px; border-top: 1px solid color-mix(in srgb, var(--reader-fg, var(--ink)) 8%, transparent); font-size: 12px; line-height: 18px; }
+.atlas-terms-row { display: grid; grid-template-columns: 2.6em minmax(0, 1fr); align-items: baseline; column-gap: 8px; }
+.atlas-terms-k { font-size: 11px; letter-spacing: 0.04em; color: color-mix(in srgb, var(--reader-fg, var(--ink)) 46%, transparent); white-space: nowrap; }
+.atlas-terms-v { display: flex; flex-wrap: wrap; gap: 0 12px; min-width: 0; }
+.atlas-term { display: inline-flex; align-items: baseline; gap: 1px; }
+.atlas-term-name { border: 0; background: none; padding: 0; font: inherit; color: var(--reader-fg, var(--ink)); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent); transition: color var(--dur-hover) var(--flow-ease), text-decoration-color var(--dur-hover) var(--flow-ease); }
+button.atlas-term-name { cursor: pointer; }
+button.atlas-term-name:hover, button.atlas-term-name:focus-visible { color: var(--accent); text-decoration-color: var(--accent); outline: none; }
+.atlas-term.is-pending .atlas-term-name { text-decoration-style: dotted; text-decoration-color: color-mix(in srgb, var(--reader-fg, var(--ink)) 45%, transparent); }
+.atlas-term.is-local .atlas-term-name { text-decoration: none; color: color-mix(in srgb, var(--reader-fg, var(--ink)) 70%, transparent); cursor: help; }
+.atlas-terms-row[data-role="used"] .atlas-term-name { color: color-mix(in srgb, var(--reader-fg, var(--ink)) 62%, transparent); }
+.atlas-term-x { border: 0; background: none; padding: 0 2px; font: inherit; font-size: 11px; line-height: 1; color: color-mix(in srgb, var(--reader-fg, var(--ink)) 45%, transparent); cursor: pointer; transition: opacity var(--dur-hover) var(--flow-ease), color var(--dur-hover) var(--flow-ease); }
+.atlas-term-x:hover, .atlas-term-x:focus-visible { color: var(--reader-fg, var(--ink)); outline: none; }
+.atlas-terms-force { justify-self: start; border: 0; background: none; padding: 0; font: inherit; color: color-mix(in srgb, var(--reader-fg, var(--ink)) 60%, transparent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: pointer; transition: color var(--dur-hover) var(--flow-ease); }
+.atlas-terms-force:hover, .atlas-terms-force:focus-visible { color: var(--accent); outline: none; }
+.atlas-card-links > .atlas-terms-k { margin-right: 2px; }
+.atlas-work-ask { align-items: baseline; gap: 0 10px; }
+.atlas-work-pick { border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--radius-xs); background: none; padding: 0 6px; font: inherit; line-height: 18px; color: var(--accent); cursor: pointer; transition: background var(--dur-hover) var(--flow-ease), border-color var(--dur-hover) var(--flow-ease); }
+.atlas-work-pick:hover, .atlas-work-pick:focus-visible { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); outline: none; }
 .ag:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 60%, transparent); }
 .ag:hover .ag-text { color: var(--ag-fg); }
 .ag[data-kind="cell"]:hover, .ag[data-kind="colhead"]:hover { box-shadow: none; }
@@ -11144,7 +11356,7 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
 .atlas-overlay { position: absolute; inset: 0; pointer-events: none; }
 .atlas-card-slot { position: absolute; left: 0; top: 0; pointer-events: auto; }
 .atlas-card {
-  box-sizing: border-box; padding: 6px 12px 8px; max-height: 340px; overflow-y: auto;
+  box-sizing: border-box; width: max-content; max-width: 100%; padding: 6px 12px 8px; max-height: min(460px, 60vh); overflow-y: auto; overscroll-behavior: contain;
   background: var(--reader-bg, var(--paper)); border: 1px solid color-mix(in srgb, var(--reader-fg, var(--ink)) 12%, transparent);
   border-radius: 8px; box-shadow: var(--shadow-atlas-card);
   animation: flow-inline-in 220ms var(--flow-ease) both; animation-delay: var(--flow-delay, 0ms);
@@ -11159,7 +11371,7 @@ body[data-flow-resizing="1"] .flow-shift-target { transition: none; }
 .atlas-rel-list button:hover, .atlas-link-btn:hover { color: var(--reader-fg, var(--ink)); text-decoration: underline var(--accent) 1px; text-underline-offset: 3px; }
 .atlas-detail-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .atlas-select { height: 22px; font: inherit; font-size: 12px; background: transparent; color: inherit; border: var(--bw-hairline) solid color-mix(in srgb, var(--reader-fg, var(--ink)) 22%, transparent); }
-.atlas-source { margin: 6px 0 0; padding-left: 8px; border-left: 2px solid color-mix(in srgb, var(--reader-fg, var(--ink)) 14%, transparent); max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+.atlas-source { margin: 6px 0 0; padding-left: 8px; border-left: 2px solid color-mix(in srgb, var(--reader-fg, var(--ink)) 14%, transparent); white-space: pre-wrap; } /* 不再内嵌滚动：随整张卡滚动 */
 
 /* 空态 */
 .atlas-empty-stage { position: absolute; left: 50%; top: 45%; transform: translate(-50%, -50%); text-align: center; font-size: 12px; color: color-mix(in srgb, var(--reader-fg, var(--ink)) 60%, transparent); }

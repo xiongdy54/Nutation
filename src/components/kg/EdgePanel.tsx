@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useT } from "../../lib/i18n";
 import { isImeComposing } from "../../lib/ime";
-import { kgApi, type ConnectResult, type DismissUndo, type EdgeAnchor, type EdgeEvidence, type GraphNode } from "../../lib/kg";
+import { kgApi, type ConnectResult, type DismissUndo, type EdgeAnchor, type EdgeArgEvidence, type EdgeEvidence, type GraphNode } from "../../lib/kg";
 import { relationLabel } from "../../lib/knowledge";
 import MarkdownEditor, { type MarkdownEditorApi } from "../editor/MarkdownEditor";
 
@@ -263,6 +263,8 @@ export function EdgePanel({ a, b, nodes, onClose, onJump, onChanged, onToast, on
                         <div className="kg-evid-text">{T("你的摘录：")}{m.snippet}</div>
                         {m.anchor && onJumpToDoc ? <button className="kg-link" onClick={() => onJumpToDoc(m.documentId, m.anchor!, a)}>{m.title || T("跳转原文")}</button> : <small>{m.title}</small>}
                       </>
+                    ) : m.kind === "arg" ? (
+                      <ArgChain m={m} onOpen={onOpenMap} />
                     ) : (
                       <>
                         <div className="kg-evid-text">{T("导图：")}{m.path.filter(Boolean).join(" › ")}</div>
@@ -425,6 +427,28 @@ export function LinkSearch({ from, x, y, nodes, onPick, onCancel }: { from: stri
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** v49.170 / D340：一条论证证据＝作者在原文里把两句话连起来的方式（导图关系码，读作「上句—码→下句」）。
+ *  两句都是逐字引句，点哪句就打开导图上那句所在的节点。 */
+const ARG_VERB: Record<string, string> = { 支: "支持", 据: "依据", 推: "推出", 因: "导致", 比: "对比", 驳: "反驳", 例: "例示" };
+function ArgChain({ m, onOpen }: { m: EdgeArgEvidence; onOpen?: (documentId: string, mapId: string, nodeId: string) => void }) {
+  const T = useT();
+  const verb = m.code ? T(ARG_VERB[m.code] ?? m.code) : m.rule === "P1" ? T("讲后者时以前者为前提") : T("同一段");
+  const q = (text: string, nodeId: string) =>
+    onOpen ? (
+      <button className="kg-arg-q" onClick={() => onOpen(m.documentId, m.mapId, nodeId)}>「{text}」</button>
+    ) : (
+      <span className="kg-arg-q">「{text}」</span>
+    );
+  return (
+    <div className="kg-arg" data-rule={m.rule}>
+      <small className="kg-arg-src">{[m.title, ...m.path.filter(Boolean)].filter(Boolean).join(" › ")}</small>
+      {q(m.quoteA, m.fromNodeId)}
+      <span className="kg-arg-verb">{verb}</span>
+      {q(m.quoteB, m.toNodeId)}
     </div>
   );
 }

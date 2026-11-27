@@ -41,6 +41,9 @@ const {
   KG_MAP_LINK_PROMPT,
   KG_CARD_REATTACH_PROMPT,
   KG_EDGE_JUDGE_PROMPT,
+  KG_SOURCE_TERMS_PROMPT,
+  KG_TERM_MATCH_PROMPT,
+  KG_PATH_JUDGE_PROMPT,
   KNOWLEDGE_RELATION_PROMPT,
   MATERIAL_DIFFICULTY_PROMPT,
   KNOWLEDGE_PROBE_PROMPT,
@@ -3425,7 +3428,12 @@ function ensurePromptTemplates() {
       // v49.147 / D316：解散知识点后给卡片重挂（候选封闭选择）
       ["kg-card-reattach", "解散知识点重挂卡片 v1", KG_CARD_REATTACH_PROMPT],
       // v49.148 / D317：连线三层的 AI 判断（候选对子封闭选择 + 引文校验）
-      ["kg-edge-judge", "知识点关系判断 v1", KG_EDGE_JUDGE_PROMPT]
+      ["kg-edge-judge", "知识点关系判断 v1", KG_EDGE_JUDGE_PROMPT],
+      // v49.170 / D340：以原文为锚的知识层（抽取者 / 对照者）
+      ["kg-source-terms", "原文术语抽取 v1", KG_SOURCE_TERMS_PROMPT],
+      ["kg-term-match", "原文术语对照全谱 v1", KG_TERM_MATCH_PROMPT],
+      // KG-SG-IMPL-PLAN I11：关联路径 AI 补链（封闭选择 + 本地校验）
+      ["kg-path-judge", "关联路径补链判断 v1", KG_PATH_JUDGE_PROMPT]
     ]) {
       const n = queryAll("SELECT COUNT(*) AS n FROM prompt_templates WHERE scope = ?", [scope])[0]?.n || 0;
       if (Number(n) === 0) {
@@ -6484,7 +6492,7 @@ function deleteKnowledgeExternalRef(id, opts) {
 
 function listKnowledgeProposals(opts) {
   const { status = "pending", proposalKind, limit = 200, offset = 0 } = opts ?? {};
-  const where = ["is_deleted = 0"];
+  const where = ["is_deleted = 0", "COALESCE(scope, '') != 'kg-path-judge'"]; // 路径补链提案走专用接口（I11）
   const params = [];
   if (status) { where.push("status = ?"); params.push(String(status)); }
   if (proposalKind) { where.push("proposal_kind = ?"); params.push(String(proposalKind)); }
@@ -6769,7 +6777,7 @@ function tryResolveRelationPayload(payload) {
 // 关系端点重解析（确定性）：点提案被接受 → 新 KP 落库 → 把 pending 关系提案里等待该端点的引用补全。
 function resolvePendingRelationRefs() {
   let filled = 0;
-  const rows = queryAll("SELECT * FROM knowledge_proposals WHERE proposal_kind = 'relation' AND status = 'pending' AND is_deleted = 0");
+  const rows = queryAll("SELECT * FROM knowledge_proposals WHERE proposal_kind = 'relation' AND status = 'pending' AND is_deleted = 0 AND COALESCE(scope, '') != 'kg-path-judge'");
   for (const r of rows) {
     const pl = parseJsonSafe(r.payload_json, {});
     if (pl?.fromKnowledgePointId && pl?.toKnowledgePointId) continue;
@@ -7032,7 +7040,7 @@ function clusterPayloadOf(cl) {
 // 每条独立 try/catch，单条失败不中断；relation 在点全部落地后解析端点。
 function acceptAllPendingKnowledgeProposals() {
   const order = { point: 0, relation: 1, merge: 2 };
-  const rows = queryAll("SELECT * FROM knowledge_proposals WHERE status = 'pending' AND is_deleted = 0");
+  const rows = queryAll("SELECT * FROM knowledge_proposals WHERE status = 'pending' AND is_deleted = 0 AND COALESCE(scope, '') != 'kg-path-judge'");
   rows.sort((a, b) => {
     const pa = mapKpProposalRow(a);
     const pb = mapKpProposalRow(b);
@@ -9868,7 +9876,7 @@ function mapAppearancesByAtlas(atlasIds) {
   const refRows = queryAll(
     `SELECT r.map_id AS mapId, r.node_id AS nodeId, r.atlas_id AS atlasId, r.source AS source
        FROM material_map_node_refs r JOIN material_maps m ON m.id = r.map_id
-      WHERE r.is_deleted = 0 AND m.is_deleted = 0 AND m.is_active = 1 AND r.atlas_id IN (${ids.map(() => "?").join(",")})
+      WHERE r.is_deleted = 0 AND r.source NOT IN ('ai','match') AND m.is_deleted = 0 AND m.is_active = 1 AND r.atlas_id IN (${ids.map(() => "?").join(",")})
       ORDER BY r.rowid`,
     ids
   );
@@ -10124,42 +10132,66 @@ function explainMapCardNodeLookup(mapId, nodeIds) {
   return queryAll("EXPLAIN QUERY PLAN " + mmMapCardNodeLookupSql(ids.length), [String(mapId), ...ids]);
 }
 
+/**
+ * v49.170 / D340 / I6：论证边 P1–P5 的事实原料（只读）。
+ * terms：未删、未拒绝、非作品级的原文术语；atlasId 只在 link_state ∈ (linked, user) 时给出（unlinked 的 atlas_id 只是待确认建议）。
+ *   block_hash 与会话当前块是否相符这里判不了——由 kgService.loadModel 在会话就绪的文档上用 kgTerms.dropStale 过滤（S4）；会话不在则按有效处理。
+ * nodes 不含目录骨架行（source='toc'，与引擎 unitBlocks 同口径，S2）。
+ * nodes / edges：有术语的文档的活动导图节点与显式关系边。没有术语时一条查询都不做。
+ */
+function kgTermArgFacts() {
+  const empty = { terms: [], nodes: [], edges: [] };
+  if (!db) return empty;
+  const terms = queryAll(
+    `SELECT id, document_id AS documentId, unit_anchor AS unitAnchor, block_hash AS blockHash, block_no AS blockNo, quote, surface, surface_norm AS surfaceNorm, role,
+            CASE WHEN link_state IN ('linked','user') THEN atlas_id END AS atlasId
+     FROM source_terms
+     WHERE is_deleted = 0 AND link_state != 'rejected' AND role != 'work' AND block_no >= 0
+     ORDER BY document_id, block_no, id LIMIT 100000`
+  );
+  if (!terms.length) return empty;
+  const docScope = "m.document_id IN (SELECT DISTINCT document_id FROM source_terms WHERE is_deleted = 0 AND role != 'work')";
+  return {
+    terms,
+    nodes: queryAll(
+      `SELECT m.document_id AS documentId, m.id AS mapId, n.node_id AS nodeId, n.parent_id AS parentId, n.type, n.pattern_hint AS pattern,
+              n.block_start AS blockStart, n.block_end AS blockEnd
+       FROM material_maps m
+       JOIN material_map_nodes n ON n.map_id = m.id AND n.is_deleted = 0 AND n.source != 'toc'
+       WHERE m.is_active = 1 AND m.is_deleted = 0 AND ${docScope} LIMIT 200000`
+    ),
+    edges: queryAll(
+      `SELECT m.document_id AS documentId, m.id AS mapId, e.from_id AS fromId, e.to_id AS toId, e.code
+       FROM material_maps m
+       JOIN material_map_edges e ON e.map_id = m.id AND e.is_deleted = 0
+       WHERE m.is_active = 1 AND m.is_deleted = 0 AND ${docScope} LIMIT 200000`
+    )
+  };
+}
+
+/**
+ * v49.170 / D340 / I6 证据阶梯第 1 级的原料（只读）：读过的单元（unit_reads）里的讲类术语行（未删、未拒绝）。
+ * atlasId 同样只在 linked / user 时给出。
+ */
+function kgReadTermFacts() {
+  if (!db) return [];
+  return queryAll(
+    `SELECT t.document_id AS documentId, t.unit_anchor AS unitAnchor, t.block_no AS blockNo, t.block_hash AS blockHash, t.surface, t.surface_norm AS surfaceNorm,
+            CASE WHEN t.link_state IN ('linked','user') THEN t.atlas_id END AS atlasId
+     FROM source_terms t
+     JOIN unit_reads u ON u.document_id = t.document_id AND u.unit_anchor = t.unit_anchor
+     WHERE t.is_deleted = 0 AND t.link_state != 'rejected' AND t.role IN ('defines','explains','argues')
+     LIMIT 100000`
+  );
+}
+
 /** 图谱连线证据的事实读取（只读） */
 function kgEdgeFacts() {
-  if (!db) return { dismissals: [], mapParent: [], mapSame: [], mapRefs: [], mapCardNodes: [], extractCards: [], extractTexts: [], cardTexts: [], annotations: [], userDefs: [], explains: [], judgments: [], relationsFull: [], relationAsked: [] };
+  if (!db) return { dismissals: [], termArgs: { terms: [], nodes: [], edges: [] }, extractCards: [], extractTexts: [], cardTexts: [], annotations: [], userDefs: [], explains: [], judgments: [], relationsFull: [], relationAsked: [] };
   return {
     dismissals: queryAll("SELECT kp_a AS a, kp_b AS b, evidence_keys_json AS keysJson, dismiss_count AS count, dismissed_at AS at FROM knowledge_relation_dismissals WHERE is_deleted = 0"),
-    // M1：活动导图里父节点挂靠 × 子节点挂靠
-    mapParent: queryAll(
-      `SELECT m.document_id AS documentId, m.id AS mapId, p.node_id AS parentNodeId, c.node_id AS childNodeId, rp.atlas_id AS parentAtlas, rc.atlas_id AS childAtlas
-       FROM material_maps m
-       JOIN material_map_nodes c ON c.map_id = m.id AND c.is_deleted = 0 AND c.parent_id IS NOT NULL
-       JOIN material_map_nodes p ON p.map_id = m.id AND p.node_id = c.parent_id AND p.is_deleted = 0
-       JOIN material_map_node_refs rc ON rc.map_id = m.id AND rc.node_id = c.node_id AND rc.is_deleted = 0
-       JOIN material_map_node_refs rp ON rp.map_id = m.id AND rp.node_id = p.node_id AND rp.is_deleted = 0
-       WHERE m.is_active = 1 AND m.is_deleted = 0 LIMIT 200000`
-    ),
-    // M2：同一导图节点挂了多个全谱条目
-    mapSame: queryAll(
-      `SELECT m.document_id AS documentId, m.id AS mapId, r1.node_id AS nodeId, r1.atlas_id AS atlasA, r2.atlas_id AS atlasB
-       FROM material_maps m
-       JOIN material_map_node_refs r1 ON r1.map_id = m.id AND r1.is_deleted = 0
-       JOIN material_map_node_refs r2 ON r2.map_id = m.id AND r2.node_id = r1.node_id AND r2.is_deleted = 0 AND r2.atlas_id > r1.atlas_id
-       WHERE m.is_active = 1 AND m.is_deleted = 0 LIMIT 200000`
-    ),
-    // M1/M2 的挂法来源（v49.153 / D322 / T4）：活动导图里每个存活节点的全谱挂靠。
-    // 与下方的卡片挂靠取并集后，在 kgEdges.collectPairs 里统一算父↔子 / 同节点。
-    mapRefs: queryAll(
-      `SELECT m.document_id AS documentId, m.id AS mapId, n.node_id AS nodeId, n.parent_id AS parentNodeId, r.atlas_id AS atlasId
-       FROM material_maps m
-       JOIN material_map_nodes n ON n.map_id = m.id AND n.is_deleted = 0
-       JOIN material_map_node_refs r ON r.map_id = m.id AND r.node_id = n.node_id AND r.is_deleted = 0
-       WHERE m.is_active = 1 AND m.is_deleted = 0 LIMIT 200000`
-    ),
-    // M1/M2 的第二种挂法（v49.153 / D322 / T4）：卡片 context_ref_json.mindmapNodeId = "v2:<mapId>:<nodeId>"
-    // → 这张卡的知识点落在该节点上（私有知识点没有 atlas_id 也能挂）。两段式读取见 kgMapCardNodes()：
-    // 先单表扫卡片再按 (map_id, node_id) 等值查节点——旧实现的前缀连接无法走索引（O(卡片×导图)）。
-    mapCardNodes: kgMapCardNodes(),
+    // v49.170 / D340 / I6：论证边 P1–P5 的原料（取代 M1 父↔子 / M2 同节点 / 卡片挂靠；kgEdges.collectTermArgs 计算）
+    termArgs: kgTermArgFacts(),
     // M3：同一条摘录制出的卡片
     extractCards: queryAll(
       `SELECT id AS cardId, json_extract(context_ref_json, '$.extractId') AS extractId FROM cards
@@ -10479,6 +10511,43 @@ function kgAddJudgment(j) {
   });
 }
 
+// ---------- KG-SG-IMPL-PLAN I11：关联路径 AI 补链提案（scope 'kg-path-judge'，存 knowledge_proposals） ----------
+// payload：{ target:"Q123", hops:[{from,to,rel,basis}], model, aiAssisted:true }；pending＝待确认（不进搜索），accepted＝用户边，rejected＝不再出现。
+const PATH_SCOPE = "kg-path-judge";
+function mapPathProposal(r) {
+  const p = parseJsonSafe(r.payload_json, {}) || {};
+  return { id: r.id, status: r.status, target: String(p.target || ""), hops: Array.isArray(p.hops) ? p.hops : [], model: p.model || null, createdAt: Number(r.created_at) || 0 };
+}
+/** 写一条补链提案；同目标 + 同链指纹已存在（任何状态）不重复写，返回既有行（created:false） */
+function kgPathProposalAdd(p) {
+  const target = String(p?.target || "");
+  const hops = (Array.isArray(p?.hops) ? p.hops : []).map((h) => ({ from: String(h.from), to: String(h.to), rel: String(h.rel), basis: String(h.basis || "").slice(0, 200) }));
+  if (!target || !hops.length) return { created: false, proposal: null };
+  const fp = `${PATH_SCOPE}:${target}:${hops.map((h) => `${h.from}>${h.rel}>${h.to}`).join("|")}`;
+  const r = createKnowledgeProposal({ proposalKind: "relation", scope: PATH_SCOPE, confidence: null, fingerprint: fp, payload: { target, hops, model: p.model ? String(p.model) : null, aiAssisted: true } });
+  const row = queryAll("SELECT * FROM knowledge_proposals WHERE id = ?", [r.id])[0];
+  return { created: !!r.created, proposal: row ? mapPathProposal(row) : null };
+}
+/** 某目标的待确认 + 已接受补链（不含已拒绝） */
+function kgPathProposalList(target) {
+  const t = String(target || "");
+  return queryAll("SELECT * FROM knowledge_proposals WHERE scope = ? AND status IN ('pending','accepted') AND is_deleted = 0 ORDER BY created_at ASC, id ASC", [PATH_SCOPE])
+    .map(mapPathProposal).filter((x) => x.target === t);
+}
+/** 全部已接受的补链（所有目标；其 hops 在路径搜索里作为用户边） */
+function kgPathProposalAccepted() {
+  return queryAll("SELECT * FROM knowledge_proposals WHERE scope = ? AND status = 'accepted' AND is_deleted = 0 ORDER BY created_at ASC, id ASC", [PATH_SCOPE]).map(mapPathProposal);
+}
+function kgPathProposalDecide(id, decision) {
+  const row = queryAll("SELECT * FROM knowledge_proposals WHERE id = ? AND scope = ? AND is_deleted = 0", [String(id), PATH_SCOPE])[0];
+  if (!row) throw new Error("补链提案不存在");
+  if (row.status !== "pending") throw new Error("补链提案已决议");
+  const accept = decision === "accept";
+  db.run("UPDATE knowledge_proposals SET status = ?, resolved_at = ? WHERE id = ?", [accept ? "accepted" : "rejected", Date.now(), row.id]);
+  persist();
+  return mapPathProposal(queryAll("SELECT * FROM knowledge_proposals WHERE id = ?", [row.id])[0]);
+}
+
 /** 图谱缓存指纹：任何影响图谱的事实变化都会改变它（只读、O(1) 级聚合） */
 function kgFingerprint() {
   if (!db) return "0";
@@ -10498,6 +10567,11 @@ function kgFingerprint() {
     q("SELECT COUNT(*) AS n, MAX(updated_at) AS m FROM material_map_node_refs"),
     q("SELECT COUNT(*) AS n, MAX(updated_at) AS m, SUM(is_active) AS a FROM material_maps"),
     q("SELECT COUNT(*) AS n, MAX(updated_at) AS m FROM material_map_nodes"),
+    // v49.170 / D340 / I6：论证边的显式关系码（material_map_edges 只增删，不更新）
+    q("SELECT COUNT(*) AS n, SUM(is_deleted) AS d FROM material_map_edges"),
+    // v49.170 / D340 原文术语与读过的单元（证据阶梯第 1 级、材料层论证连线）
+    q("SELECT COUNT(*) AS n, MAX(updated_at) AS m, SUM(is_deleted) AS d FROM source_terms"),
+    q("SELECT COUNT(*) AS n, MAX(created_at) AS m FROM unit_reads"),
     q("SELECT COUNT(*) AS n FROM kg_events WHERE kind = 'relation_asked'"),
     getCutoffHour()
   ].join("|");
@@ -10524,13 +10598,15 @@ function kgFacts() {
 module.exports = {
   // v49.146 / D314：mapLink.js 的 db 访问口（同一连接、同一事务语义）
   _mapLinkDb: () => ({ queryAll, run: (sql, p) => db.run(sql, p), withTransaction, readAppMeta, writeAppMeta }),
+  // v49.170 / D340：sourceTerms.js 的 db 访问口（同一连接、同一事务语义）
+  _sourceTermsDb: () => ({ queryAll, run: (sql, p) => db.run(sql, p), withTransaction }),
   // v49.137 / D304 知识图谱
   listKpDefinitionVersions, reviseKpDefinition, revertKpDefinition, listKgEvents, archiveKnowledgePoint,
   restoreKnowledgePoint, setCardFacet, moveCardToKnowledgePoint, kgFacts, kgFingerprint, appendKpDefinitionRow,
   resolveKpAttribution, ensureKpForCard, linkKpAtlas, kpReattachCards, kgSimilarKps, kpActiveByAtlas, kpReattachApply, kpReattachUndo, kgDissolveCleanup, kgAppearances, atlasAppearances,kgUnmappedKps, kgAtlasAlsoMap, kgSetAtlasAlso, kpsByAtlasIds, atlasInt, recentKpLabels, markContrastHandled, kgActiveKpRows,
   kgUnattachedCards, attachCardsToKp, addKnownKnowledge,
   // v49.148 / D317 连线三层
-  kgEdgeFacts, kgDismissPair, kgUndoDismiss, kgConnectPair, kgUndoConnect, kgUpdateRelation, kgExplainPair, kgRelationAsked, kgEvidenceLookup, kgAddJudgment, kgPairKey,
+  kgEdgeFacts, kgReadTermFacts, kgDismissPair, kgUndoDismiss, kgConnectPair, kgUndoConnect, kgUpdateRelation, kgExplainPair, kgRelationAsked, kgEvidenceLookup, kgAddJudgment, kgPairKey, kgPathProposalAdd, kgPathProposalList, kgPathProposalAccepted, kgPathProposalDecide,
   // 诊断/测试口（只读）：卡片挂靠导图节点的读取与查询计划（D322 性能）
   _kgMapCardNodes: kgMapCardNodes,
   _mapCardNodeLookupPlan: explainMapCardNodeLookup,

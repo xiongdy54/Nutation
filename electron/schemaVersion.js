@@ -5,7 +5,7 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const SCHEMA_VERSION = 12; // 每新增一个 MIGRATIONS 项就 +1，并与最后一项的 version 相等
+const SCHEMA_VERSION = 13; // 每新增一个 MIGRATIONS 项就 +1，并与最后一项的 version 相等
 
 // C-18a（审计）：due 表达式——只在「JSON 合法且 $.due 是数值」时取出，其余一律为 NULL
 // （NULL = 交给 JS 精确判定，见 db.js 的 TODAY_QUEUE_DUE_SQL 快速路径）。
@@ -261,6 +261,59 @@ const MIGRATIONS = [
           is_deleted INTEGER NOT NULL DEFAULT 0
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_krd_pair ON knowledge_relation_dismissals(kp_a, kp_b);
+      `);
+    }
+  },
+  {
+    // v49.170 / D340 以原文为锚的知识层：source_terms（SYNC，只软删）＝作者在某块讲 / 用到的术语（全局块号 + 块哈希）；
+    // source_term_coverage（LOCAL，可重建）＝抽取覆盖与低密度标记；unit_reads（APPEND）＝读过的导图单元（停留 ≥45 s，每单元首次）。
+    version: 13,
+    name: "source_grounded_terms",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS source_terms (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          document_id TEXT NOT NULL,
+          unit_anchor TEXT NOT NULL,
+          block_no INTEGER NOT NULL,
+          block_hash TEXT NOT NULL DEFAULT '',
+          quote TEXT NOT NULL DEFAULT '',
+          surface TEXT NOT NULL,
+          surface_norm TEXT NOT NULL,
+          role TEXT NOT NULL,
+          atlas_id INTEGER,
+          atlas_rel TEXT,
+          link_state TEXT NOT NULL DEFAULT 'unlinked',
+          confidence REAL,
+          extractor_version INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          sync_version INTEGER NOT NULL DEFAULT 0,
+          is_deleted INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_st_key ON source_terms(document_id, block_no, surface_norm, role);
+        CREATE INDEX IF NOT EXISTS idx_st_atlas ON source_terms(atlas_id);
+        CREATE INDEX IF NOT EXISTS idx_st_unit ON source_terms(document_id, unit_anchor);
+        CREATE TABLE IF NOT EXISTS source_term_coverage (
+          document_id TEXT NOT NULL,
+          unit_anchor TEXT NOT NULL,
+          text_hash TEXT NOT NULL,
+          extractor_version INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          term_count INTEGER NOT NULL DEFAULT 0,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          done_at INTEGER NOT NULL,
+          PRIMARY KEY (document_id, unit_anchor)
+        );
+        CREATE TABLE IF NOT EXISTS unit_reads (
+          id TEXT PRIMARY KEY,
+          document_id TEXT NOT NULL,
+          unit_anchor TEXT NOT NULL,
+          dwell_ms INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ur_unit ON unit_reads(document_id, unit_anchor);
       `);
     }
   }

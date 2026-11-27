@@ -23,6 +23,7 @@ import { settingsStore } from "../lib/settings";
 import { sanitizeDomain, udcLabel, UDC_LEAVES, UDC_MAX, UDC_OTHER } from "../lib/udc";
 import { eventBus } from "../lib/eventbus";
 import { readingStats } from "../lib/stats";
+import { useUnitReadDwell } from "../lib/unitReadDwell";
 import Dropdown from "./Dropdown";
 import OcclusionShapes from "./OcclusionShapes";
 import OcclusionEditor from "./editor/OcclusionEditor";
@@ -723,6 +724,8 @@ export default function Reader({
   const lensSupported = !!lensKernel && typeof lensKernel.getReadingProbe === "function";
   const lensDocId = contextRef?.documentId ?? null;
   const lensTitle = title || sourceTitle || T("未命名材料");
+  // v49.170 / D340：同一导图单元停留 ≥45 s（可见 + 聚焦）→ 记 unit_reads，驱动原文术语的惰性抽取
+  useUnitReadDwell(lensKernel, lensDocId, lensTitle);
   // 结构全景（D254）：左上独立入口；进入不展开侧栏、不改 sidebarOpen
   const [atlasOpen, setAtlasOpen] = useState(false);
   const [atlasMounted, setAtlasMounted] = useState(false);

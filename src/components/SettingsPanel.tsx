@@ -1,4 +1,5 @@
 import KgVectorSettings from "./kg/KgVectorSettings";
+import { requestOpenChangelog } from "../lib/changelog";
 import KgAtlasSettings from "./kg/KgAtlasSettings";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { isImeComposing } from "../lib/ime";
@@ -252,6 +253,48 @@ const SECTION_GROUPS: Array<{ label: string; items: Array<{ id: string; label: s
     ]
   }
 ];
+
+// v49.170 / D340：原文术语分析（app.sourceTermsMode：off | reading（默认）| full；主进程消费者 electron/main.js getSourceTermsAuto）
+type SourceTermsMode = "off" | "reading" | "full";
+function SourceTermsSection() {
+  const T = useT();
+  const [mode, setMode] = useState<SourceTermsMode>("reading");
+  useEffect(() => {
+    void settingsStore.get<unknown>("app", "sourceTermsMode", "reading").then((v) => {
+      setMode(v === "off" || v === "full" ? v : "reading");
+    });
+  }, []);
+  const pick = (next: SourceTermsMode) => {
+    setMode(next);
+    void settingsStore.set("app", "sourceTermsMode", next);
+  };
+  const OPTIONS: { value: SourceTermsMode; label: string }[] = [
+    { value: "off", label: T("关") },
+    { value: "reading", label: T("阅读时") },
+    { value: "full", label: T("整本预处理") }
+  ];
+  return (
+    <SettingsSection id="sec-sourceterms" title={T("原文术语分析")}>
+      <div className="settings-row">
+        <span className="settings-row-label">{T("何时分析")}</span>
+        <div className="seg-tabs seg-tabs-sm" role="group" aria-label={T("原文术语分析")} data-source-terms-mode={mode}>
+          {OPTIONS.map((o) => (
+            <button key={o.value} className={mode === o.value ? "active" : ""} aria-pressed={mode === o.value} onClick={() => pick(o.value)}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="form-hint">
+        {mode === "off"
+          ? T("不分析。知识图谱只显示你自己制卡的知识点。")
+          : mode === "full"
+            ? T("打开一本书就分析全书（仍跳过叙事、背景等低密度章节），AI 用量较大。")
+            : T("读到哪里分析到哪里；只记录原文讲了或用到的术语，顺带提到的不记。")}
+      </p>
+    </SettingsSection>
+  );
+}
 
 // card-fill 区块容器（设计稿 §6.1/§7 薄壳）：h3 是 scrollIntoView 后的聚焦目标
 // （tabindex=-1，屏幕阅读器可达），info 为挂在标题上的可选 ⓘ 说明。
@@ -2488,7 +2531,13 @@ function AboutSection() {
       {/* v49.126 / D293：项目主页与应用名同行（右端对齐，窄窗自动换行到下一行仍靠右）。
           地址是用户数据（仓库名不译），可见文本去掉协议前缀。 */}
       <div className="about-head">
-        <span>{"Nutation"}{version ? T(" · 版本 v{version}", { version }) : ""}</span>
+        <span className="about-name">
+          <span>{"Nutation"}{version ? T(" · 版本 v{version}", { version }) : ""}</span>
+          {/* v49.173 / D343：更新日志常驻入口（面板由 App 持有，叠在设置之上） */}
+          <button type="button" className="about-changelog" onClick={requestOpenChangelog}>
+            {T("更新日志")}
+          </button>
+        </span>
         <a className="about-repo" href={REPO_URL} target="_blank" rel="noreferrer">
           <IconGithub size={16} />
           <span>{REPO_URL.replace(/^https?:\/\//, "")}</span>
@@ -3341,6 +3390,44 @@ function TrayRow() {
   );
 }
 
+// v49.171（D341）：无障碍支持（默认关）。关闭＝主进程启动时追加 --disable-renderer-accessibility，
+// 外部无障碍客户端不再拖慢阅读滚动；启动参数只在启动时生效，改动后提示重启。
+// 默认值与主进程 accessibilitySupportEnabled（electron/accessibilitySupport.js）同规：仅严格 true 为开。
+function AccessibilityRow() {
+  const T = useT();
+  const [on, setOn] = useState<boolean | null>(null);
+  const [atLaunch, setAtLaunch] = useState<boolean | null>(null);
+  useEffect(() => {
+    void settingsStore.get<unknown>("app", "accessibilitySupport", false).then((v) => {
+      setOn(v === true);
+      setAtLaunch(v === true);
+    });
+  }, []);
+  if (on === null) return null;
+  const pending = atLaunch !== null && on !== atLaunch;
+  return (
+    <div className="kb-row">
+      <label className="kb-row-title gs-check">
+        <input
+          type="checkbox"
+          data-accessibility-support
+          checked={on}
+          onChange={(e) => {
+            setOn(e.target.checked);
+            void settingsStore.set("app", "accessibilitySupport", e.target.checked);
+          }}
+        />
+        {T("无障碍支持（供屏幕阅读器等辅助工具读取界面；关闭可避免这类工具拖慢阅读滚动）")}
+      </label>
+      {pending ? (
+        <button className="btn btn-outline btn-sm" data-accessibility-relaunch onClick={() => backupAPI().relaunch()}>
+          {T("重启后生效 · 立即重启")}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function GlobalShortcutsBlock() {
   const T = useT();
   const [cfg, setCfg] = useState<GlobalShortcutsConfig>(DEFAULT_GLOBAL_SHORTCUTS);
@@ -3518,6 +3605,8 @@ function GlobalShortcutsBlock() {
       </div>
 
       <TrayRow />
+
+      <AccessibilityRow />
 
       <div className="settings-row settings-block">
         {/* v48.114（D159）：「试一下快速记录」随功能暂时移除（shortcutsApi.toggleCapture 保留在 lib/journal.ts） */}
@@ -4010,6 +4099,7 @@ export default function SettingsPanel({
             <AISection />
             <DictSection />
             <KgVectorSettings />
+            <SourceTermsSection />
             <KgAtlasSettings />
             {/* v48.114（D159）：<MemorySection />（sec-memory）随用户记忆功能暂时移除，代码保留待重实装 */}
 

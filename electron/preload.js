@@ -367,6 +367,10 @@ contextBridge.exposeInMainWorld("kgAPI", {
   graph: (opts) => ipcRenderer.invoke("kg:graph", opts || {}),
   snapshotAt: (t) => ipcRenderer.invoke("kg:snapshotAt", t),
   today: () => ipcRenderer.invoke("kg:today"),
+  pathToLearned: (atlasId, opts) => ipcRenderer.invoke("kg:pathToLearned", atlasId, opts || {}),
+  pathJudge: (atlasId) => ipcRenderer.invoke("kg:pathJudge", atlasId),
+  pathProposals: (atlasId) => ipcRenderer.invoke("kg:pathProposals", atlasId),
+  pathProposalDecide: (id, decision) => ipcRenderer.invoke("kg:pathProposalDecide", id, decision),
   cardPanel: (cardId) => ipcRenderer.invoke("kg:cardPanel", cardId),
   appearances: (kpId) => ipcRenderer.invoke("kg:appearances", kpId),
   atlasAppearances: (atlasId) => ipcRenderer.invoke("kg:atlasAppearances", atlasId),
@@ -378,6 +382,21 @@ contextBridge.exposeInMainWorld("kgAPI", {
     return () => ipcRenderer.removeListener("mapLink:changed", handler);
   },
   mapLinkRefsForMap: (mapId) => ipcRenderer.invoke("mapLink:refsForMap", mapId),
+  // v49.170 / D340 以原文为锚的知识层：阅读停留信号（每单元首次，幂等）/ 强制分析某单元 / 术语变化单向推送（载荷 { documentId }）
+  unitRead: (documentId, unitAnchor, dwellMs) => ipcRenderer.invoke("kg:unitRead", { documentId, unitAnchor, dwellMs }),
+  sourceTermsForce: (documentId, unitAnchor) => ipcRenderer.invoke("kg:sourceTermsForce", documentId, unitAnchor),
+  // v49.170 / D340 / I6：原文术语的读取与手动修正
+  sourceTermsForMap: (mapId) => ipcRenderer.invoke("kg:sourceTermsForMap", mapId),
+  termAppearances: (atlasId) => ipcRenderer.invoke("kg:termAppearances", atlasId),
+  sourceTermReject: (termId) => ipcRenderer.invoke("kg:sourceTermReject", termId),
+  sourceTermLink: (termId, atlasId) => ipcRenderer.invoke("kg:sourceTermLink", termId, atlasId),
+  workAnchor: (documentId) => ipcRenderer.invoke("kg:workAnchor", documentId),
+  workAnchorConfirm: (documentId, atlasId, surface) => ipcRenderer.invoke("kg:workAnchorConfirm", documentId, atlasId, surface),
+  onSourceTermsChanged: (callback) => {
+    const handler = (_e, payload) => callback(payload);
+    ipcRenderer.on("sourceTerms:changed", handler);
+    return () => ipcRenderer.removeListener("sourceTerms:changed", handler);
+  },
   mapLinkRefsForAtlas: (ids) => ipcRenderer.invoke("mapLink:refsForAtlas", ids),
   mapLinkSetUserRef: (mapId, nodeId, atlasId, on) => ipcRenderer.invoke("mapLink:setUserRef", mapId, nodeId, atlasId, on),
   defVersions: (kpId) => ipcRenderer.invoke("kg:defVersions", kpId),

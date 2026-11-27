@@ -48,6 +48,30 @@ export interface AtlasCardProps {
   onOpenGraph?: (atlasId: string) => void;
   /** D314 修订：手动改挂靠——on=true 加（来源记为用户）；on=false 移除 */
   onSetLink?: (atlasId: string, on: boolean) => void;
+  /** v49.170 / D340：原文术语投影——本节点原文「讲了 / 用到」的术语（每条都有逐字引句） */
+  terms?: NodeTerms | null;
+  onRejectTerm?: (termId: string) => void;
+  /** 低密度单元：仍要分析这段的术语 */
+  onForceTerms?: () => void;
+  /** 根节点：作品 / 作者在全谱里的对应（文学材料的知识对象是作品本身） */
+  documentId?: string;
+}
+
+export interface SourceTerm {
+  termId: string;
+  surface: string;
+  atlasId: string | null;
+  label: string;
+  role: string;
+  quote: string;
+  linkState: string;
+}
+export interface NodeTerms {
+  nodeId: string;
+  unitAnchor?: string | null;
+  lowDensity?: boolean;
+  taught: SourceTerm[];
+  used: SourceTerm[];
 }
 
 export default function AtlasCard(p: AtlasCardProps) {
@@ -57,15 +81,12 @@ export default function AtlasCard(p: AtlasCardProps) {
   const canDeepen = !p.preview && (node.state === "more" || node.state === "stub");
   const canJump = node.blockStart != null;
   const canExplain = node.blockStart != null && !streaming;
-  const kidsCount = p.graph.children[p.isRoot ? ROOT_ID : node.id]?.length ?? 0;
-  const canFold = kidsCount > 0;
   const acts: ReactNode[] = [];
   const sep = (k: string) => <span key={k} aria-hidden="true">·</span>;
   if (canJump) acts.push(<button key="jump" type="button" data-atlas-act="jump" onClick={p.onJump}>{T("跳到原文")}</button>);
   if (canExplain) acts.push(<button key="explain" type="button" data-atlas-act="explain" onClick={p.onToggleExplain}>{p.explainOpen ? T("收起讲解") : T("讲解")}</button>);
   if (canDeepen) acts.push(<button key="deepen" type="button" data-atlas-act="deepen" onClick={() => p.onDeepen(false)}>{T("深挖")}</button>);
   if (p.canMakeCards && !streaming) acts.push(<button key="cards" type="button" data-atlas-act="cards" onClick={p.onMakeCards}>{T("制卡")}</button>);
-  if (canFold) acts.push(<button key="fold" type="button" data-atlas-act="fold" onClick={p.onToggleFold}>{p.expanded ? T("收起结构") : T("展开结构")}</button>);
   acts.push(<button key="detail" type="button" data-atlas-act="detail" onClick={p.onToggleDetail}>{p.detailOpen ? T("收起详情") : T("详情")}</button>);
 
   return (
@@ -76,8 +97,11 @@ export default function AtlasCard(p: AtlasCardProps) {
         ))}
         {p.preview && (node.state === "more" || node.state === "stub") ? <span className="atlas-card-hint">{T("生成导图后可以继续深挖")}</span> : null}
       </div>
+      {p.isRoot && p.documentId && !p.preview ? <WorkAnchor documentId={p.documentId} onOpenGraph={p.onOpenGraph} /> : null}
+      <AtlasTerms terms={p.terms} onOpenGraph={p.onOpenGraph} onReject={p.preview ? undefined : p.onRejectTerm} onForce={p.preview ? undefined : p.onForceTerms} />
       {(p.links && p.links.length > 0 && p.onOpenGraph) || (p.onSetLink && !p.preview) ? (
         <div className="atlas-card-links" data-atlas-links={p.links?.length ?? 0}>
+          {p.links && p.links.length > 0 ? <span className="atlas-terms-k">{T("我挂的")}</span> : null}
           {(p.links || []).map((l) => (
             <span key={l.atlasId}>
               {p.onOpenGraph ? (
@@ -111,6 +135,118 @@ export default function AtlasCard(p: AtlasCardProps) {
           onDeepen={p.onDeepen}
         />
       ) : null}
+    </div>
+  );
+}
+
+const ROLE_TEXT: Record<string, string> = { defines: "定义", explains: "解释", argues: "论证", instance: "实例", uses: "依据" };
+
+/** v49.170 / D340：「讲了 / 用到」两行。已对上全谱＝实下划线（点开看图谱）；待确认＝点状下划线；只在本书里＝不带下划线。
+ *  悬停 / 聚焦显示逐字引句；× 只在悬停或聚焦时出现（.reveal-on-hover，触控可经聚焦触达）。 */
+function AtlasTerms({ terms, onOpenGraph, onReject, onForce }: { terms?: NodeTerms | null; onOpenGraph?: (atlasId: string) => void; onReject?: (termId: string) => void; onForce?: () => void }) {
+  const T = useT();
+  if (!terms) return null;
+  const rows: [string, "taught" | "used", SourceTerm[]][] = [
+    ["讲了", "taught", terms.taught],
+    ["用到", "used", terms.used]
+  ];
+  const any = terms.taught.length + terms.used.length > 0;
+  if (!any && !(terms.lowDensity && onForce)) return null;
+  return (
+    <div className="atlas-terms" data-atlas-terms={terms.taught.length}>
+      {rows.map(([k, role, list]) =>
+        list.length ? (
+          <div key={role} className="atlas-terms-row" data-role={role}>
+            <span className="atlas-terms-k">{T(k)}</span>
+            <span className="atlas-terms-v">
+              {list.map((t) => {
+                const state = t.atlasId ? (t.linkState === "linked" || t.linkState === "user" ? "linked" : "pending") : "local";
+                const tip = `${T(ROLE_TEXT[t.role] ?? t.role)}｜「${t.quote}」${state === "pending" ? T("（全谱对照待确认）") : ""}`;
+                return (
+                  <span key={t.termId} className={`atlas-term is-${state}`}>
+                    {t.atlasId && onOpenGraph ? (
+                      <button type="button" className="atlas-term-name" title={tip} onClick={() => onOpenGraph(t.atlasId!)}>{t.label || t.surface}</button>
+                    ) : (
+                      <span className="atlas-term-name" title={tip} tabIndex={0}>{t.label || t.surface}</span>
+                    )}
+                    {onReject ? (
+                      <button type="button" className="atlas-term-x reveal-on-hover" aria-label={T("这不是本段讲的术语")} title={T("这不是本段讲的术语")} onClick={() => onReject(t.termId)}>×</button>
+                    ) : null}
+                  </span>
+                );
+              })}
+            </span>
+          </div>
+        ) : null
+      )}
+      {terms.lowDensity && onForce ? (
+        <div className="atlas-terms-row">
+          <span className="atlas-terms-k" />
+          <button type="button" className="atlas-terms-force" onClick={onForce}>{T("仍要分析这段的术语")}</button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+type WorkCand = { id: string; label: string; gloss: string; kind: "work" | "person" };
+type WorkProposal = { works: WorkCand[]; persons: WorkCand[]; confirmed: { surface: string; atlasId: string | null; linkState: string }[] };
+type WorkApi = {
+  workAnchor?(documentId: string): Promise<WorkProposal | null>;
+  workAnchorConfirm?(documentId: string, atlasId: string | null, surface: string): Promise<unknown>;
+};
+
+/** v49.170 / D340：作品级挂靠——书名 / 作者在全谱里精确命中时问一次「是它吗」；确认后读完一章就是「读过这部作品」的证据 */
+function WorkAnchor({ documentId, onOpenGraph }: { documentId: string; onOpenGraph?: (atlasId: string) => void }) {
+  const T = useT();
+  const [prop, setProp] = useState<WorkProposal | null>(null);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const api = (window as unknown as { kgAPI?: WorkApi }).kgAPI;
+    void api?.workAnchor?.(documentId).then((r) => alive && setProp(r ?? null)).catch(() => alive && setProp(null));
+    return () => {
+      alive = false;
+    };
+  }, [documentId, tick]);
+  if (!prop) return null;
+  const decided = new Set(prop.confirmed.map((c) => c.surface));
+  const confirmed = prop.confirmed.filter((c) => c.atlasId && c.linkState === "user");
+  const groups: [string, WorkCand[]][] = [
+    ["作品", prop.works.filter((w) => !decided.has(w.label))],
+    ["作者", prop.persons.filter((w) => !decided.has(w.label))]
+  ];
+  const confirm = async (atlasId: string | null, surface: string) => {
+    await (window as unknown as { kgAPI?: WorkApi }).kgAPI?.workAnchorConfirm?.(documentId, atlasId, surface).catch(() => null);
+    setTick((n) => n + 1);
+  };
+  const pending = groups.filter(([, l]) => l.length > 0);
+  if (!confirmed.length && !pending.length) return null;
+  return (
+    <div className="atlas-terms atlas-work" data-atlas-work>
+      {confirmed.map((c) => (
+        <div key={c.atlasId!} className="atlas-terms-row">
+          <span className="atlas-terms-k">{T("全谱")}</span>
+          <span className="atlas-terms-v">
+            <span className="atlas-term is-linked">
+              {onOpenGraph ? <button type="button" className="atlas-term-name" onClick={() => onOpenGraph(c.atlasId!)}>{c.surface}</button> : <span className="atlas-term-name">{c.surface}</span>}
+            </span>
+          </span>
+        </div>
+      ))}
+      {pending.map(([k, list]) => (
+        <div key={k} className="atlas-terms-row">
+          <span className="atlas-terms-k">{T(k)}</span>
+          <span className="atlas-terms-v atlas-work-ask">
+            {list.map((w) => (
+              <button key={w.id} type="button" className="atlas-work-pick" title={w.gloss || undefined} onClick={() => void confirm(w.id, w.label)}>
+                {T("是《{name}》", { name: w.label })}
+              </button>
+            ))}
+            <button type="button" className="atlas-terms-force" onClick={() => void Promise.all(list.map((w) => confirm(null, w.label)))}>{T("都不是")}</button>
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

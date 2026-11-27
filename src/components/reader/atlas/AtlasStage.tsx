@@ -89,7 +89,7 @@ const GlyphRow = memo(
     } as unknown as CSSProperties;
     // D339：全谱挂靠标记放进底部信息行右端（空心锚环 + 淡色数字），与「+N 子节点」区分；单元格 / 「另 N 项」没有信息行，退为右上角内缩
     const inMeta = gl.kind !== "cell" && gl.kind !== "more";
-    const linkLabel = T("关联 {n} 个全谱节点", { n: links });
+    const linkLabel = T("原文讲了 {n} 个术语", { n: links });
     const linkMark = (
       <span className="ag-link" data-atlas-link={links} data-inline={inMeta ? "1" : undefined} title={linkLabel} aria-label={linkLabel}>
         <i aria-hidden="true" />
@@ -756,16 +756,17 @@ export default function AtlasStage(props: AtlasStageProps) {
         if (el) {
           const r = el.getBoundingClientRect(), sr = stage.getBoundingClientRect();
           const gl = scene.byNode.get(focusIn);
-          const w = Math.min(360, Math.max(280, r.width));
+          // 卡宽随内容（CSS width:max-content），上限 360；居中节点按卡的实际宽度对中
+          const first = slot.firstElementChild as HTMLElement | null;
+          const w = first ? Math.min(360, first.offsetWidth) : 360;
           let x = r.left - sr.left;
           if (gl?.align === "center") x = r.left - sr.left + r.width / 2 - w / 2;
-          const first = slot.firstElementChild as HTMLElement | null;
           const ch = first ? first.offsetHeight : 0;
           let y = r.top - sr.top - ch - 8; // 默认在选中节点上方
           if (ch && y < 4) y = r.top - sr.top + r.height + 8; // 上方放不下才翻到下方
           const key = `${Math.round(x)}|${Math.round(y)}|${Math.round(w)}|${ch}`;
           slot.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
-          slot.style.width = `${Math.round(w)}px`;
+          slot.style.maxWidth = "360px";
           if (key === last) stable++;
           else { stable = 0; last = key; }
         }
@@ -787,6 +788,8 @@ export default function AtlasStage(props: AtlasStageProps) {
     const el = stageEl;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      // 节点卡内滚轮＝滚动卡片本身（原文 / 讲解可能比卡高），不平移画布
+      if (!e.ctrlKey && !e.metaKey && (e.target as Element | null)?.closest?.(".atlas-card")) return;
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
         const k = clamp(props.zoom * (e.deltaY > 0 ? 1 / CAM.ZOOM_STEP : CAM.ZOOM_STEP), CAM.ZOOM_MIN, CAM.ZOOM_MAX);
@@ -883,8 +886,10 @@ export default function AtlasStage(props: AtlasStageProps) {
       return;
     }
     if (!gl.nodeId) return;
+    // 单击未选中的节点＝选中（并展开它的子节点）；再点已选中的父节点＝收起 / 重新展开子节点；叶节点再点＝居中
     if (gl.nodeId === focusIn) {
-      setLocalCenter((n) => n + 1);
+      if (gl.kids > 0 && gl.nodeId !== ROOT_ID && gl.kind !== "colhead") props.onToggle(gl.nodeId);
+      else setLocalCenter((n) => n + 1);
       props.onCardOpen?.();
     } else props.onFocus(gl.nodeId);
   };

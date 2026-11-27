@@ -249,6 +249,9 @@ const COUNT_ONLY = {
     "kg:linkAtlas", "kg:unmappedKps", "kg:setAtlasAlso",
     "kg:reattachPlan", "kg:reattachApply", "kg:reattachUndo", // v49.147 / D316：解散知识点并重挂卡片（事实真源仍是 cards / knowledge_points / kg_events）
     "kg:edgeEvidence", "kg:connectPair", "kg:undoConnect", "kg:dismissPair", "kg:undoDismiss", "kg:updateRelation", "kg:explainPair", "kg:relationAsked", // v49.148 / D317 连线三层（事实真源是 knowledge_relations / knowledge_relation_dismissals / learning_events / kg_events）
+    // v49.170 / D340 KG-SG：原文术语（真源 source_terms / source_term_coverage / unit_reads，各自已是事实表）、路径搜索 / AI 补链提案（真源 knowledge_proposals，读多写少）
+    "kg:pathToLearned", "kg:pathJudge", "kg:pathProposals", "kg:pathProposalDecide",
+    "kg:unitRead", "kg:sourceTermsForce", "kg:sourceTermsForMap", "kg:termAppearances", "kg:sourceTermReject", "kg:sourceTermLink", "kg:workAnchor", "kg:workAnchorConfirm",
   ],
 };
 
